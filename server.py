@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 在线实时语音识别系统 - WebSocket Server
 VAD断句 + OCR关键词纠错 + 说话人分离 (CAM++)
