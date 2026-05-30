@@ -107,43 +107,52 @@ class ASREngine:
             preferred = self._config.get("current_model", "auto")
         if preferred == 'whisper':
             return self._try_load('_load_whisper', 'OpenAI Whisper')
+        elif preferred in ('whisper-tiny', 'whisper-base', 'whisper-small',
+                           'whisper-medium', 'whisper-large'):
+            size = preferred.split('-', 1)[1]
+            return self._try_load('_load_whisper', f'OpenAI Whisper ({size})', size=size)
         elif preferred == 'paraformer':
             return self._try_load('_load_paraformer', 'Paraformer')
-        elif preferred == 'qwen3-asr':
+        elif preferred in ('qwen3-asr-1.7b', 'qwen3-asr-0.6b'):
+            size = preferred.split('-', 2)[2]
+            return self._try_load('_load_qwen3_asr', f'Qwen3-ASR {size.upper()}', size=size.upper())
+        elif preferred in ('qwen3-asr',):
             return self._try_load('_load_qwen3_asr', 'Qwen3-ASR')
         elif preferred == 'sensevoice':
             return self._try_load('_load_sensevoice', 'SenseVoice')
         else:
             order = [
-                ('_load_qwen3_asr', 'Qwen3-ASR'),
-                ('_load_sensevoice', 'SenseVoice'),
-                ('_load_paraformer', 'Paraformer'),
-                ('_load_whisper', 'OpenAI Whisper'),
+                ('_load_qwen3_asr', 'Qwen3-ASR', '1.7B'),
+                ('_load_qwen3_asr', 'Qwen3-ASR', '0.6B'),
+                ('_load_sensevoice', 'SenseVoice', None),
+                ('_load_paraformer', 'Paraformer', None),
+                ('_load_whisper', 'OpenAI Whisper', None),
             ]
-            for method, name in order:
-                if self._try_load(method, name):
+            for method, name, size in order:
+                extra = {'size': size} if size else {}
+                if self._try_load(method, name, **extra):
                     return True
             return False
 
-    def _try_load(self, method_name, display_name):
+    def _try_load(self, method_name, display_name, **kwargs):
         """尝试加载指定模型"""
         try:
             method = getattr(self, method_name)
-            return method()
+            return method(**kwargs)
         except Exception as e:
             print(f"[WARN] {display_name} 加载失败: {e}")
             return False
     
-    def _load_whisper(self):
+    def _load_whisper(self, size=None):
         """加载OpenAI Whisper模型"""
         try:
             import whisper
             
-            model_size = self._settings.get("whisper_size", "base")
+            model_size = size if size else self._settings.get("whisper_size", "base")
             print(f"[LOAD] Loading OpenAI Whisper: {model_size} (device={self._device})")
 
             self.model = whisper.load_model(model_size, device=self._device)
-            self.model_name = "whisper"
+            self.model_name = f"whisper-{model_size}"
             self.language = "zh"
             
             print("[OK] Whisper loaded successfully")
@@ -187,7 +196,7 @@ class ASREngine:
             traceback.print_exc()
             return False
     
-    def _load_qwen3_asr(self):
+    def _load_qwen3_asr(self, size=None):
         """Qwen3-ASR  --  1.7B / 0.6B, GPU / CPU"""
         try:
             import os, sys
@@ -204,6 +213,12 @@ class ASREngine:
                 ("Qwen3-ASR-1___7B", "1.7B", "Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ASR-1.7B"),
                 ("Qwen3-ASR-0___6B", "0.6B", "Qwen/Qwen3-ASR-0.6B", "Qwen/Qwen3-ASR-0.6B"),
             ]
+
+            if size:
+                model_variants = [v for v in model_variants if v[1] == size]
+                if not model_variants:
+                    print(f"[WARN] Qwen3-ASR 未知尺寸: {size}", flush=True)
+                    return False
 
             model_path = None
             model_variant = None
@@ -259,9 +274,8 @@ class ASREngine:
                 max_new_tokens=96,
             )
             print("[LOAD] Qwen3-ASR step4: model loaded", flush=True)
-            self.model_name = "qwen3-asr"
-
             size_info = model_variant[1] if model_variant else "?"
+            self.model_name = f"qwen3-asr-{size_info}"
             print(f"[OK] Qwen3-ASR {size_info} loaded on {device_map}")
             return True
         except Exception as e:

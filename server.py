@@ -53,6 +53,13 @@ h1 { font-size: 20px; margin-bottom: 6px; }
 .highlight { background: #fff8c5; padding: 1px 4px; border-radius: 3px; }
 .gap-warn { color: #cf222e; font-size: 10px; font-weight: 700; margin-right: 4px; }
 .kw-fixed { color: #9a6700; font-size: 10px; font-weight: 700; margin-right: 3px; }
+.page-info input:focus { border-color: #0969da; }
+.toast { position: fixed; bottom: 24px; right: 24px; padding: 10px 18px; border-radius: 8px; color: #1f2328; font-size: 13px; z-index: 99999; animation: toastIn .3s ease; pointer-events: none; box-shadow: 0 4px 16px rgba(0,0,0,.12); max-width: 420px; }
+.toast.ok { background: #dafbe1; border: 1px solid #1a7f37; color: #1a7f37; }
+.toast.err { background: #ffebe9; border: 1px solid #cf222e; color: #cf222e; }
+.toast.loading { background: #ddf4ff; border: 1px solid #0969da; color: #0969da; }
+@keyframes toastIn { from { opacity:0; transform:translateY(12px) } to { opacity:1; transform:translateY(0) } }
+.speaker-tag { display: inline-block; margin: 1px 3px 1px 0; padding: 1px 7px; border-radius: 3px; font-size: 11px; font-weight: 700; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 </style>
 </head>
@@ -64,6 +71,12 @@ h1 { font-size: 20px; margin-bottom: 6px; }
     <span id="connStatus" class="status-badge offline">未连接</span>
     <span id="recStatus" class="status-badge ready">准备就绪</span>
     <span id="modelInfo" class="status-badge model" style="display:none"></span>
+</div>
+
+<div class="page-info" style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+    <input id="pageUrl" placeholder="视频/直播页面URL（选填）" style="flex:1;min-width:200px;border:1px solid #d0d7de;border-radius:5px;padding:5px 10px;font-size:12px;background:#fff;color:#1f2328;outline:none">
+    <input id="pageCreator" placeholder="UP主/创作者名（选填）" style="width:160px;border:1px solid #d0d7de;border-radius:5px;padding:5px 10px;font-size:12px;background:#fff;color:#1f2328;outline:none">
+    <span id="pagePlatform" style="font-size:11px;color:#656d76;white-space:nowrap"></span>
 </div>
 
 <div class="ctrl-bar">
@@ -83,6 +96,7 @@ h1 { font-size: 20px; margin-bottom: 6px; }
     </select>
     <input id="kwInput" placeholder="输入词或短语，回车添加...">
     <button id="btnAddKw" class="btn accent">+ 添加</button>
+    <button id="btnExpand" class="btn" style="display:none;border-color:#d2991d;color:#d2991d">🔮 联想</button>
 </div>
 
 <div class="kw-box" id="keywordsBox"></div>
@@ -117,6 +131,24 @@ var firstMsg = true;
 var keywords = [];
 var keywordStore = {};
 
+var pageUrl = document.getElementById('pageUrl');
+var pageCreator = document.getElementById('pageCreator');
+var pagePlatform = document.getElementById('pagePlatform');
+var btnExpand = document.getElementById('btnExpand');
+var kwInputEl = document.getElementById('kwInput');
+
+var SP_COLORS = [
+    {bg:'rgba(88,166,255,.12)',border:'#58a6ff',name:'#58a6ff'},
+    {bg:'rgba(248,81,73,.12)',border:'#f85149',name:'#f85149'},
+    {bg:'rgba(63,185,80,.12)',border:'#3fb950',name:'#3fb950'},
+    {bg:'rgba(210,153,29,.12)',border:'#d2991d',name:'#d2991d'},
+    {bg:'rgba(163,113,247,.12)',border:'#a371f7',name:'#a371f7'},
+    {bg:'rgba(19,194,194,.12)',border:'#13c2c2',name:'#13c2c2'},
+    {bg:'rgba(235,47,150,.12)',border:'#eb2f96',name:'#eb2f96'},
+    {bg:'rgba(250,84,28,.12)',border:'#fa541c',name:'#fa541c'}
+];
+var speakerColors = {};
+
 function setConn(cls, text) {
     CONN.className = 'status-badge ' + cls;
     CONN.textContent = text;
@@ -127,17 +159,29 @@ function setRec(cls, text) {
     REC.textContent = text;
 }
 
+function toast(msg, type, duration) {
+    if (duration === undefined) duration = 3000;
+    var t = document.createElement('div');
+    t.className = 'toast ' + (type || '');
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(function() { t.remove(); }, duration);
+}
+
 function connect() {
+    console.log('[ASR] 开始连接 WebSocket: ws://' + location.host);
     setConn('connecting', '连接中...');
     try {
         ws = new WebSocket('ws://' + location.host);
         ws.binaryType = 'arraybuffer';
         ws.onopen = function() {
+            console.log('[ASR] WebSocket 已连接');
             setConn('online', '已连接');
             reconnectAttempts = 0;
             if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
         };
         ws.onclose = function(e) {
+            console.log('[ASR] WebSocket 断开, code=' + (e.code||'?') + ' reason=' + (e.reason||''));
             setConn('offline', '断开(' + (e.code||'?') + ')，5秒后重连');
             ws = null;
             if (isRecording) { cleanupAudio(); isRecording = false; updateBtns(); }
@@ -147,14 +191,17 @@ function connect() {
                 reconnectTimer = setTimeout(connect, d);
             }
         };
-        ws.onerror = function() {
+        ws.onerror = function(e) {
+            console.log('[ASR] WebSocket 连接错误');
             setConn('offline', '连接失败');
             if (ws) { ws.close(); ws = null; }
         };
         ws.onmessage = function(e) {
-            try { handleMsg(JSON.parse(e.data)); } catch(err) {}
+            try { handleMsg(JSON.parse(e.data)); } catch(err) { console.log('[ASR] 消息解析错误:', err); }
         };
+        console.log('[ASR] WebSocket 对象已创建, readyState=' + ws.readyState);
     } catch(err) {
+        console.log('[ASR] WebSocket 创建失败:', err);
         setConn('offline', '连接失败');
         var d = Math.min(2000 * Math.pow(1.5, reconnectAttempts), 30000);
         reconnectAttempts++;
@@ -163,6 +210,27 @@ function connect() {
 }
 
 function send(d) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(d)); }
+
+function parsePageInfo() {
+    var url = (pageUrl.value || '').trim();
+    var creator = (pageCreator.value || '').trim();
+    var platform = 'web';
+    var pageType = 'web';
+    if (url) {
+        if (url.indexOf('bilibili.com/video/') !== -1 || url.indexOf('bilibili.com/bangumi/') !== -1) {
+            platform = 'bilibili'; pageType = 'video';
+        } else if (url.indexOf('live.bilibili.com') !== -1) {
+            platform = 'bilibili'; pageType = 'live';
+        } else if (url.indexOf('douyu.com/') !== -1 && url.indexOf('douyu.com/directory') === -1) {
+            platform = 'douyu'; pageType = 'live';
+        } else if (url.indexOf('huya.com/') !== -1 && /\\d/.test(url)) {
+            platform = 'huya'; pageType = 'live';
+        } else if (url.indexOf('youtube.com/watch') !== -1) {
+            platform = 'youtube'; pageType = 'video';
+        }
+    }
+    return {url: url, creator: creator, platform: platform, pageType: pageType};
+}
 
 function handleMsg(d) {
     switch (d.type) {
@@ -181,11 +249,9 @@ function handleMsg(d) {
                 updateBtns();
                 setRec('remote-recording', '识别中...（其他端）');
             } else {
-                if (!isRecording || (isRecording && BTN_START.disabled)) {
-                    isRecording = false;
-                    updateBtns();
-                    setRec('ready', '准备就绪');
-                }
+                isRecording = false;
+                updateBtns();
+                setRec('ready', '准备就绪');
             }
             break;
         case 'transcription':
@@ -199,6 +265,18 @@ function handleMsg(d) {
         case 'report': showReport(d.content); break;
         case 'save_report': download(d.content, d.filename||'asr_report.md', 'text/markdown;charset=utf-8'); break;
         case 'save_log': download(d.content, d.filename||'asr_log.json', 'application/json;charset=utf-8'); break;
+        case 'speaker_profile_matched':
+            toast('✅ "' + d.keyword + '" → 画像库命中', 'ok', 4000);
+            break;
+        case 'voice_profiles_saved':
+            if (d.profiles && d.profiles.length > 0) {
+                toast('💾 声纹已保存: ' + d.profiles.map(function(p) { return p.saved_name; }).join(', '), 'ok', 5000);
+            }
+            break;
+        case 'page_creator':
+            if (d.creator && !pageCreator.value) pageCreator.value = d.creator;
+            if (d.platform) pagePlatform.textContent = '平台: ' + d.platform + ' (来自其他端)';
+            break;
         case 'error': alert('错误: ' + d.message); break;
     }
 }
@@ -226,7 +304,13 @@ function addSeg(d) {
         div.innerHTML += '<span class="ts">T+' + (m>0?m+':'+(s<10?'0':'')+s:s+'s') + '</span>';
     }
     if (d.speaker) {
-        div.innerHTML += '<span class="speaker">[' + eHtml(d.speaker) + ']</span> ';
+        var sp = d.speaker;
+        if (!(sp in speakerColors)) {
+            var m = sp.match(/\\d+/);
+            speakerColors[sp] = m ? parseInt(m[0]) % SP_COLORS.length : 0;
+        }
+        var clr = SP_COLORS[speakerColors[sp]];
+        div.innerHTML += '<span class="speaker-tag" style="background:' + clr.bg + ';border:1px solid ' + clr.border + ';color:' + clr.name + '">' + eHtml(sp) + '</span> ';
     }
 
     if (d.corrections && d.corrections.length > 0) {
@@ -282,7 +366,7 @@ function updateKeywords(kws) {
 }
 
 function clearUI() {
-    segCount = 0; firstMsg = true; keywords = []; keywordStore = {};
+    segCount = 0; firstMsg = true; keywords = []; keywordStore = {}; speakerColors = {};
     BOX.innerHTML = '<em style="color:#656d76">等待识别结果...</em>';
     STAT_DUR.textContent = '0.0'; STAT_CNT.textContent = '0条'; STAT_CHAR.textContent = '0字';
     KWBOX.innerHTML = '';
@@ -309,7 +393,63 @@ function updateBtns() {
     BTN_STOP.disabled = !isRecording;
 }
 
+async function doStartRec() {
+    if (!ws || ws.readyState !== 1) { alert('服务未连接！请确保服务已启动'); return; }
 
+    var _info = parsePageInfo();
+    if (_info.pageType === 'video') {
+        if (!confirm('⚠️ 检测为视频页面\\n\\n请先将视频进度条拖回开头，然后点击"确定"继续录制。\\n\\n点击"取消"放弃录制。')) return;
+    } else if (_info.pageType === 'live') {
+        toast('📡 直播模式：将从当前时刻开始录制', 'loading', 3000);
+    }
+
+    try {
+        mediaStream = await navigator.mediaDevices.getDisplayMedia({audio: true, video: true});
+        audioCtx = new AudioContext({sampleRate: 48000});
+        var src = audioCtx.createMediaStreamSource(mediaStream);
+        var proc = audioCtx.createScriptProcessor(8192, 1, 1);
+        proc.onaudioprocess = function(e) {
+            if (isRecording && ws && ws.readyState === 1) {
+                ws.send(new Float32Array(e.inputBuffer.getChannelData(0)).buffer);
+            }
+        };
+        src.connect(proc);
+        proc.connect(audioCtx.destination);
+        isRecording = true;
+        send({type: 'start'});
+        firstMsg = true;
+        segCount = 0;
+        updateBtns();
+        setRec('recording', '识别中...');
+        BOX.innerHTML = '<em style="color:#656d76">正在监听...</em>';
+
+        setTimeout(function() {
+            if (_info.creator) {
+                send({type: 'page_creator', creator: _info.creator, platform: _info.platform, page_type: _info.pageType, video_offset: 0});
+                send({type: 'keyword_add', keyword: _info.creator, category: 'speaker'});
+                toast('✅ 自动添加创作者: ' + _info.creator, 'ok', 4000);
+            } else if (_info.platform !== 'web') {
+                send({type: 'page_creator', creator: '', platform: _info.platform, page_type: _info.pageType, video_offset: 0});
+            }
+        }, 2000);
+    } catch(e) {
+        if (e.name !== 'AbortError') alert('屏幕共享失败: ' + (e.message || '用户取消'));
+    }
+}
+
+function stopRec() {
+    isRecording = false;
+    send({type: 'stop'});
+    if (mediaStream) { mediaStream.getTracks().forEach(function(t) { t.stop(); }); mediaStream = null; }
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+    updateBtns();
+    setRec('ready', '已停止');
+}
+
+function cleanupAudio() {
+    if (mediaStream) { mediaStream.getTracks().forEach(function(t) { t.stop(); }); mediaStream = null; }
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+}
 
 BTN_START.addEventListener('click', doStartRec);
 
@@ -338,6 +478,31 @@ document.getElementById('btnAddKw').addEventListener('click', function() {
 });
 document.getElementById('kwInput').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') document.getElementById('btnAddKw').click();
+});
+
+kwInputEl.addEventListener('input', function() {
+    btnExpand.style.display = kwInputEl.value.trim().length >= 2 ? '' : 'none';
+});
+btnExpand.addEventListener('click', function() {
+    var kw = kwInputEl.value.trim();
+    var cat = document.getElementById('kwCat').value;
+    if (!kw) return;
+    btnExpand.disabled = true; btnExpand.textContent = '⏳ 联想中...';
+    send({type: 'keyword_expand', keyword: kw, category: cat, use_llm: false});
+    kwInputEl.value = '';
+    btnExpand.style.display = 'none';
+    setTimeout(function() { btnExpand.disabled = false; btnExpand.textContent = '🔮 联想'; }, 3000);
+});
+
+pageUrl.addEventListener('input', function() {
+    var info = parsePageInfo();
+    if (info.platform !== 'web') {
+        pagePlatform.textContent = '平台: ' + info.platform + ' | 类型: ' + info.pageType;
+    } else if (info.url) {
+        pagePlatform.textContent = '未识别平台';
+    } else {
+        pagePlatform.textContent = '';
+    }
 });
 
 connect();
@@ -489,6 +654,7 @@ class RealtimeASRServer:
         self.vad_silence_threshold = 0.85
 
         self.vad_force_cut = self.asr_engine._config.get("model_settings", {}).get("vad_force_cut", True)
+        self.vad_force_cut_sec = self.asr_engine._config.get("model_settings", {}).get("force_cut_sec", 3.8)
         self.min_speech_duration = self.asr_engine._config.get("model_settings", {}).get("min_speech_duration", 0.08)
 
         self._overlap_seconds = 0.2
@@ -1167,9 +1333,10 @@ class RealtimeASRServer:
         music_like = self._is_music_like(audio_data)
         vad_info['music_like'] = music_like
         if self.vad_force_cut:
-            force_cut_sec = 6.0 if music_like else 3.9
-            force_cut_size = 5.0 if music_like else 3.8
-            desperate_sec = 8.0 if music_like else 5.0
+            fc = self.vad_force_cut_sec
+            force_cut_sec = round(fc * 1.5, 1) if music_like else round(fc + 0.1, 1)
+            force_cut_size = round(fc * 1.3, 1) if music_like else fc
+            desperate_sec = round(fc * 2.1, 1) if music_like else round(fc + 1.2, 1)
         else:
             force_cut_sec = self.max_buffer_seconds
             force_cut_size = self.max_buffer_seconds
@@ -2386,11 +2553,15 @@ class RealtimeASRServer:
     async def start(self):
         page = STATUS_PAGE.replace("{host}", self.host).replace("{port}", str(self.port))
         async def process_request(connection, request):
+            path = request.path if hasattr(request, 'path') else '/'
+            print(f"[WS] HTTP request: {path}", flush=True)
             if request.headers.get("Upgrade", "").lower().strip() == "websocket":
+                print(f"[WS] WebSocket upgrade request", flush=True)
                 return None
             h = Headers()
             h['Content-Type'] = 'text/html; charset=utf-8'
             h['Connection'] = 'close'
+            print(f"[WS] Serving status page ({len(page)} bytes)", flush=True)
             return Response(200, "OK", h, page.encode("utf-8"))
 
         print(f"\n[WS] WebSocket server: ws://{self.host}:{self.port}", flush=True)

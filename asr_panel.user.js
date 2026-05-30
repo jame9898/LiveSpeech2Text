@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         实时语音识别面板 v3
+// @name         实时语音识别面板 v1.0
 // @namespace    asr-panel-v3
-// @version      3.0
+// @version      1.0
 // @description  视频页面内嵌语音识别面板 — 高性能优化版 · VAD断句 + 说话人分离 + 口音矫正
 // @match        *://*/*
 // @grant        none
@@ -286,7 +286,7 @@ if (!document.getElementById('asr-style-v3')) {
 const p = document.createElement('div');
 p.id = 'asr-panel-v3';
 p.innerHTML = `<div id="asr-v3">
-    <div class="asr3-hdr"><b>🎤 实时语音识别 v3.0</b>
+    <div class="asr3-hdr"><b>🎤 实时语音识别 v1.0</b>
         <span class="btns">
             <button id="asr3-launch" title="一键启动本地服务" style="background:rgba(63,185,80,.15);border-color:#3fb950;color:#3fb950">🟢</button>
             <button id="asr3-min">─</button>
@@ -742,7 +742,7 @@ function toast(msg, type, duration) {
     setTimeout(() => { t.remove(); }, duration);
 }
 
-L('v3.0 loaded');
+L('v1.0 loaded');
 if (isVideoPage()) injectPanel();
 
 setInterval(() => {

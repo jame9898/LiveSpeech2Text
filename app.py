@@ -188,10 +188,10 @@ def load_config():
         "current_model": "auto",
         "device": "auto",
         "model_settings": {
-            "whisper_size": "base", "vad_enabled": True, "vad_model": "fsmn-vad",
+            "vad_enabled": True, "vad_model": "fsmn-vad",
             "punc_enabled": True, "speaker_enabled": True, "lyrics_enabled": True,
             "keyword_expand_enabled": True, "adaptive_vad": True, "music_detect": True,
-            "vad_force_cut": True, "vad_threshold": 0.85, "max_buffer_seconds": 30,
+            "vad_force_cut": True, "vad_threshold": 0.85, "force_cut_sec": 3.8, "max_buffer_seconds": 30,
             "min_speech_duration": 0.08,
             "threads": 8, "ws_port": 8765, "auto_save_report": False,
         }
@@ -316,7 +316,7 @@ class MainWindow(QMainWindow):
         self._setup_tray()
         self._refresh_display()
 
-        self._append_log_label("\u6b22\u8fce\u4f7f\u7528\u5728\u7ebf\u5b9e\u65f6\u8bed\u97f3\u8bc6\u522b\u7cfb\u7edf v3.0\n", "dim")
+        self._append_log_label("\u6b22\u8fce\u4f7f\u7528\u5728\u7ebf\u5b9e\u65f6\u8bed\u97f3\u8bc6\u522b\u7cfb\u7edf v1.0\n", "dim")
         missing = check_deps()
         if missing:
             self._append_log_label(f"[WARN] \u7f3a\u5c11\u4f9d\u8d56: {', '.join(missing)}\n", "dim")

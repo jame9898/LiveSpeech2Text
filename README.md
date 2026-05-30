@@ -1,6 +1,6 @@
-﻿# 在线实时语音识别系统 v1.0
+# 在线实时语音识别系统 v1.0
 
-基于 Qwen3-ASR / Paraformer / SenseVoice 的实时语音识别桌面应用，支持浏览器端音频采集、说话人识别、拼音纠正词、关键词高亮展开和歌词匹配。
+基于 Qwen3-ASR / Paraformer / SenseVoice / Whisper 的实时语音识别桌面应用，支持浏览器端音频采集、说话人识别、拼音纠正词、关键词高亮展开和歌词匹配。
 
 ---
 
@@ -28,14 +28,13 @@ python -m venv venv
 venv\Scripts\activate
 
 # 3. 安装依赖（二选一）
-# CPU 版（通用，无需显卡）
+# CPU 环境
 pip install -r requirements.txt
-
-# 或 GPU 版（NVIDIA 显卡 + CUDA 12.4，推理更快）
+# GPU + CUDA 环境
 pip install -r requirements-gpu.txt
 
 # 4. 下载语音识别模型（根据需要选一个或多个）
-# Qwen3-ASR 0.6B — 推荐，CPU 也能跑
+# Qwen3-ASR 0.6B — 轻量，CPU 也能跑
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B')"
 # Qwen3-ASR 1.7B — 最高精度，需 GPU
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B')"
@@ -43,6 +42,7 @@ python -c "from modelscope.hub.snapshot_download import snapshot_download; snaps
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch')"
 # SenseVoice — 多语言，轻量
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/SenseVoiceSmall')"
+# Whisper（OpenAI）— 使用系统自带 pip 安装即可，无需手动下载模型
 
 # 5. 可选：下载说话人识别模型
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common')"
@@ -53,15 +53,13 @@ python app.py
 
 ---
 
-## 开发环境（GPU 版 · 已验证）
-
-> ⚠️ 以下为 GPU 加速版开发环境（torch 2.6.0 + CUDA 12.4）。CPU 用户请使用 `pip install -r requirements.txt` 安装通用版依赖。
+## 开发环境（已验证）
 
 | 组件 | 版本 |
 |---|---|
 | Python | **3.12.8** |
-| torch (CUDA 12.4) | 2.6.0+cu124 |
-| torchaudio (CUDA 12.4) | 2.6.0+cu124 |
+| torch | 2.6.0+cu124 |
+| torchaudio | 2.6.0+cu124 |
 | modelscope | 1.37.1 |
 | qwen-asr | 0.0.6 |
 | PySide6 | 6.11.1 |
@@ -69,6 +67,8 @@ python app.py
 | pypinyin | 0.55.0 |
 | numpy | 2.3.5 |
 | funasr | 1.3.0（可选） |
+
+---
 
 ## GPU 加速（可选）
 
@@ -97,30 +97,35 @@ pip install scikit-learn
 
 | 模型 | 大小 | 精度 | 速度 | 场景 | ModelScope ID |
 |---|---|---|---|---|---|
-| Qwen3-ASR 0.6B | ~2.0 GB | ★★★ | ★★★ | **推荐**，CPU 也能跑 | `Qwen/Qwen3-ASR-0.6B` |
+| Qwen3-ASR 0.6B | ~2.0 GB | ★★★ | ★★★ | 轻量，CPU 也能跑 | `Qwen/Qwen3-ASR-0.6B` |
 | Qwen3-ASR 1.7B | ~4.4 GB | ★★★★★ | ★★ | 最高精度，需 GPU | `Qwen/Qwen3-ASR-1.7B` |
 | Paraformer | ~1.5 GB | ★★★ | ★★★★★ | 纯中文，最快 | `iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch` |
 | SenseVoice | ~1.0 GB | ★★ | ★★★★ | 多语言 | `iic/SenseVoiceSmall` |
+| Whisper tiny | ~1.0 GB | ★ | ★★★ | 最小 Whisper | `openai/whisper-tiny` |
+| Whisper base | ~1.4 GB | ★★ | ★★★ | 基础 Whisper | `openai/whisper-base` |
+| Whisper small | ~2.4 GB | ★★★ | ★★ | 均衡 Whisper | `openai/whisper-small` |
+| Whisper medium | ~5.7 GB | ★★★★ | ★ | 中等精度 | `openai/whisper-medium` |
+| Whisper large | ~8.3 GB | ★★★★★ | ★ | 最高精度 | `openai/whisper-large` |
 | CAM++ | ~27 MB | — | — | 说话人识别 | `iic/speech_campplus_sv_zh-cn_16k-common` |
 
 ---
 
-## 使用流程：本地服务器端+客户端
+## 使用流程
 
 ### 方式一：独立网页控制端（推荐，无需安装任何插件）
 
-1. 运行 `python app.py` 或双击 `start.bat`，打开 GUI 服务器端面板
+1. 运行 `python app.py` 或双击 `start.bat`，打开 GUI 面板
 2. 在 GUI 面板中点击 **启动服务** 按钮，等待日志显示服务启动完成
-3. 浏览器打开 `http://localhost:8765`，进入完整控制面板（客户端）
-4. 点击 **▶ 开始** → 浏览器弹出屏幕共享对话框 → 选择正在播放视频的标签页或窗口
-5. 确认共享后开始实时识别，转写结果实时显示
+3. 浏览器打开 `http://localhost:8765`，进入完整控制面板
+4. 点击 **▶ 开始** → 填写录制设置（视频地址、主播名等）→ **✅ 开始录制**
+5. 在浏览器弹出的共享对话框中选择目标页面
 6. 实时识别结果实时显示，支持清除/报告/保存/日志
 
 ### 方式二：Tampermonkey 插件（可选，自动注入视频页面）
 
-1. 运行 `python app.py` 或双击 `start.bat`，打开 GUI 服务器端面板
+1. 运行 `python app.py` 或双击 `start.bat`，打开 GUI 面板
 2. 安装 [Tampermonkey](https://www.tampermonkey.net/) 浏览器扩展
-3. 在 Tampermonkey 插件里添加 `asr_panel.user.js` 脚本
+3. 在 [Tampermonkey](https://www.tampermonkey.net/) 浏览器扩展中导入 `asr_panel.user.js` 脚本
 4. 打开视频/直播页面，面板自动出现在右边
 5. 点击「开始」即可
 
@@ -161,8 +166,8 @@ pip install scikit-learn
 
 ## 常见问题
 
-### Q: `ModuleNotFoundError: No module named 'xxx'`
-运行 `pip install -r requirements.txt` 确保所有依赖已安装。
+### Q: 依赖安装
+（CPU 环境）运行 `pip install -r requirements.txt` /（GPU+CUDA 环境）运行 `pip install -r requirements-gpu.txt` 确保所有依赖已安装。
 
 ### Q: 端口 8765 被占用
 系统会自动尝试释放端口，无需手动处理。如果持续占用，重启电脑即可。

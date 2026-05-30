@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QGroupBox, QLabel, QComboBox, QCheckBox, QPushButton,
-    QSlider, QSpinBox, QMessageBox,
+    QSlider, QSpinBox, QDoubleSpinBox, QMessageBox,
 )
 
 DICT_DIR = Path(__file__).parent / "dict"
@@ -16,7 +16,6 @@ DEFAULT_CONFIG = {
     "current_model": "auto",
     "device": "auto",
     "model_settings": {
-        "whisper_size": "base",
         "vad_enabled": True,
         "vad_model": "fsmn-vad",
         "punc_enabled": True,
@@ -27,6 +26,7 @@ DEFAULT_CONFIG = {
         "music_detect": True,
         "vad_force_cut": True,
         "vad_threshold": 0.85,
+        "force_cut_sec": 3.8,
         "max_buffer_seconds": 30,
         "min_speech_duration": 0.08,
         "threads": 8,
@@ -35,9 +35,25 @@ DEFAULT_CONFIG = {
     }
 }
 
-MODEL_OPTIONS = ["auto", "qwen3-asr", "sensevoice", "paraformer", "whisper"]
-MODEL_LABELS = ["auto（自动选择最优）", "qwen3-asr", "sensevoice", "paraformer", "whisper"]
-WHISPER_SIZES = ["tiny", "base", "small", "medium", "large"]
+MODEL_OPTIONS = [
+    "auto",
+    "qwen3-asr-1.7b", "qwen3-asr-0.6b",
+    "sensevoice",
+    "paraformer",
+    "whisper-tiny", "whisper-base", "whisper-small", "whisper-medium", "whisper-large",
+]
+MODEL_LABELS = [
+    "auto（自动选择最优）",
+    "Qwen3-ASR 1.7B（推荐·高精度）",
+    "Qwen3-ASR 0.6B（轻量·省显存）",
+    "SenseVoice（阿里达摩院·多语言）",
+    "Paraformer（阿里达摩院·中文专项）",
+    "Whisper tiny（OpenAI·最小）",
+    "Whisper base（OpenAI·基础）",
+    "Whisper small（OpenAI·小）",
+    "Whisper medium（OpenAI·中）",
+    "Whisper large（OpenAI·大）",
+]
 DEVICE_OPTIONS = ["auto", "cuda", "cpu"]
 DEVICE_LABELS = ["auto（自动检测）", "cuda（NVIDIA GPU）", "cpu（仅CPU）"]
 VAD_MODELS = ["FSMN-VAD", "Silero VAD"]
@@ -118,15 +134,6 @@ class SettingsDialog(QDialog):
         self._cmb_model.setCurrentIndex(idx)
         r1.addWidget(self._cmb_model)
         gl1.addLayout(r1)
-        r2 = QHBoxLayout()
-        r2.addWidget(QLabel("Whisper 大小:"))
-        self._cmb_whisper = QComboBox()
-        self._cmb_whisper.addItems(WHISPER_SIZES)
-        ws = self._settings.get("whisper_size", "base")
-        if ws in WHISPER_SIZES:
-            self._cmb_whisper.setCurrentIndex(WHISPER_SIZES.index(ws))
-        r2.addWidget(self._cmb_whisper)
-        gl1.addLayout(r2)
         layout.addWidget(g1)
 
         g2 = QGroupBox("辅助模型")
@@ -199,7 +206,7 @@ class SettingsDialog(QDialog):
         gl.addLayout(r1)
 
         r2 = QHBoxLayout()
-        r2.addWidget(QLabel("最大语音段:"))
+        r2.addWidget(QLabel("缓冲区上限:"))
         self._spn_buffer = QSpinBox()
         self._spn_buffer.setRange(10, 60)
         self._spn_buffer.setValue(self._settings.get("max_buffer_seconds", 30))
@@ -207,6 +214,18 @@ class SettingsDialog(QDialog):
         r2.addWidget(QLabel("秒"))
         r2.addStretch()
         gl.addLayout(r2)
+
+        r_force = QHBoxLayout()
+        r_force.addWidget(QLabel("强制切分时长:"))
+        self._spn_force_cut = QDoubleSpinBox()
+        self._spn_force_cut.setRange(1.5, 15.0)
+        self._spn_force_cut.setSingleStep(0.5)
+        self._spn_force_cut.setDecimals(1)
+        self._spn_force_cut.setValue(self._settings.get("force_cut_sec", 3.8))
+        self._spn_force_cut.setSuffix(" 秒")
+        r_force.addWidget(self._spn_force_cut)
+        r_force.addStretch()
+        gl.addLayout(r_force)
 
         r3 = QHBoxLayout()
         r3.addWidget(QLabel("最小语音段:"))
@@ -278,7 +297,6 @@ class SettingsDialog(QDialog):
             "current_model": MODEL_OPTIONS[self._cmb_model.currentIndex()],
             "device": DEVICE_OPTIONS[self._cmb_device.currentIndex()],
             "model_settings": {
-                "whisper_size": WHISPER_SIZES[self._cmb_whisper.currentIndex()],
                 "vad_enabled": self._chk_vad.isChecked(),
                 "vad_model": VAD_MODEL_KEYS[self._cmb_vad.currentIndex()],
                 "punc_enabled": self._chk_punc.isChecked(),
@@ -289,6 +307,7 @@ class SettingsDialog(QDialog):
                 "music_detect": self._chk_music.isChecked(),
                 "vad_force_cut": self._chk_force_cut.isChecked(),
                 "vad_threshold": round(self._vad_slider.value() / 100, 2),
+                "force_cut_sec": round(self._spn_force_cut.value(), 1),
                 "max_buffer_seconds": self._spn_buffer.value(),
                 "min_speech_duration": round(self._min_speech_slider.value() / 100, 2),
                 "threads": self._spn_threads.value(),
