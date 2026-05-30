@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 在线实时语音识别系统 - WebSocket Server
 VAD断句 + OCR关键词纠错 + 说话人分离 (CAM++)
@@ -54,18 +54,6 @@ h1 { font-size: 20px; margin-bottom: 6px; }
 .gap-warn { color: #cf222e; font-size: 10px; font-weight: 700; margin-right: 4px; }
 .kw-fixed { color: #9a6700; font-size: 10px; font-weight: 700; margin-right: 3px; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-.overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,.35); z-index: 9999; display: flex; align-items: center; justify-content: center; }
-.overlay-box { background: #fff; border-radius: 12px; padding: 28px 32px; max-width: 480px; width: 92%; box-shadow: 0 8px 32px rgba(0,0,0,.2); }
-.overlay-box h3 { font-size: 17px; margin-bottom: 16px; color: #1f2328; }
-.overlay-box .field { margin-bottom: 12px; text-align: left; }
-.overlay-box .field label { display: block; font-size: 12px; color: #656d76; margin-bottom: 4px; font-weight: 500; }
-.overlay-box .field input, .overlay-box .field select { width: 100%; border: 1px solid #d0d7de; border-radius: 6px; padding: 8px 12px; font-size: 13px; background: #fff; color: #1f2328; outline: none; transition: border-color .15s; }
-.overlay-box .field input:focus, .overlay-box .field select:focus { border-color: #0969da; }
-.overlay-box .field .radios { display: flex; gap: 14px; padding: 6px 0; }
-.overlay-box .field .radios label { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: #1f2328; cursor: pointer; margin: 0; }
-.overlay-box .hint { font-size: 11px; color: #8b949e; margin-bottom: 16px; padding: 8px 12px; background: #f6f8fa; border-radius: 6px; line-height: 1.5; }
-.overlay-box .btns { display: flex; gap: 8px; justify-content: flex-end; }
-.overlay-box .btns button { padding: 10px 24px; }
 </style>
 </head>
 <body>
@@ -105,36 +93,6 @@ h1 { font-size: 20px; margin-bottom: 6px; }
 
 <div id="transcripts"><em style="color:#656d76">等待识别结果...</em></div>
 
-<div id="videoPrompt" class="overlay" style="display:none">
-    <div class="overlay-box">
-        <h3>📺 录制设置</h3>
-        <div class="field">
-            <label>页面类型</label>
-            <div class="radios">
-                <label><input type="radio" name="pageType" value="video" checked> 短视频</label>
-                <label><input type="radio" name="pageType" value="live"> 直播</label>
-            </div>
-        </div>
-        <div class="field" id="urlField">
-            <label>视频页面地址（粘贴后自动新窗口打开，从头播放）</label>
-            <input id="videoUrl" placeholder="https://www.bilibili.com/video/...">
-        </div>
-        <div class="field">
-            <label>创作者 / 主播名称（可选，用于说话人识别）</label>
-            <input id="creatorName" placeholder="如：张三">
-        </div>
-        <div class="field" style="display:none" id="platformDetected">
-            <label>检测到平台</label>
-            <input id="platformName" readonly style="background:#f6f8fa;color:#656d76">
-        </div>
-        <div class="hint" id="setupHint">💡 短视频：粘贴地址后自动在新窗口从头播放，确保完整采集</div>
-        <div class="btns">
-            <button id="btnSetupCancel" class="btn">取消</button>
-            <button id="btnSetupConfirm" class="btn primary">✅ 开始录制</button>
-        </div>
-    </div>
-</div>
-
 <script>
 (function() {
 var CONN = document.getElementById('connStatus');
@@ -147,7 +105,6 @@ var BTN_STOP = document.getElementById('btnStop');
 var STAT_DUR = document.getElementById('statDur');
 var STAT_CNT = document.getElementById('statCnt');
 var STAT_CHAR = document.getElementById('statChar');
-var PROMPT = document.getElementById('videoPrompt');
 
 var ws = null;
 var isRecording = false;
@@ -352,113 +309,9 @@ function updateBtns() {
     BTN_STOP.disabled = !isRecording;
 }
 
-function detectPlatform(url) {
-    if (/bilibili\.com/i.test(url)) return 'bilibili';
-    if (/douyin\.com/i.test(url)) return 'douyin';
-    if (/douyu\.com/i.test(url)) return 'douyu';
-    if (/huya\.com/i.test(url)) return 'huya';
-    if (/youtube\.com/i.test(url)) return 'youtube';
-    if (/kuaishou\.com/i.test(url)) return 'kuaishou';
-    if (/cc\.163\.com/i.test(url)) return 'net163';
-    if (/egame\.qq\.com/i.test(url)) return 'egame';
-    return 'web';
-}
 
-var videoUrlInput = document.getElementById('videoUrl');
-videoUrlInput.addEventListener('input', function() {
-    var url = videoUrlInput.value.trim();
-    if (url && /^https?:\/\//.test(url)) {
-        var pf = detectPlatform(url);
-        var pfEl = document.getElementById('platformDetected');
-        pfEl.style.display = '';
-        document.getElementById('platformName').value = pf;
-    } else {
-        document.getElementById('platformDetected').style.display = 'none';
-    }
-});
 
-var pageTypeRadios = document.querySelectorAll('input[name="pageType"]');
-var urlField = document.getElementById('urlField');
-var setupHint = document.getElementById('setupHint');
-for (var ri = 0; ri < pageTypeRadios.length; ri++) {
-    pageTypeRadios[ri].addEventListener('change', function() {
-        if (this.value === 'live') {
-            urlField.style.display = 'none';
-            setupHint.textContent = '📡 直播模式：直接录制，无需重置视频进度';
-        } else {
-            urlField.style.display = '';
-            setupHint.textContent = '💡 短视频：粘贴地址后自动在新窗口从头播放，确保完整采集';
-        }
-    });
-}
-
-async function doStartRec() {
-    if (!ws || ws.readyState !== 1) { alert('服务未连接！请确保服务已启动'); return; }
-    var url = document.getElementById('videoUrl').value.trim();
-    var creator = document.getElementById('creatorName').value.trim();
-    var pageType = document.querySelector('input[name="pageType"]:checked').value;
-    var platform = document.getElementById('platformName').value || detectPlatform(url);
-
-    if (pageType === 'video' && url && /^https?:\/\//.test(url)) {
-        window.open(url, '_blank');
-    }
-
-    try {
-        mediaStream = await navigator.mediaDevices.getDisplayMedia({audio: true, video: true});
-        audioCtx = new AudioContext({sampleRate: 48000});
-        var src = audioCtx.createMediaStreamSource(mediaStream);
-        var proc = audioCtx.createScriptProcessor(8192, 1, 1);
-        proc.onaudioprocess = function(e) {
-            if (isRecording && ws && ws.readyState === 1) {
-                ws.send(new Float32Array(e.inputBuffer.getChannelData(0)).buffer);
-            }
-        };
-        src.connect(proc); proc.connect(audioCtx.destination);
-        isRecording = true;
-        send({type: 'start'});
-        firstMsg = true; segCount = 0;
-        updateBtns();
-        setRec('recording', '识别中...');
-        BOX.innerHTML = '<em style="color:#656d76">正在监听...</em>';
-
-        if (creator || platform) {
-            setTimeout(function() {
-                send({type: 'page_creator', creator: creator, page_type: pageType, platform: platform});
-                if (creator) {
-                    send({type: 'keyword_add', keyword: creator, category: 'speaker'});
-                }
-            }, 1500);
-        }
-    } catch(e) {
-        if (e.name !== 'AbortError') alert('屏幕共享失败: ' + (e.message || '用户取消'));
-    }
-}
-
-function stopRec() {
-    isRecording = false;
-    send({type: 'stop'});
-    cleanupAudio();
-    updateBtns();
-    setRec('ready', '已停止');
-}
-
-function cleanupAudio() {
-    if (mediaStream) { mediaStream.getTracks().forEach(function(t){t.stop();}); mediaStream = null; }
-    if (audioCtx) { audioCtx.close(); audioCtx = null; }
-}
-
-BTN_START.addEventListener('click', function() {
-    PROMPT.style.display = '';
-});
-
-document.getElementById('btnSetupConfirm').addEventListener('click', function() {
-    PROMPT.style.display = 'none';
-    doStartRec();
-});
-
-document.getElementById('btnSetupCancel').addEventListener('click', function() {
-    PROMPT.style.display = 'none';
-});
+BTN_START.addEventListener('click', doStartRec);
 
 BTN_STOP.addEventListener('click', stopRec);
 
