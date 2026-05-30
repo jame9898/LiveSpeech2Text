@@ -21,7 +21,7 @@
 ```bash
 # 1. 克隆仓库
 git clone https://ghfast.top/https://github.com/jame9898/LiveSpeech2Text
-cd 在线实时语音识别
+cd LiveSpeech2Text
 
 # 2. 创建虚拟环境（推荐）
 python -m venv venv
