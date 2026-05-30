@@ -1,0 +1,21 @@
+{
+  "current_model": "qwen3-asr",
+  "device": "cuda",
+  "model_settings": {
+    "whisper_size": "base",
+    "vad_enabled": true,
+    "vad_model": "fsmn-vad",
+    "punc_enabled": true,
+    "speaker_enabled": true,
+    "lyrics_enabled": true,
+    "keyword_expand_enabled": true,
+    "adaptive_vad": true,
+    "music_detect": true,
+    "vad_force_cut": true,
+    "vad_threshold": 0.85,
+    "max_buffer_seconds": 30,
+    "threads": 8,
+    "ws_port": 8765,
+    "auto_save_report": false
+  }
+}
