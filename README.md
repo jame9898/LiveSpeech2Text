@@ -1,4 +1,4 @@
-# 在线实时语音识别系统 v3.0
+# 在线实时语音识别系统 v0.1
 
 基于 Qwen3-ASR / Paraformer / SenseVoice 的实时语音识别桌面应用，支持浏览器端音频采集、说话人识别、拼音纠正词、关键词高亮展开和歌词匹配。
 
@@ -20,7 +20,7 @@
 
 ```bash
 # 1. 克隆仓库
-git clone <仓库地址>
+git clone https://github.com/jame9898/LiveSpeech2Text
 cd 在线实时语音识别
 
 # 2. 创建虚拟环境（推荐）
@@ -108,7 +108,7 @@ pip install scikit-learn
 
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 浏览器扩展
 2. 导入 `asr_panel.user.js` 脚本
-3. 打开视频/直播页面，面板自动出现在右下角
+3. 打开视频/直播页面，面板自动出现在右边
 4. 点击「开始」即可
 
 > 两个端状态自动同步：网页端开始录制 → 插件端自动显示识别中；反之亦然。
