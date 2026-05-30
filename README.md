@@ -30,8 +30,15 @@ venv\Scripts\activate
 # 3. 安装依赖（CPU 版，通用）
 pip install -r requirements.txt
 
-# 4. 下载语音识别模型（选一个）
+# 4. 下载语音识别模型（根据需要选一个或多个）
+# Qwen3-ASR 0.6B — 推荐，CPU 也能跑
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B')"
+# Qwen3-ASR 1.7B — 最高精度，需 GPU
+python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B')"
+# Paraformer — 纯中文，最快
+python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch')"
+# SenseVoice — 多语言，轻量
+python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/SenseVoiceSmall')"
 
 # 5. 可选：下载说话人识别模型
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common')"
