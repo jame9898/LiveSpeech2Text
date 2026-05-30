@@ -27,8 +27,12 @@ cd LiveSpeech2Text
 python -m venv venv
 venv\Scripts\activate
 
-# 3. 安装依赖（CPU 版，通用）
+# 3. 安装依赖（二选一）
+# CPU 版（通用，无需显卡）
 pip install -r requirements.txt
+
+# 或 GPU 版（NVIDIA 显卡 + CUDA 12.4，推理更快）
+pip install -r requirements-gpu.txt
 
 # 4. 下载语音识别模型（根据需要选一个或多个）
 # Qwen3-ASR 0.6B — 推荐，CPU 也能跑
