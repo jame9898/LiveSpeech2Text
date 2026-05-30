@@ -49,13 +49,15 @@ python app.py
 
 ---
 
-## 开发环境（已验证）
+## 开发环境（GPU 版 · 已验证）
+
+> ⚠️ 以下为 GPU 加速版开发环境（torch 2.6.0 + CUDA 12.4）。CPU 用户请使用 `pip install -r requirements.txt` 安装通用版依赖。
 
 | 组件 | 版本 |
 |---|---|
 | Python | **3.12.8** |
-| torch | 2.6.0+cu124 |
-| torchaudio | 2.6.0+cu124 |
+| torch (CUDA 12.4) | 2.6.0+cu124 |
+| torchaudio (CUDA 12.4) | 2.6.0+cu124 |
 | modelscope | 1.37.1 |
 | qwen-asr | 0.0.6 |
 | PySide6 | 6.11.1 |
@@ -63,8 +65,6 @@ python app.py
 | pypinyin | 0.55.0 |
 | numpy | 2.3.5 |
 | funasr | 1.3.0（可选） |
-
----
 
 ## GPU 加速（可选）
 
