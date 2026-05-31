@@ -1,9 +1,15 @@
 // ==UserScript==
-// @name         实时语音识别面板 v1.0
+// @name         LiveSpeech2Text V1.0
 // @namespace    asr-panel-v3
 // @version      1.0
-// @description  视频页面内嵌语音识别面板 — 高性能优化版 · VAD断句 + 说话人分离 + 口音矫正
-// @match        *://*/*
+// @description  视频页面内嵌语音识别面板 — VAD断句 + 说话人分离 + 口音矫正
+// @match        *://*.bilibili.com/*
+// @match        *://*.douyu.com/*
+// @match        *://*.huya.com/*
+// @match        *://*.youtube.com/*
+// @match        *://*.douyin.com/*
+// @match        *://*.cc.163.com/*
+// @match        *://*.egame.qq.com/*
 // @grant        none
 // ==/UserScript==
 
@@ -50,15 +56,42 @@ let _pendingSegs = [];
 
 function isVideoPage() {
     const u = location.href;
-    const pats = ['/video/','/watch','/play/','/tv/','/live/','bilibili.com/bangumi/play',
-        'youtube.com/shorts/','v.douyin.com/','live.bilibili.com',
-        'douyu.com/','huya.com/','cc.163.com/','egame.qq.com/'];
-    for (const p of pats) if (u.includes(p)) return true;
+
+    if (u.includes('bilibili.com')) {
+        if (u.includes('/video/') || u.includes('bangumi/play')) return _hasInteractiveVideo();
+        if (u.includes('live.bilibili.com')) return _hasInteractiveVideo();
+        return false;
+    }
+
+    if (u.includes('douyu.com')) {
+        if (u.includes('/directory') || u.includes('/topic') || u.includes('/myFollow')) return false;
+        if (u === 'https://www.douyu.com/' || u === 'https://douyu.com/' || u === 'https://www.douyu.com' || u === 'https://douyu.com') return false;
+        return _hasInteractiveVideo();
+    }
+
+    if (u.includes('youtube.com')) {
+        if (u.includes('/watch') || u.includes('/shorts/') || u.includes('/live/')) return _hasInteractiveVideo();
+        return false;
+    }
+
+    if (u.includes('huya.com')) {
+        if (/\d+/.test(u) && !u.includes('/topic') && !u.includes('/user')) return _hasInteractiveVideo();
+        return false;
+    }
+
+    if (u.includes('douyin.com') || u.includes('v.douyin.com')) return _hasInteractiveVideo();
+
+    if (u.includes('cc.163.com/') || u.includes('egame.qq.com/')) return _hasInteractiveVideo();
+
+    return false;
+}
+
+function _hasInteractiveVideo() {
     const vs = document.querySelectorAll('video');
     for (const v of vs) {
         if (v.muted) continue;
-        if (v.src || (v.querySelector('source') && v.querySelector('source').src)) return true;
         if (v.duration > 0 || v.readyState >= 2) return true;
+        if (v.src || (v.querySelector('source') && v.querySelector('source').src)) return true;
     }
     return false;
 }
@@ -286,7 +319,7 @@ if (!document.getElementById('asr-style-v3')) {
 const p = document.createElement('div');
 p.id = 'asr-panel-v3';
 p.innerHTML = `<div id="asr-v3">
-    <div class="asr3-hdr"><b>🎤 实时语音识别 v1.0</b>
+    <div class="asr3-hdr"><b>🎤 LiveSpeech2Text V1.0</b>
         <span class="btns">
             <button id="asr3-launch" title="一键启动本地服务" style="background:rgba(63,185,80,.15);border-color:#3fb950;color:#3fb950">🟢</button>
             <button id="asr3-min">─</button>
@@ -742,7 +775,7 @@ function toast(msg, type, duration) {
     setTimeout(() => { t.remove(); }, duration);
 }
 
-L('v1.0 loaded');
+L('LiveSpeech2Text V1.0 loaded');
 if (isVideoPage()) injectPanel();
 
 setInterval(() => {

@@ -9,7 +9,7 @@ STATUS_PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ASR 实时识别</title>
+<title>LiveSpeech2Text V1.0</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; background: #f6f8fa; color: #1f2328; padding: 24px; max-width: 1100px; }
@@ -64,7 +64,7 @@ h1 { font-size: 20px; margin-bottom: 6px; }
 </style>
 </head>
 <body>
-<h1>ASR 实时语音识别</h1>
+<h1>LiveSpeech2Text V1.0</h1>
 <p class="sub">WebSocket ws://{host}:{port} &mdash; 无需插件，独立控制</p>
 
 <div class="status-wrap">
