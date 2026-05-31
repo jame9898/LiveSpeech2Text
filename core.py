@@ -313,9 +313,9 @@ class ASREngine:
         import time
         start = time.time()
         
-        if self.model_name == "whisper":
+        if self.model_name.startswith("whisper"):
             result = self._transcribe_whisper(audio_path)
-        elif self.model_name == "qwen3-asr":
+        elif self.model_name.startswith("qwen3-asr"):
             result = self._transcribe_qwen(audio_path)
         elif self.model_name == "sensevoice":
             result = self._transcribe_paraformer(audio_path)
