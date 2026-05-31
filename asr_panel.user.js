@@ -90,7 +90,8 @@ function _hasInteractiveVideo() {
     const vs = document.querySelectorAll('video');
     for (const v of vs) {
         if (v.src || (v.querySelector('source') && v.querySelector('source').src)) return true;
-        if (v.duration > 0 || v.readyState >= 2) return true;
+        if (v.duration > 0 || v.readyState >= 1) return true;
+        if (v.networkState >= 1) return true;
     }
     return false;
 }
@@ -355,7 +356,7 @@ function _ensurePanel() {
     if (_panelClosedByUser) return false;
     if (!isVideoPage()) return false;
     if (document.getElementById('asr-panel-v3')) return true;
-    if (p.parentNode === null && isVideoPage()) { document.body.appendChild(p); _panelInjected = true; }
+    if (p.parentNode === null && isVideoPage()) { document.body.appendChild(p); _panelInjected = true; bindEvents(); connect(); }
     return document.getElementById('asr-panel-v3') !== null;
 }
 
@@ -434,6 +435,7 @@ function cleanup() {
 
 function connect(tryIdx) {
     if (tryIdx === undefined) tryIdx = 0;
+    setConn(false, '⏳ 连接中...');
     if (tryIdx >= WS_URLS.length) {
         setConn(false, '🔴 无法连接');
         if (!reconnectTimer) reconnectTimer = setTimeout(() => connect(0), Math.min(RECONNECT_BASE*Math.pow(1.5,reconnectAttempts),RECONNECT_MAX));
@@ -465,6 +467,7 @@ function connect(tryIdx) {
             ws?.close();
         };
     } catch(e) {
+        setConn(false, '🔴 无法连接');
         const delay = Math.min(RECONNECT_BASE*Math.pow(1.5,reconnectAttempts),RECONNECT_MAX);
         reconnectAttempts++;
         if (!reconnectTimer) reconnectTimer = setTimeout(() => connect(0), delay);
