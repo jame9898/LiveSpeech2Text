@@ -89,9 +89,8 @@ function isVideoPage() {
 function _hasInteractiveVideo() {
     const vs = document.querySelectorAll('video');
     for (const v of vs) {
-        if (v.muted) continue;
-        if (v.duration > 0 || v.readyState >= 2) return true;
         if (v.src || (v.querySelector('source') && v.querySelector('source').src)) return true;
+        if (v.duration > 0 || v.readyState >= 2) return true;
     }
     return false;
 }
