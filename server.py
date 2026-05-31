@@ -96,7 +96,6 @@ h1 { font-size: 20px; margin-bottom: 6px; }
     </select>
     <input id="kwInput" placeholder="输入词或短语，回车添加...">
     <button id="btnAddKw" class="btn accent">+ 添加</button>
-    <button id="btnExpand" class="btn" style="display:none;border-color:#d2991d;color:#d2991d">🔮 联想</button>
 </div>
 
 <div class="kw-box" id="keywordsBox"></div>
@@ -134,7 +133,6 @@ var keywordStore = {};
 var pageUrl = document.getElementById('pageUrl');
 var pageCreator = document.getElementById('pageCreator');
 var pagePlatform = document.getElementById('pagePlatform');
-var btnExpand = document.getElementById('btnExpand');
 var kwInputEl = document.getElementById('kwInput');
 
 var SP_COLORS = [
@@ -480,19 +478,6 @@ document.getElementById('kwInput').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') document.getElementById('btnAddKw').click();
 });
 
-kwInputEl.addEventListener('input', function() {
-    btnExpand.style.display = kwInputEl.value.trim().length >= 2 ? '' : 'none';
-});
-btnExpand.addEventListener('click', function() {
-    var kw = kwInputEl.value.trim();
-    var cat = document.getElementById('kwCat').value;
-    if (!kw) return;
-    btnExpand.disabled = true; btnExpand.textContent = '⏳ 联想中...';
-    send({type: 'keyword_expand', keyword: kw, category: cat, use_llm: false});
-    kwInputEl.value = '';
-    btnExpand.style.display = 'none';
-    setTimeout(function() { btnExpand.disabled = false; btnExpand.textContent = '🔮 联想'; }, 3000);
-});
 
 pageUrl.addEventListener('input', function() {
     var info = parsePageInfo();
@@ -530,7 +515,7 @@ except ImportError:
     lazy_pinyin = None
     Style = None
 from core import MODELS_DIR
-from keyword_expander import expander, CATEGORIES, CATEGORY_ICONS
+from keyword_expander import CATEGORIES, CATEGORY_ICONS
 from speaker_profile import sp_manager, DIALECT_TRAITS, DIALECT_PRESETS, search_speaker_accent, TOPIC_MANAGER
 from lyrics_matcher import lyrics_matcher
 
@@ -641,6 +626,9 @@ class RealtimeASRServer:
         DICT_DIR.mkdir(exist_ok=True)
         self._voiceprint_dir = DICT_DIR / 'voiceprints'
         self._voiceprint_dir.mkdir(exist_ok=True)
+
+        self._bindings_path = self._voiceprint_dir / 'speaker_bindings.json'
+        self._speaker_bindings = self._load_speaker_bindings()
 
         # 加载历史保存的声纹
         self._load_saved_voice_profiles()
@@ -1087,33 +1075,7 @@ class RealtimeASRServer:
                     })
 
             elif msg_type == 'keyword_expand':
-                keyword = msg.get('keyword', '').strip()
-                cat = msg.get('category', 'other')
-                use_llm = msg.get('use_llm', False)
-                if keyword and len(keyword) >= 2:
-                    local = expander.expand(keyword, cat)
-                    all_terms = set(local)
-                    llm_used = False
-                    if use_llm:
-                        success, llm_terms = expander.llm_expand(keyword, cat)
-                        if success:
-                            llm_used = True
-                            all_terms.update(llm_terms)
-                    for t in all_terms:
-                        if len(t) >= 2:
-                            self.keyword_store[cat].add(t)
-                            self.ocr_keywords.add(t)
-                    all_kws = self._get_all_keywords()
-                    print(f"[WS] 🔮 关键词扩展: '{keyword}' → {list(all_terms)[:12]} (LLM={llm_used}, 总计{len(all_kws)}个)", flush=True)
-                    await self._send_to(websocket, {
-                        'type': 'keywords_updated',
-                        'keywords': list(self.ocr_keywords),
-                        'keyword_store': {c: list(v) for c, v in self.keyword_store.items() if v},
-                        'categories': CATEGORIES,
-                        'category_icons': CATEGORY_ICONS,
-                        'expanded': list(all_terms),
-                        'llm_used': llm_used,
-                    })
+                pass
 
             elif msg_type == 'speaker_profile_get':
                 speaker_id = msg.get('speaker_id', self._last_speaker_label)
@@ -2042,6 +2004,14 @@ class RealtimeASRServer:
 
         SAME_THRESHOLD = 0.60
         NEW_THRESHOLD = 0.30
+        training_minutes = self.total_audio_seconds / 60.0
+        if training_minutes < 5.0:
+            SAME_THRESHOLD = 0.50
+            NEW_THRESHOLD = 0.20
+        elif training_minutes < 30.0:
+            ratio = (training_minutes - 5.0) / 25.0
+            SAME_THRESHOLD = 0.50 + ratio * 0.10
+            NEW_THRESHOLD = 0.20 + ratio * 0.10
         REQUIRED_CONFIRMATIONS = 3
 
         best_score = -1.0
@@ -2059,8 +2029,13 @@ class RealtimeASRServer:
             profile['embedding'] = (profile['embedding'] * profile['count'] + embedding) / (profile['count'] + 1)
             profile['count'] += 1
             profile['quality'] = min(1.0, profile['count'] / 30.0)
+            bound_name = self._check_bindings(profile['embedding'])
+            if bound_name and not profile.get('alias'):
+                profile['alias'] = bound_name
+                print(f"[BIND] 跨会话恢复: {profile['label']} → {bound_name}", flush=True)
             if profile['count'] % 20 == 0:
                 print(f"[SPEAKER] {profile['label']} 声纹成熟度: {profile['count']}样本 (quality={profile['quality']:.2f})", flush=True)
+            self._check_voiceprint_quality()
             return profile['label']
 
         if best_score < NEW_THRESHOLD:
@@ -2082,6 +2057,10 @@ class RealtimeASRServer:
                         'label': label,
                         'quality': 0.1,
                     })
+                    bound_name = self._check_bindings(avg_emb)
+                    if bound_name:
+                        self.speaker_profiles[-1]['alias'] = bound_name
+                        print(f"[BIND] 新speaker匹配绑定: {label} → {bound_name}", flush=True)
                     self._pending_new = None
                     print(f"[SPEAKER] 新角色确认: {label} (来自{len(emb_list)}个样本均值)", flush=True)
                     return label
@@ -2104,6 +2083,39 @@ class RealtimeASRServer:
     def _reset_pending_speaker(self):
         if hasattr(self, '_pending_new'):
             self._pending_new = None
+
+    def _check_voiceprint_quality(self):
+        """30分钟后输出声纹质量评估报告"""
+        if self.total_audio_seconds < 1800:
+            return
+        if hasattr(self, '_quality_reported') and self._quality_reported:
+            return
+        self._quality_reported = True
+        print(f"\n{'='*50}", flush=True)
+        print(f"[VOICEPRINT] 声纹质量评估 (累计 {self.total_audio_seconds:.0f}s)", flush=True)
+        print(f"{'='*50}", flush=True)
+        for i, profile in enumerate(self.speaker_profiles):
+            count = profile.get('count', 0)
+            quality = profile.get('quality', 0)
+            label = profile.get('label', f'Speaker{i}')
+            name = self._resolve_speaker_name(profile, i)
+            avg_sim = self._compute_avg_similarity(profile)
+            status = '✅' if quality >= 0.85 else '⚠️ 需更多训练'
+            print(f"  {label} → {name} | 样本:{count:.0f} quality:{quality:.2f} avg_sim:{avg_sim:.3f} {status}", flush=True)
+        print(f"{'='*50}\n", flush=True)
+
+    def _compute_avg_similarity(self, profile):
+        """计算某speaker与其他speaker的平均余弦相似度"""
+        if len(self.speaker_profiles) < 2:
+            return 1.0
+        emb = profile['embedding']
+        sims = []
+        for other in self.speaker_profiles:
+            if other is profile:
+                continue
+            sim = float(np.dot(emb, other['embedding']))
+            sims.append(sim)
+        return sum(sims) / len(sims) if sims else 1.0
 
     def _is_music_like(self, audio_data):
         """检测音频是否更像音乐/噪声而非语音。
@@ -2433,10 +2445,57 @@ class RealtimeASRServer:
             return alias
         entry = sp_manager.library.lookup_any(label)
         if entry:
-            return entry.get('name', entry.get('platform_id', label))
+            name = entry.get('name', entry.get('platform_id', label))
+            self._bind_speaker(label, name)
+            return name
         if index == 0 and self._page_creator:
-            return f'主播_{self._page_creator}'
+            name = f'主播_{self._page_creator}'
+            self._bind_speaker(label, name)
+            return name
         return label
+
+    def _load_speaker_bindings(self):
+        """加载声纹-创作者名称绑定"""
+        if self._bindings_path.exists():
+            try:
+                with open(self._bindings_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+    def _save_speaker_bindings(self):
+        """持久化声纹-创作者名称绑定"""
+        try:
+            with open(self._bindings_path, 'w', encoding='utf-8') as f:
+                json.dump(self._speaker_bindings, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[BIND] 保存绑定失败: {e}", flush=True)
+
+    def _bind_speaker(self, label, name):
+        """将speaker的embedding与创作者名称绑定"""
+        if not name or name.startswith('Speaker'):
+            return
+        for profile in self.speaker_profiles:
+            if profile.get('label') == label:
+                self._speaker_bindings[name] = {
+                    'embedding': profile['embedding'].tolist(),
+                    'label': label,
+                    'bound_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                }
+                self._save_speaker_bindings()
+                print(f"[BIND] 声纹绑定: {label} → {name}", flush=True)
+                return
+
+    def _check_bindings(self, embedding):
+        """检查是否有已绑定的声纹匹配当前embedding，相似度>=0.75则恢复"""
+        for name, data in self._speaker_bindings.items():
+            stored_emb = np.array(data['embedding'], dtype=np.float32)
+            stored_emb = stored_emb / (np.linalg.norm(stored_emb) + 1e-8)
+            sim = float(np.dot(stored_emb, embedding))
+            if sim >= 0.75:
+                return name
+        return None
 
     def _load_saved_voice_profiles(self):
         """启动时加载历史保存的声纹向量作为初始 speaker_profiles。
@@ -2481,7 +2540,11 @@ class RealtimeASRServer:
                 print(f"[VOICEPRINT] 主播标记: {self._host_speaker_label}", flush=True)
 
     def _save_voice_profiles(self):
-        """保存本次会话积累的声纹向量。仅录音>=30分钟时保存。"""
+        """保存本次会话积累的声纹向量。仅录音>=30分钟时保存。路径强制校验，仅允许写入 dict/voiceprints/。"""
+        if not str(self._voiceprint_dir.resolve()).startswith(str(DICT_DIR.resolve())):
+            print(f"[SECURITY] 拒绝写入非本地路径: {self._voiceprint_dir}", flush=True)
+            return None
+
         if self.total_audio_seconds < 1800:
             if self.speaker_profiles:
                 profiles_with_data = [p for p in self.speaker_profiles if p.get('count', 0) >= 5]

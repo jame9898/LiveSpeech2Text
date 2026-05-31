@@ -343,8 +343,7 @@ p.innerHTML = `<div id="asr-v3">
                 <option value="topic">话题</option>
                 <option value="other">关键词</option></select>
             <input id="asr3-inp" class="asr3-inp" placeholder="输入词或短语..." style="flex:1">
-            <button id="asr3-add" style="padding:3px 8px;border:0;border-radius:5px;background:#58a6ff;color:#fff;cursor:pointer;font-size:11px;white-space:nowrap">+ 添加</button>
-            <button id="asr3-expand" style="padding:3px 8px;border:0;border-radius:5px;background:#d2991d;color:#fff;cursor:pointer;font-size:11px;white-space:nowrap;display:none">🔮 联想</button></div>
+            <button id="asr3-add" style="padding:3px 8px;border:0;border-radius:5px;background:#58a6ff;color:#fff;cursor:pointer;font-size:11px;white-space:nowrap">+ 添加</button></div>
         <div style="font-size:11px;color:#8b949e;display:flex;justify-content:space-between">
             <span id="asr3-tm">0.0秒</span><span id="asr3-cnt">0条 | 0字</span></div>
         <div class="asr3-text-box"><div id="asr3-txt" class="asr3-text-scroll">
@@ -412,25 +411,12 @@ function bindEvents() {
         const inp = $('asr3-inp'); if (!inp) return;
         const kw = inp.value.trim();
         const cat = ($('asr3-cat')||{}).value||'other';
-        if (kw) { send({type:'keyword_add',keyword:kw,category:cat}); inp.value=''; $('asr3-expand').style.display='none'; }
+        if (kw) { send({type:'keyword_add',keyword:kw,category:cat}); inp.value=''; }
     });
     const inp = $('asr3-inp');
     if (inp) {
         inp.onkeydown = e => { if (e.key==='Enter') $('asr3-add')?.click(); };
-        inp.oninput = () => { $('asr3-expand').style.display = inp.value.trim().length>=2 ? '' : 'none'; };
     }
-    bind('asr3-expand', () => {
-        const inp = $('asr3-inp'); if (!inp) return;
-        const kw = inp.value.trim();
-        const cat = ($('asr3-cat')||{}).value||'other';
-        if (!kw) return;
-        const btn = $('asr3-expand'); if (!btn) return;
-        btn.disabled = true; btn.textContent = '⏳ 联想中...';
-        send({type:'keyword_expand',keyword:kw,category:cat,use_llm:false});
-        inp.value = '';
-        setTimeout(() => { btn.disabled=false; btn.textContent='🔮 联想'; btn.style.display='none'; }, 3000);
-    });
-
     (function(){
         const hdr = p.querySelector('.asr3-hdr'), el = $('asr-v3');
         if (!hdr||!el) return;
