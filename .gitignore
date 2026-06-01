@@ -19,6 +19,8 @@ dict/voiceprints/
 *.npy
 *.bin
 *.pkl
+dict/speaker_profiles.json
+dict/voice_profile_library.json
 
 # IDE
 .vscode/
