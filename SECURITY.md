@@ -2,7 +2,7 @@
 
 ## 声纹数据保护声明
 
-声纹数据（Voiceprint Embedding）与指纹、瞳孔数据同属 **敏感个人生物信息**。
+声纹数据（Voiceprint Embedding）属 **敏感个人生物信息**。
 
 ### 强制规定
 - ✅ 所有声纹训练数据（embedding、profile、音频样本）**仅存储在本地** `dict/voiceprints/` 目录

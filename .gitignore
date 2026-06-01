@@ -15,10 +15,10 @@ temp/
 *.wav
 
 # ⚠️ 敏感生物信息安全 — 以下目录/文件包含声纹数据(embedding/profile)，严禁上传至任何远程仓库
-dict/voiceprints/        # 声纹训练数据目录（embedding、profile、音频样本）
-*.npy                    # 声纹embedding向量文件
-*.bin                    # 声纹二进制模型/配置文件
-*.pkl                    # 声纹序列化数据文件
+dict/voiceprints/
+*.npy
+*.bin
+*.pkl
 
 # IDE
 .vscode/
