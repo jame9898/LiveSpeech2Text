@@ -17,6 +17,7 @@
     "min_speech_duration": 0.12,
     "threads": 8,
     "ws_port": 8765,
-    "auto_save_report": false
+    "auto_save_report": false,
+    "transcription_mode": "streaming"
   }
 }

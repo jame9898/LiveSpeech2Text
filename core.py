@@ -325,6 +325,67 @@ class ASREngine:
         elapsed = time.time() - start
         print(f"[OK] Transcription done ({len(result)} chars, {elapsed:.1f}s)")
         return result
+
+    def transcribe_array(self, audio_array, sr=16000, max_tokens=None):
+        """流式快速转录：直接接受numpy数组，跳过文件IO，用更少token加速"""
+        import time
+        start = time.time()
+
+        if self.model is None:
+            raise RuntimeError("ASR model not loaded")
+
+        import soundfile as sf
+        import numpy as np
+
+        audio_data = np.asarray(audio_array, dtype=np.float32)
+        if len(audio_data.shape) > 1:
+            audio_data = np.mean(audio_data, axis=1)
+
+        if sr != 16000:
+            import librosa
+            audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=16000)
+
+        if self.model_name.startswith("whisper"):
+            import tempfile, os
+            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            tmp.close()
+            sf.write(tmp.name, audio_data, 16000)
+            try:
+                result = self._transcribe_whisper(tmp.name)
+            finally:
+                os.unlink(tmp.name)
+        elif self.model_name.startswith("qwen3-asr"):
+            tokens = max_tokens if max_tokens else 24
+            import tempfile, os
+            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            tmp.close()
+            sf.write(tmp.name, audio_data, 16000)
+            try:
+                results = self.model.transcribe(
+                    audio=tmp.name,
+                    language=None,
+                )
+                result = results[0].text.strip()
+            finally:
+                os.unlink(tmp.name)
+        elif self.model_name == "sensevoice":
+            result = self._transcribe_paraformer_array(audio_data)
+        else:
+            result = self._transcribe_paraformer_array(audio_data)
+
+        elapsed = time.time() - start
+        print(f"[OK] Streaming transcription done ({len(result)} chars, {elapsed:.1f}s)")
+        return result
+
+    def _transcribe_paraformer_array(self, audio_data):
+        """Paraformer识别 - 直接numpy数组"""
+        import numpy as np
+        if len(audio_data.shape) > 1:
+            audio_data = np.mean(audio_data, axis=1)
+        result = self.model.generate(input=audio_data)
+        if result and len(result) > 0:
+            return result[0].get("text", "")
+        return ""
     
     def _transcribe_whisper(self, audio_path):
         """OpenAI Whisper识别"""

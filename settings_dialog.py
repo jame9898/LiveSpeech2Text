@@ -32,6 +32,7 @@ DEFAULT_CONFIG = {
         "threads": 8,
         "ws_port": 8765,
         "auto_save_report": False,
+        "transcription_mode": "streaming",
     }
 }
 
@@ -253,6 +254,18 @@ class SettingsDialog(QDialog):
         self._chk_force_cut.setChecked(self._settings.get("vad_force_cut", True))
         gl.addWidget(self._chk_force_cut)
 
+        r_mode = QHBoxLayout()
+        r_mode.addWidget(QLabel("转录模式"))
+        self._cmb_mode = QComboBox()
+        self._cmb_mode.addItem("整句模式（准确度最高）", "sentence")
+        self._cmb_mode.addItem("流式模式（毫秒级实时输出）", "streaming")
+        cur_mode = self._settings.get("transcription_mode", "streaming")
+        idx = self._cmb_mode.findData(cur_mode)
+        if idx >= 0:
+            self._cmb_mode.setCurrentIndex(idx)
+        r_mode.addWidget(self._cmb_mode)
+        gl.addLayout(r_mode)
+
         layout.addWidget(g)
         layout.addStretch()
         tabs.addTab(w, "音频/VAD")
@@ -313,6 +326,7 @@ class SettingsDialog(QDialog):
                 "threads": self._spn_threads.value(),
                 "ws_port": self._spn_ws.value(),
                 "auto_save_report": self._chk_report.isChecked(),
+                "transcription_mode": self._cmb_mode.currentData(),
             }
         }
 

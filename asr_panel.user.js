@@ -257,6 +257,7 @@ function removePanel() {
     if (p.parentNode) p.parentNode.removeChild(p);
     if (ws) { ws.close(); ws = null; }
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    _hideSubtitle();
     _panelInjected = false;
 }
 
@@ -309,6 +310,14 @@ if (!document.getElementById('asr-style-v3')) {
 .asr3-toast.err{border-color:#f85149}
 .asr3-toast.loading{border-color:#58a6ff}
 @keyframes asr3-toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes asr3-blink{0%,100%{opacity:1}50%{opacity:0}}
+#asr3-sub{position:fixed!important;z-index:2147483646!important;
+    background:rgba(0,0,0,.82);backdrop-filter:blur(6px);
+    border-radius:8px;padding:10px 20px;text-align:center;
+    color:#fff;font-size:18px;font-weight:600;line-height:1.5;
+    letter-spacing:1px;display:none;pointer-events:auto;cursor:move;
+    text-shadow:0 1px 3px rgba(0,0,0,.6);
+    transition:opacity .25s;min-height:36px;user-select:none}
 .asr3-sel,.asr3-inp{border:1px solid #30363d;border-radius:5px;padding:4px 6px;font-size:11px;
     background:#0d1117;color:#c9d1d9;outline:none;transition:border-color .15s}
 .asr3-sel:focus,.asr3-inp:focus{border-color:#58a6ff}
@@ -321,6 +330,7 @@ p.id = 'asr-panel-v3';
 p.innerHTML = `<div id="asr-v3">
     <div class="asr3-hdr"><b>🎤 LiveSpeech2Text V1.0</b>
         <span class="btns">
+            <button id="asr3-sub-btn" title="显示/隐藏字幕条" style="font-size:12px">💬</button>
             <button id="asr3-launch" title="一键启动本地服务" style="background:rgba(63,185,80,.15);border-color:#3fb950;color:#3fb950">🟢</button>
             <button id="asr3-min">─</button>
             <button id="asr3-close">✕</button>
@@ -346,11 +356,96 @@ p.innerHTML = `<div id="asr-v3">
             <button id="asr3-add" style="padding:3px 8px;border:0;border-radius:5px;background:#58a6ff;color:#fff;cursor:pointer;font-size:11px;white-space:nowrap">+ 添加</button></div>
         <div style="font-size:11px;color:#8b949e;display:flex;justify-content:space-between">
             <span id="asr3-tm">0.0秒</span><span id="asr3-cnt">0条 | 0字</span></div>
+        <div id="asr3-partial" style="display:none;padding:2px 0;font-size:13px;color:#8b949e;font-style:italic;line-height:1.5;min-height:0"></div>
         <div class="asr3-text-box"><div id="asr3-txt" class="asr3-text-scroll">
             <div style="text-align:center;color:#484f58;padding-top:40px">
                 <p style="font-size:28px;margin-bottom:10px">🎤</p>
                 <p>点击「开始」启动识别</p>
                 <p style="font-size:10px;margin-top:4px">选择「整个屏幕」共享</p></div></div></div></div></div>`;
+
+const sub = document.createElement('div');
+sub.id = 'asr3-sub';
+sub.innerHTML = '<span id="asr3-sub-txt"></span><span id="asr3-sub-cur" style="display:inline-block;width:2px;height:18px;background:#fff;margin-left:2px;vertical-align:middle;animation:asr3-blink 0.8s infinite"></span>';
+document.body.appendChild(sub);
+
+var _subVisible = true;
+var _subUserPos = null;
+
+function _findVideoPlayer() {
+    const vs = document.querySelectorAll('video');
+    for (const v of vs) {
+        if (v.offsetWidth > 300 && v.offsetHeight > 200) return v;
+    }
+    return null;
+}
+
+function _repositionSub() {
+    const vp = _findVideoPlayer();
+    if (_subUserPos) {
+        sub.style.left = _subUserPos.left + 'px';
+        sub.style.top = _subUserPos.top + 'px';
+        sub.style.bottom = 'auto';
+        return;
+    }
+    if (vp) {
+        const rect = vp.getBoundingClientRect();
+        const w = Math.round(rect.width * 0.618);
+        sub.style.width = Math.max(w, 200) + 'px';
+        sub.style.left = Math.round(rect.left + (rect.width - w) / 2) + 'px';
+        sub.style.bottom = (window.innerHeight - rect.bottom + 60) + 'px';
+        sub.style.top = 'auto';
+    } else {
+        sub.style.width = Math.round(window.innerWidth * 0.5) + 'px';
+        sub.style.left = Math.round(window.innerWidth * 0.25) + 'px';
+        sub.style.bottom = '80px';
+        sub.style.top = 'auto';
+    }
+}
+
+function _showSubtitle(text) {
+    if (!_subVisible) return;
+    _repositionSub();
+    $('asr3-sub-txt').textContent = text;
+    sub.style.display = 'block';
+}
+
+function _hideSubtitle() {
+    sub.style.display = 'none';
+    $('asr3-sub-txt').textContent = '';
+}
+
+function _toggleSubtitle() {
+    _subVisible = !_subVisible;
+    const btn = $('asr3-sub-btn');
+    if (btn) {
+        btn.textContent = _subVisible ? '💬' : '🚫';
+        btn.style.opacity = _subVisible ? '1' : '0.5';
+        btn.title = _subVisible ? '隐藏字幕条' : '显示字幕条';
+    }
+    if (!_subVisible) {
+        _hideSubtitle();
+    }
+    toast(_subVisible ? '💬 字幕条已开启' : '🚫 字幕条已关闭', _subVisible ? 'ok' : '', 1500);
+}
+
+(function(){
+    var dragging = false, sx = 0, sy = 0;
+    sub.onmousedown = function(e) {
+        if (e.target.tagName === 'BUTTON') return;
+        dragging = true;
+        sx = e.clientX - sub.offsetLeft;
+        sy = e.clientY - sub.offsetTop;
+        e.preventDefault();
+    };
+    document.addEventListener('mousemove', function(e) {
+        if (!dragging) return;
+        _subUserPos = {left: e.clientX - sx, top: e.clientY - sy};
+        sub.style.left = _subUserPos.left + 'px';
+        sub.style.top = _subUserPos.top + 'px';
+        sub.style.bottom = 'auto';
+    });
+    document.addEventListener('mouseup', function() { dragging = false; });
+})();
 
 function _ensurePanel() {
     if (_panelClosedByUser) return false;
@@ -366,6 +461,10 @@ setInterval(() => {
         segs.forEach(s => addSeg(s.text,s.speaker,s.ocrFixed,s.ocrCount,s.segTime,s.segDur,s.gapAudio,s.corrections,s.isHost,s.originalText));
     }
 }, 1000);
+
+window.addEventListener('resize', () => {
+    if (sub.style.display === 'block') _repositionSub();
+});
 
 function $(id) { return document.getElementById(id); }
 function L(m) { console.log('[ASR] '+m); }
@@ -397,6 +496,7 @@ function bindEvents() {
     bind('asr3-rpt', () => send({type:'generate_report'}));
     bind('asr3-save', () => { if (segCount===0) { alert('还没有识别内容，无法保存'); return; } send({type:'save_report'}); });
     bind('asr3-log', () => { if (segCount===0) { alert('还没有识别内容，无法导出日志'); return; } send({type:'save_log'}); });
+    bind('asr3-sub-btn', _toggleSubtitle);
     bind('asr3-launch', () => {
         toast('🚀 正在启动本地服务...', 'loading', 5000);
         try {
@@ -499,7 +599,9 @@ function onMsg(data) {
             const st = $('asr3-st');
             if (data.status==='recording') { st.style.background='rgba(248,81,73,.08)'; st.style.color='#f85149'; st.textContent='🔴 识别中...'; }
             if (data.status==='stopped'&&data.full_text) showReport(data.full_text);
-            if (data.status==='cleared') clearUI(); break;
+            if (data.status==='cleared') clearUI();
+            if (data.status==='stopped') _hideSubtitle();
+            break;
         case 'recording_state':
             if (data.recording) {
                 isRecording = true;
@@ -517,13 +619,26 @@ function onMsg(data) {
                     rst.style.background = 'rgba(63,185,80,.06)';
                     rst.style.color = '#3fb950';
                     rst.textContent = '准备就绪';
+                    _hideSubtitle();
                 }
             }
             break;
         case 'transcription':
             addSeg(data.text,data.speaker,data.ocr_corrected,data.ocr_count,data.seg_time,data.seg_dur,data.gap_audio,data.corrections,data.is_host,data.original_text);
             updStats(data);
-            if (data.keywords) updKws(data.keywords, keywordStore); break;
+            if (data.keywords) updKws(data.keywords, keywordStore);
+            break;
+        case 'partial':
+            var p = $('asr3-partial');
+            if (p) { p.style.display = 'block'; p.innerHTML = '<span style="color:#8b949e;font-style:italic;">' + eHtml(data.text) + '</span><span class="asr3-cursor" style="display:inline-block;width:2px;height:14px;background:#58a6ff;margin-left:2px;vertical-align:middle;animation:asr3-blink 0.8s infinite"></span>'; }
+            _showSubtitle(data.text);
+            break;
+        case 'mode_changed':
+            if (data.mode === 'sentence') {
+                var pp = $('asr3-partial'); if (pp) { pp.style.display = 'none'; pp.innerHTML = ''; }
+                _hideSubtitle();
+            }
+            break;
         case 'keywords_updated':
             if (data.keyword_store) keywordStore = data.keyword_store;
             updKws(data.keywords, data.keyword_store);
@@ -545,6 +660,7 @@ function onMsg(data) {
             $('asr3-st').style.background = 'rgba(248,81,73,.12)';
             $('asr3-st').style.color = '#f85149';
             isRecording = false; $('asr3-start').disabled = false; $('asr3-stop').disabled = true;
+            _hideSubtitle();
             break;
     }
 }
@@ -561,6 +677,8 @@ function addSeg(text, speaker, ocrFixed, ocrCount, segTime, segDur, gapAudio, co
     if (!_ensurePanel()) { _pendingSegs.push({text,speaker,ocrFixed,ocrCount,segTime,segDur,gapAudio,corrections,isHost,originalText}); return; }
     const box = $('asr3-txt');
     if (!box) { _pendingSegs.push({text,speaker,ocrFixed,ocrCount,segTime,segDur,gapAudio,corrections,isHost,originalText}); return; }
+    var pp = $('asr3-partial'); if (pp) { pp.style.display = 'none'; pp.innerHTML = ''; }
+    _hideSubtitle();
     if (segCount === 0) box.textContent = '';
     segCount++;
 
@@ -620,7 +738,7 @@ function addSeg(text, speaker, ocrFixed, ocrCount, segTime, segDur, gapAudio, co
         ts.innerHTML = dt;
         div.appendChild(ts);
     } else {
-        div.appendChild(document.createTextNode(text));
+        div.appendChild(document.createTextNode(originalText || text));
     }
     box.appendChild(div);
 
@@ -692,6 +810,8 @@ function clearUI() {
     const el = $('asr3-txt');
     if (el) el.innerHTML = '<div style="text-align:center;color:#484f58;padding-top:40px"><p style="font-size:28px">🗑</p><p>已清除</p></div>';
     $('asr3-tm').textContent = '0.0秒'; $('asr3-cnt').textContent = '0条 | 0字'; $('asr3-kws').innerHTML = '';
+    var pp = $('asr3-partial'); if (pp) { pp.style.display = 'none'; pp.innerHTML = ''; }
+    _hideSubtitle();
 }
 
 async function startRec() {
@@ -752,6 +872,7 @@ function stopRec() {
     if (mediaStream) { mediaStream.getTracks().forEach(t=>t.stop()); mediaStream = null; }
     if (audioCtx) { audioCtx.close(); audioCtx = null; }
     $('asr3-start').disabled = false; $('asr3-stop').disabled = true;
+    _hideSubtitle();
 }
 
 function toast(msg, type, duration) {

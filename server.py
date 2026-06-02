@@ -61,6 +61,12 @@ h1 { font-size: 20px; margin-bottom: 6px; }
 @keyframes toastIn { from { opacity:0; transform:translateY(12px) } to { opacity:1; transform:translateY(0) } }
 .speaker-tag { display: inline-block; margin: 1px 3px 1px 0; padding: 1px 7px; border-radius: 3px; font-size: 11px; font-weight: 700; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+#partialArea { min-height: 0; padding: 4px 0; font-size: 14px; color: #656d76; font-style: italic; line-height: 1.6; }
+#partialArea .cursor { display: inline-block; width: 2px; height: 16px; background: #0969da; margin-left: 2px; vertical-align: text-bottom; animation: blink 0.8s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+.mode-toggle { display: inline-flex; border: 1px solid #d0d7de; border-radius: 6px; overflow: hidden; }
+.mode-toggle button { border: none; border-radius: 0; padding: 5px 12px; font-size: 12px; cursor: pointer; background: #f6f8fa; color: #656d76; }
+.mode-toggle button.active { background: #0969da; color: #fff; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -86,7 +92,14 @@ h1 { font-size: 20px; margin-bottom: 6px; }
     <button id="btnReport" class="btn">📄 报告</button>
     <button id="btnSave" class="btn">💾 保存</button>
     <button id="btnLog" class="btn">📋 日志</button>
+    <span style="margin-left:auto;font-size:12px;color:#656d76;">模式</span>
+    <span class="mode-toggle">
+        <button id="btnModeSentence" title="等待完整句子后一次性输出，准确度最高">整句</button>
+        <button id="btnModeStreaming" class="active" title="毫秒级实时输出，说完后自动修正">流式</button>
+    </span>
 </div>
+
+<div id="partialArea"></div>
 
 <div class="kw-line">
     <select id="kwCat">
@@ -115,9 +128,14 @@ var BOX = document.getElementById('transcripts');
 var KWBOX = document.getElementById('keywordsBox');
 var BTN_START = document.getElementById('btnStart');
 var BTN_STOP = document.getElementById('btnStop');
+var BTN_MODE_S = document.getElementById('btnModeSentence');
+var BTN_MODE_ST = document.getElementById('btnModeStreaming');
+var PARTIAL = document.getElementById('partialArea');
 var STAT_DUR = document.getElementById('statDur');
 var STAT_CNT = document.getElementById('statCnt');
 var STAT_CHAR = document.getElementById('statChar');
+
+var currentMode = 'streaming';
 
 var ws = null;
 var isRecording = false;
@@ -235,6 +253,11 @@ function handleMsg(d) {
         case 'welcome':
             MODEL.style.display = '';
             MODEL.textContent = '模型: ' + (d.model || '?');
+            if (d.mode === 'streaming') {
+                BTN_MODE_ST.classList.add('active');
+                BTN_MODE_S.classList.remove('active');
+                currentMode = 'streaming';
+            }
             break;
         case 'status':
             if (d.status === 'recording') setRec('recording', '识别中...');
@@ -255,6 +278,21 @@ function handleMsg(d) {
         case 'transcription':
             addSeg(d); updateStats(d);
             if (d.keywords) updateKeywords(d.keywords);
+            break;
+        case 'partial':
+            PARTIAL.innerHTML = '<span style="color:#656d76;font-style:italic;">' + eHtml(d.text) + '</span><span class="cursor"></span>';
+            break;
+        case 'mode_changed':
+            if (d.mode === 'sentence') {
+                BTN_MODE_S.classList.add('active');
+                BTN_MODE_ST.classList.remove('active');
+                currentMode = 'sentence';
+                PARTIAL.innerHTML = '';
+            } else {
+                BTN_MODE_ST.classList.add('active');
+                BTN_MODE_S.classList.remove('active');
+                currentMode = 'streaming';
+            }
             break;
         case 'keywords_updated':
             if (d.keyword_store) keywordStore = d.keyword_store;
@@ -283,6 +321,7 @@ function eHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(
 
 function addSeg(d) {
     if (firstMsg) { BOX.innerHTML = ''; firstMsg = false; }
+    PARTIAL.innerHTML = '';
     segCount++;
     if (BOX.children.length >= 200) BOX.removeChild(BOX.firstChild);
 
@@ -366,6 +405,7 @@ function updateKeywords(kws) {
 function clearUI() {
     segCount = 0; firstMsg = true; keywords = []; keywordStore = {}; speakerColors = {};
     BOX.innerHTML = '<em style="color:#656d76">等待识别结果...</em>';
+    PARTIAL.innerHTML = '';
     STAT_DUR.textContent = '0.0'; STAT_CNT.textContent = '0条'; STAT_CHAR.textContent = '0字';
     KWBOX.innerHTML = '';
     setRec('ready', '准备就绪');
@@ -453,6 +493,20 @@ BTN_START.addEventListener('click', doStartRec);
 
 BTN_STOP.addEventListener('click', stopRec);
 
+BTN_MODE_S.addEventListener('click', function() {
+    currentMode = 'sentence';
+    BTN_MODE_S.classList.add('active');
+    BTN_MODE_ST.classList.remove('active');
+    send({type: 'set_mode', mode: 'sentence'});
+});
+
+BTN_MODE_ST.addEventListener('click', function() {
+    currentMode = 'streaming';
+    BTN_MODE_ST.classList.add('active');
+    BTN_MODE_S.classList.remove('active');
+    send({type: 'set_mode', mode: 'streaming'});
+});
+
 document.getElementById('btnClear').addEventListener('click', function() {
     send({type: 'clear'}); clearUI();
 });
@@ -517,13 +571,8 @@ except ImportError:
 from core import MODELS_DIR
 from keyword_expander import CATEGORIES, CATEGORY_ICONS
 from speaker_profile import sp_manager, DIALECT_TRAITS, DIALECT_PRESETS, search_speaker_accent, TOPIC_MANAGER
-from lyrics_matcher import lyrics_matcher
 
 DICT_DIR = Path(__file__).parent / 'dict'
-
-LYRICS_PATH = DICT_DIR / "lyrics.json"
-if LYRICS_PATH.exists():
-    lyrics_matcher.load(str(LYRICS_PATH))
 
 logging.getLogger('websockets.server').setLevel(logging.CRITICAL)
 logging.getLogger('websockets').setLevel(logging.CRITICAL)
@@ -679,6 +728,21 @@ class RealtimeASRServer:
 
         print(f"[VAD] vad_force_cut={self.vad_force_cut}", flush=True)
 
+        # 流式模式（伪流式：短chunk快速partial + 整句final修正）
+        config_mode = self.asr_engine._config.get("model_settings", {}).get("transcription_mode", "streaming")
+        self.mode = config_mode if config_mode in ("sentence", "streaming") else "sentence"
+        self._stream_seg_id = 0
+        self._stream_last_partial = ""
+        self._stream_partial_time = 0
+        self._stream_partial_buf = []
+        self._stream_partial_interval = 0.8
+        self._stream_full_text = ""
+        self._stream_last_corrected = ""
+        self._transcription_snapshot = ""
+
+        self._stream_vad_silence = 1.2
+        self._stream_vad_force_cut = 6.0
+
     def _resample_audio(self, audio_data, from_rate, to_rate):
         if from_rate == to_rate:
             return audio_data
@@ -696,6 +760,7 @@ class RealtimeASRServer:
                 'type': 'welcome',
                 'message': 'Realtime ASR service connected',
                 'model': self.asr_engine.model_name,
+                'mode': self.mode,
                 'timestamp': datetime.now().isoformat()
             }, ensure_ascii=False))
 
@@ -765,7 +830,13 @@ class RealtimeASRServer:
                 self.last_segment_end_audio_time = 0
                 self.keyword_history = []
                 self.ocr_history = []
-                lyrics_matcher.reset()
+                self._stream_seg_id = 0
+                self._stream_last_partial = ""
+                self._stream_full_text = ""
+                self._stream_last_corrected = ""
+                self._transcription_snapshot = ""
+                self._stream_partial_time = 0
+                self._stream_partial_buf = []
                 await self._send_to(websocket, {
                     'type': 'status', 'status': 'recording',
                     'message': 'Started', 'model': self.asr_engine.model_name,
@@ -860,6 +931,16 @@ class RealtimeASRServer:
 
             elif msg_type == 'generate_report':
                 await self.generate_and_send_report(websocket)
+
+            elif msg_type == 'set_mode':
+                new_mode = msg.get('mode', 'sentence')
+                if new_mode in ('sentence', 'streaming'):
+                    self.mode = new_mode
+                    print(f"[WS] 模式切换: {self.mode}", flush=True)
+                    await self._send_to(websocket, {
+                        'type': 'mode_changed',
+                        'mode': self.mode
+                    })
 
             elif msg_type == 'page_creator':
                 self._page_creator = msg.get('creator')
@@ -1247,6 +1328,16 @@ class RealtimeASRServer:
 
             self.audio_buffer.extend(audio_array.tolist())
 
+            # 流式模式：每0.5秒做一次快速partial推理
+            if self.mode == "streaming":
+                now = time.time()
+                if now - self._stream_partial_time >= self._stream_partial_interval:
+                    self._stream_partial_time = now
+                    buf = np.array(self.audio_buffer, dtype=np.float32)
+                    dur = len(buf) / 16000
+                    if dur >= 0.5:
+                        asyncio.ensure_future(self._do_streaming_partial(buf.copy()))
+
             # 每0.5秒检查一次是否可以转录
             buffer_dur = len(self.audio_buffer) / 16000
             if buffer_dur >= 0.5 and self.audio_buffer:
@@ -1264,6 +1355,55 @@ class RealtimeASRServer:
             print(f"[WS] Audio error: {e}")
             import traceback
             traceback.print_exc()
+
+    async def _do_streaming_partial(self, audio_array):
+        """流式模式：快速partial推理，结果发送到前端"""
+        try:
+            import numpy as np
+            rms = np.sqrt(np.mean(np.asarray(audio_array, dtype=np.float32) ** 2))
+            if rms < 0.001:
+                return
+
+            loop = asyncio.get_event_loop()
+            full_text = await loop.run_in_executor(
+                self.executor, self.asr_engine.transcribe_array, audio_array, 16000)
+
+            if not full_text or not full_text.strip():
+                return
+
+            full_text = full_text.strip()
+
+            if full_text == self._stream_full_text:
+                return
+
+            self._stream_full_text = full_text
+
+            corrected, _ = self._apply_pinyin_dict_correction(full_text)
+
+            # 口音矫正：实时应用到斜体/字幕
+            loaded_count = sum(1 for p in sp_manager.profiles.values() if p.library_loaded or p.traits)
+            all_traits = sp_manager.get_all_loaded_traits()
+            if loaded_count > 0 and all_traits:
+                if len(self.speaker_profiles) > 1 or loaded_count > 1:
+                    accent_corrected, _ = sp_manager.accent_correct_all(
+                        corrected, list(self.ocr_keywords))
+                else:
+                    accent_corrected, _ = sp_manager.accent_correct(
+                        self._last_speaker_label, corrected, list(self.ocr_keywords))
+                if accent_corrected != corrected:
+                    corrected = accent_corrected
+
+            corrected = self._normalize_letter_adjacent_numbers(corrected)
+            self._stream_last_corrected = corrected
+
+            self._stream_seg_id += 1
+            await self.send({
+                'type': 'partial',
+                'text': corrected,
+                'seg_id': self._stream_seg_id,
+            })
+        except Exception as e:
+            pass
 
     def _vad_cut(self, audio_data, sr):
         """
@@ -1291,18 +1431,26 @@ class RealtimeASRServer:
         threshold = np.median(energies) * 1.5 if np.median(energies) > 0 else 0.0005
         is_speech = energies > threshold
 
-        # === 音乐/噪声检测：影响强制切分阈值 ===
-        music_like = self._is_music_like(audio_data)
-        vad_info['music_like'] = music_like
-        if self.vad_force_cut:
-            fc = self.vad_force_cut_sec
-            force_cut_sec = round(fc * 1.5, 1) if music_like else round(fc + 0.1, 1)
-            force_cut_size = round(fc * 1.3, 1) if music_like else fc
-            desperate_sec = round(fc * 2.1, 1) if music_like else round(fc + 1.2, 1)
+        # === 流式模式：固定静音阈值1.2s + 强制切分5~7s ===
+        if self.mode == "streaming":
+            min_silence_frames = int(self._stream_vad_silence / 0.01)
+            fc = self._stream_vad_force_cut
+            force_cut_sec = fc + 0.5
+            force_cut_size = fc
+            desperate_sec = fc + 1.5
         else:
-            force_cut_sec = self.max_buffer_seconds
-            force_cut_size = self.max_buffer_seconds
-            desperate_sec = self.max_buffer_seconds
+            # === 音乐/噪声检测：影响强制切分阈值 ===
+            music_like = self._is_music_like(audio_data)
+            vad_info['music_like'] = music_like
+            if self.vad_force_cut:
+                fc = self.vad_force_cut_sec
+                force_cut_sec = round(fc * 1.5, 1) if music_like else round(fc + 0.1, 1)
+                force_cut_size = round(fc * 1.3, 1) if music_like else fc
+                desperate_sec = round(fc * 2.1, 1) if music_like else round(fc + 1.2, 1)
+            else:
+                force_cut_sec = self.max_buffer_seconds
+                force_cut_size = self.max_buffer_seconds
+                desperate_sec = self.max_buffer_seconds
 
         # === 计算语音爆发间隙，更新自适应阈值 ===
         changes = np.diff(np.concatenate([[False], is_speech, [False]]).astype(int))
@@ -1318,7 +1466,8 @@ class RealtimeASRServer:
                 if len(self.speech_gaps) > 20:
                     self.speech_gaps.pop(0)
 
-        min_silence_frames = int(self.adaptive_threshold / 0.01)
+        if self.mode != "streaming":
+            min_silence_frames = int(self.adaptive_threshold / 0.01)
         min_speech_frames = max(1, int(self.min_speech_duration / 0.01))
 
         # === 找到完整语音段（末尾有足够静音）===
@@ -1328,8 +1477,10 @@ class RealtimeASRServer:
             first_speech_frame = np.where(is_speech)[0][0]
             speech_duration = (last_speech_frame - first_speech_frame + 1) * 0.01
 
-            # 连续说话 > 2.5s 且有任意静音则切（不等满 silence_after）
-            if self.vad_force_cut and speech_duration > 2.5 and silence_after >= int(0.3 / 0.01):
+            # 连续说话快速切分
+            quick_cut_dur = 1.5 if self.mode == "streaming" else 2.5
+            quick_cut_silence = int(0.2 / 0.01) if self.mode == "streaming" else int(0.3 / 0.01)
+            if self.vad_force_cut and speech_duration > quick_cut_dur and silence_after >= quick_cut_silence:
                 cut_point = (last_speech_frame + 1) * hop_len
                 speech_segment = audio_data[:cut_point]
                 remaining_start = cut_point + int(0.3 * sr)
@@ -1346,7 +1497,7 @@ class RealtimeASRServer:
                 speech_segment = audio_data[:cut_point]
                 speech_duration = len(speech_segment) / sr
 
-                if speech_duration <= 1.2:
+                if self.mode == "streaming" or speech_duration <= 1.2:
                     remaining_start = cut_point + min_silence_frames * hop_len
                 else:
                     overlap_frames = int(1.5 / 0.01)
@@ -1388,6 +1539,17 @@ class RealtimeASRServer:
         if self.transcripts_in_flight >= self.max_concurrent_transcripts:
             return
         self.transcripts_in_flight += 1
+
+        # 快照前先跑一次最终partial，确保拿到最新完整文本，避免竞态漏字
+        # 注意：此时 self.audio_buffer 已被 VAD 裁切为剩余缓冲区（tail），
+        # 必须用 audio_data（VAD切出的语音段）而非 self.audio_buffer 做partial，
+        # 否则 snapshot 会拿到上一句残留的 tail 文本，导致 Speaker 输出包含上一句末尾
+        if self.mode == "streaming":
+            if len(audio_data) / 16000 >= 0.2:
+                await self._do_streaming_partial(audio_data.copy())
+            self._transcription_snapshot = self._stream_last_corrected
+            if not self._transcription_snapshot:
+                self._transcription_snapshot = self._stream_full_text
 
         if len(self._audio_tail) > 0:
             audio_data = np.concatenate([self._audio_tail, audio_data])
@@ -1460,89 +1622,70 @@ class RealtimeASRServer:
                     print(f"    [DEDUP-SENT] 替换更短: old='{prev[:20]}' ← new='{text[:30]}'", flush=True)
                     self.sent_texts.discard(prev)
 
-            corrected = text
-            original = corrected
-            corrected, py_corrections = self._apply_pinyin_dict_correction(corrected)
-            corrected, ocr_corrections = self._apply_ocr_correction(corrected)
-            corrections = py_corrections + ocr_corrections
-            ocr_applied = (original != corrected)
-            if py_corrections:
-                for old, new in py_corrections:
-                    self.correction_log.add(new)
-                    self.correction_records.append((old, new))
-
-            # 口音矫正：仅当有实际口音特征加载时才启用
-            loaded_count = sum(1 for p in sp_manager.profiles.values() if p.library_loaded or p.traits)
-            all_traits = sp_manager.get_all_loaded_traits()
-            if loaded_count > 0 and all_traits:
-                if len(self.speaker_profiles) > 1 or loaded_count > 1:
-                    accent_corrected, accent_corrections = sp_manager.accent_correct_all(
-                        corrected, list(self.ocr_keywords))
-                else:
-                    accent_corrected, accent_corrections = sp_manager.accent_correct(
-                        self._last_speaker_label, corrected, list(self.ocr_keywords))
-            if accent_corrected != corrected:
-                print(f"    [ACCENT] traits={sp_manager.get_all_loaded_traits() if loaded_count > 1 else sp_manager.get_accent_traits(self._last_speaker_label)}: '{corrected}' → '{accent_corrected}' ({len(accent_corrections)} corrections)", flush=True)
-                corrections.extend([(old, new, desc) for old, new, desc in accent_corrections])
-                for old, new, desc in accent_corrections:
-                    self.correction_records.append(('accent', old, new, desc))
-                corrected = accent_corrected
-                ocr_applied = True
-
-            # 歌词匹配：检测文本是否为歌词
-            # 状态机追踪连续命中 → 锁定歌曲 → 锁定后高效匹配后续行
-            lyrics_matched, lyrics_info = lyrics_matcher.match(corrected)
-            if lyrics_matched:
-                state = lyrics_info.get('state', 'idle')
-                hits = lyrics_info.get('consecutive_hits', 1)
-                just_locked = lyrics_info.get('just_locked', False)
-
-                if state == 'locked':
-                    # 已锁定歌曲，追加 🎶 并显示进度
-                    prog = lyrics_info.get('line_idx', 0)
-                    total = len(lyrics_matcher.songs[lyrics_info.get('song_idx', 0)].get('lines', []))
-                    corrected = corrected.rstrip() + " 🎶"
-                    if just_locked:
-                        print(f"[WS] 🔒 {lyrics_info['title']} - {lyrics_info['artist']} 锁定! 自动加载 {total} 行歌词作为关键词", flush=True)
-                        # 自动加载整首歌的歌词行作为 OCR 关键词，提升后续识别准确度
-                        song = lyrics_matcher.songs[lyrics_info['song_idx']]
-                        for line in song.get('lines', []):
-                            clean = re.sub(r'[^\w\u4e00-\u9fff]', '', line)
-                            if len(clean) >= 2:
-                                self.ocr_keywords.add(clean)
-                        print(f"[WS] 📋 已注入 {total} 行歌词关键词", flush=True)
-                    else:
-                        print(f"[WS] 🎶 [{hits}连] {lyrics_info['title']}: '{lyrics_info['line'][:30]}' [{lyrics_info['method']}]", flush=True)
-                elif state == 'suspecting':
-                    corrected = corrected.rstrip() + " 🎵"
-                    print(f"[WS] 🎵 [{hits}/3→锁定] {lyrics_info['title']} - {lyrics_info['artist']}: '{lyrics_info['line'][:30]}' [{lyrics_info['method']}]", flush=True)
-                else:
-                    corrected = corrected.rstrip() + " 🎵"
-                    print(f"[WS] 🎵 {lyrics_info['title']} - {lyrics_info['artist']}: '{lyrics_info['line'][:30]}' [{lyrics_info['method']}]", flush=True)
-
-            sentences = self._split_sentences(corrected)
-            if len(sentences) <= 1:
-                await self._emit_segment(audio_data, corrected, ocr_applied, vad_info=vad_info, corrections=corrections, original_text=original if corrections else None)
+            if self.mode == "streaming":
+                # 流式模式：Speaker = 斜体最终结果快照，不重复纠错，不断句
+                corrected = self._transcription_snapshot or self._stream_full_text
+                if not corrected or not corrected.strip():
+                    print(f"    [WS] [{self.transcription_count}] [SKIP] snapshot empty, full ASR='{text[:30]}'", flush=True)
+                    return
+                original = self._stream_full_text or corrected
+                await self._emit_segment(audio_data, corrected, True, vad_info=vad_info, corrections=[], original_text=original)
+                status = f"[WS] [{self.transcription_count}] [SNAP]"
+                print(f"{status} {corrected[:60]}...", flush=True)
             else:
-                shared_speaker = None
-                if len(audio_data) >= int(16000 * 1.5):
-                    shared_speaker = await self._detect_speaker(audio_data)
-                    self._last_speaker_label = shared_speaker
-                seg_len = len(audio_data) // len(sentences)
-                for i, sent in enumerate(sentences):
-                    if not sent.strip():
-                        continue
-                    start = i * seg_len
-                    end = start + seg_len if i < len(sentences) - 1 else len(audio_data)
-                    sub_audio = audio_data[start:end]
-                    if len(sub_audio) < 16000 * 0.3:
-                        sub_audio = audio_data
-                    await self._emit_segment(sub_audio, sent.strip(), ocr_applied, speaker_label=shared_speaker, vad_info=vad_info, corrections=corrections)
+                # 非流式模式：全量ASR + 完整纠错流水线
+                corrected = text
+                original = corrected
+                corrected, py_corrections = self._apply_pinyin_dict_correction(corrected)
+                corrected = self._normalize_letter_adjacent_numbers(corrected)
+                corrections = py_corrections
+                ocr_applied = (original != corrected)
+                if py_corrections:
+                    for old, new in py_corrections:
+                        self.correction_log.add(new)
+                        self.correction_records.append((old, new))
 
-            status = f"[WS] [{self.transcription_count}]"
-            if ocr_applied:
-                status += " [KW]"
-            print(f"{status} {corrected[:60]}...", flush=True)
+                # 口音矫正
+                loaded_count = sum(1 for p in sp_manager.profiles.values() if p.library_loaded or p.traits)
+                all_traits = sp_manager.get_all_loaded_traits()
+                if loaded_count > 0 and all_traits:
+                    if len(self.speaker_profiles) > 1 or loaded_count > 1:
+                        accent_corrected, accent_corrections = sp_manager.accent_correct_all(
+                            corrected, list(self.ocr_keywords))
+                    else:
+                        accent_corrected, accent_corrections = sp_manager.accent_correct(
+                            self._last_speaker_label, corrected, list(self.ocr_keywords))
+                    if accent_corrected != corrected:
+                        print(f"    [ACCENT] traits={sp_manager.get_all_loaded_traits() if loaded_count > 1 else sp_manager.get_accent_traits(self._last_speaker_label)}: '{corrected}' → '{accent_corrected}' ({len(accent_corrections)} corrections)", flush=True)
+                        corrections.extend([(old, new, desc) for old, new, desc in accent_corrections])
+                        for old, new, desc in accent_corrections:
+                            self.correction_records.append(('accent', old, new, desc))
+                        corrected = accent_corrected
+                        ocr_applied = True
+
+                sentences = self._split_sentences(corrected)
+                if len(sentences) <= 1:
+                    await self._emit_segment(audio_data, corrected, ocr_applied, vad_info=vad_info, corrections=corrections, original_text=original if corrections else None)
+                else:
+                    shared_speaker = None
+                    if len(audio_data) >= int(16000 * 1.5):
+                        shared_speaker = await self._detect_speaker(audio_data)
+                        self._last_speaker_label = shared_speaker
+                    seg_len = len(audio_data) // len(sentences)
+                    for i, sent in enumerate(sentences):
+                        if not sent.strip():
+                            continue
+                        start = i * seg_len
+                        end = start + seg_len if i < len(sentences) - 1 else len(audio_data)
+                        sub_audio = audio_data[start:end]
+                        if len(sub_audio) < 16000 * 0.3:
+                            sub_audio = audio_data
+                        await self._emit_segment(sub_audio, sent.strip(), ocr_applied, speaker_label=shared_speaker, vad_info=vad_info, corrections=corrections)
+
+                status = f"[WS] [{self.transcription_count}]"
+                if ocr_applied:
+                    status += " [KW]"
+                print(f"{status} {corrected[:60]}...", flush=True)
 
             self.last_activity = time.time()
 
@@ -1644,6 +1787,13 @@ class RealtimeASRServer:
             'original_text': original_text or text,
             'is_host': speaker_label == self._host_speaker_label if speaker_label else False,
         })
+
+        # 流式模式：句子已确定，重置partial状态准备下一句
+        if self.mode == "streaming":
+            self._stream_last_partial = ""
+            self._stream_full_text = ""
+            self._stream_last_corrected = ""
+            self._transcription_snapshot = ""
 
     PHONETIC_MERGE = {
         ('z','zh'),('zh','z'),('c','ch'),('ch','c'),('s','sh'),('sh','s'),
@@ -1747,6 +1897,20 @@ class RealtimeASRServer:
                 corrected = corrected[:best_pos] + kw + corrected[best_pos + kw_len:]
 
         return corrected, corrections
+
+    CN_NUM_MAP = {'零':'0','一':'1','二':'2','三':'3','四':'4','五':'5','六':'6','七':'7','八':'8','九':'9'}
+
+    def _normalize_letter_adjacent_numbers(self, text):
+        chars = list(text)
+        for i, ch in enumerate(chars):
+            if ch in self.CN_NUM_MAP:
+                before = chars[i - 1] if i > 0 else ''
+                after = chars[i + 1] if i + 1 < len(chars) else ''
+                if before.isalpha() and before.isascii():
+                    chars[i] = self.CN_NUM_MAP[ch]
+                elif after.isalpha() and after.isascii():
+                    chars[i] = self.CN_NUM_MAP[ch]
+        return ''.join(chars)
 
     def _load_pinyin_corrections(self, topic=None):
         corrections = {}
