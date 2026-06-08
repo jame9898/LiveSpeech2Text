@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from core import load_config, save_config, _DEFAULT_CONFIG as DEFAULT_CONFIG
+from core import load_config, save_config, get_default_config
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -233,7 +233,7 @@ class SettingsDialog(QDialog):
             save_config({
                 "current_model": "auto",
                 "device": "auto",
-                "model_settings": dict(DEFAULT_CONFIG["model_settings"]),
+                "model_settings": dict(get_default_config()["model_settings"]),
             })
             self._needs_restart = True
             self.accept()

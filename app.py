@@ -200,7 +200,11 @@ def start_server_backend(config, log_cb):
         sys.stdout = LR(log_cb)
         sys.stderr = LR(log_cb)
 
+        _model_ready = threading.Event()
+        _model_error = [None]
+
         def _run():
+            nonlocal _model_ready, _model_error
             try:
                 log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u6b63\u5728\u52a0\u8f7d\u6a21\u578b...\n")
                 dev = resolve_device(config)
@@ -208,7 +212,9 @@ def start_server_backend(config, log_cb):
                 pref = config.get("current_model", "auto")
                 if pref == "auto": pref = None
                 if not eng.load_model(preferred=pref):
-                    log_cb("[ERROR] \u6a21\u578b\u52a0\u8f7d\u5931\u8d25\n"); return
+                    log_cb("[ERROR] \u6a21\u578b\u52a0\u8f7d\u5931\u8d25\n")
+                    _model_error[0] = "\u6a21\u578b\u52a0\u8f7d\u5931\u8d25"
+                    return
                 log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u6a21\u578b: {eng.model_name}\n")
                 st = config.get("model_settings", {})
                 port = st.get("ws_port", 8765)
@@ -228,18 +234,27 @@ def start_server_backend(config, log_cb):
                     except Exception:
                         pass
 
+                _model_ready.set()
                 log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] WebSocket ws://localhost:{port}\n")
                 log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u7b49\u5f85\u8fde\u63a5...\n")
                 run_server(eng, 'localhost', port)
                 log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u670d\u52a1\u5df2\u505c\u6b62\n")
             except Exception as e:
                 import traceback
+                _model_error[0] = str(e)
                 log_cb(f"[ERROR] {e}\n{traceback.format_exc()}\n")
             finally:
                 sys.stdout = _so; sys.stderr = _se
 
         SERVER_THREAD = threading.Thread(target=_run, daemon=True)
         SERVER_THREAD.start()
+
+        if not _model_ready.wait(timeout=120):
+            if _model_error[0]:
+                log_cb(f"[ERROR] \u670d\u52a1\u542f\u52a8\u5931\u8d25: {_model_error[0]}\n")
+            else:
+                log_cb("[ERROR] \u6a21\u578b\u52a0\u8f7d\u8d85\u65f6 (120s)\n")
+            return False
         return True
     except Exception as e:
         import traceback
@@ -280,14 +295,14 @@ class MainWindow(QMainWindow):
         self._setup_tray()
         self._refresh_display()
 
-        self._append_log_label("\u6b22\u8fce\u4f7f\u7528\u5728\u7ebf\u5b9e\u65f6\u8bed\u97f3\u8bc6\u522b\u7cfb\u7edf v1.0\n", "dim")
+        self._append_log_label("\u6b22\u8fce\u4f7f\u7528\u5728\u7ebf\u5b9e\u65f6\u8bed\u97f3\u8bc6\u522b\u7cfb\u7edf v1.0\n")
         missing = check_deps()
         if missing:
-            self._append_log_label(f"[WARN] \u7f3a\u5c11\u4f9d\u8d56: {', '.join(missing)}\n", "dim")
-            self._append_log_label("  \u8bf7\u53cc\u51fb \u542f\u52a8.bat \u5b89\u88c5\u4f9d\u8d56\n", "dim")
+            self._append_log_label(f"[WARN] \u7f3a\u5c11\u4f9d\u8d56: {', '.join(missing)}\n")
+            self._append_log_label("  \u8bf7\u53cc\u51fb \u542f\u52a8.bat \u5b89\u88c5\u4f9d\u8d56\n")
             self._emit_log(f"[WARN] \u7f3a\u5c11\u4f9d\u8d56: {', '.join(missing)}\n")
             self._emit_log("  \u8bf7\u53cc\u51fb \u542f\u52a8.bat \u5b89\u88c5\u4f9d\u8d56\n")
-        self._append_log_label("\u70b9\u51fb \u542f\u52a8\u670d\u52a1 \u5f00\u59cb\u8bc6\u522b\n\n", "dim")
+        self._append_log_label("\u70b9\u51fb \u542f\u52a8\u670d\u52a1 \u5f00\u59cb\u8bc6\u522b\n\n")
 
     def _build_menu(self):
         mb = self.menuBar()
@@ -452,7 +467,7 @@ class MainWindow(QMainWindow):
         c.insertText(text, fmt)
         self._log.verticalScrollBar().setValue(self._log.verticalScrollBar().maximum())
 
-    def _append_log_label(self, text, tag=None):
+    def _append_log_label(self, text):
         fmt = QTextCharFormat()
         fmt.setForeground(QColor(LIGHT["text_dim"]))
         c = self._log.textCursor()
@@ -468,8 +483,8 @@ class MainWindow(QMainWindow):
             cfg = load_config()
             self._mlbl.setText(f"\u6a21\u578b: {cfg.get('current_model','auto')}")
             self._dlbl.setText(f"\u8bbe\u5907: {cfg.get('device','auto')}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[UI] _refresh_display error: {e}", flush=True)
 
     def _start_server(self):
         if self._running:
@@ -515,8 +530,8 @@ class MainWindow(QMainWindow):
                 if srv is not None:
                     self._clbl.setText(f"\u5ba2\u6237\u7aef: {1 if srv.client_connected else 0}")
                     self._selbl.setText(f"\u8bc6\u522b: {len(srv.segments)} \u53e5")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[UI] _refresh_status error: {e}", flush=True)
 
     def _open_settings(self):
         from settings_dialog import SettingsDialog

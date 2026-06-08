@@ -83,7 +83,11 @@ class SpeakerManager:
             if temp_path.exists():
                 temp_path.unlink()
 
-        embedding = np.array(result['embs'][0])
+        try:
+            embedding = np.array(result['embs'][0])
+        except (KeyError, IndexError, TypeError) as e:
+            print(f"[SPEAKER] 声纹提取失败: {e}, result keys={list(result.keys()) if isinstance(result, dict) else type(result)}", flush=True)
+            return self._last_speaker_label
         embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
 
         if not self.speaker_profiles:

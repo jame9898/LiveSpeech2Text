@@ -20,6 +20,7 @@ silence_noisy_loggers()
 
 import torch
 import json
+import time
 from pathlib import Path
 
 import os as _os
@@ -77,8 +78,11 @@ def load_config():
 
 def save_config(config):
     DICT_DIR.mkdir(exist_ok=True)
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
+    try:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        print(f"[WARN] save_config failed: {e}", flush=True)
 
 
 def resolve_device(config=None):
@@ -92,29 +96,10 @@ def resolve_device(config=None):
     return device
 
 
-class CorrectionManager:
-    """纠错管理器"""
-    
-    def __init__(self):
-        self.correction_file = DICT_DIR / "correction.json"
-        self.data = self._load()
-    
-    def _load(self):
-        if self.correction_file.exists():
-            try:
-                with open(self.correction_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[WARN] load_config failed: {e}", flush=True)
-        return {}
-    
-    def correct_text(self, text):
-        if not self.data or not text:
-            return text
-        corrected = text
-        for wrong, correct in sorted(self.data.items(), key=lambda x: len(x[0]), reverse=True):
-            corrected = corrected.replace(wrong, correct)
-        return corrected
+def get_default_config():
+    """返回默认配置的深拷贝（供外部模块使用）"""
+    import copy
+    return copy.deepcopy(_DEFAULT_CONFIG)
 
 
 class ASREngine:
@@ -156,8 +141,6 @@ class ASREngine:
     def _load_qwen3_asr(self, size=None):
         """Qwen3-ASR  --  1.7B / 0.6B, GPU / CPU"""
         try:
-            import os
-
             model_variants = [
                 ("Qwen3-ASR-1___7B", "1.7B", "Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ASR-1.7B"),
                 ("Qwen3-ASR-0___6B", "0.6B", "Qwen/Qwen3-ASR-0.6B", "Qwen/Qwen3-ASR-0.6B"),
@@ -193,7 +176,6 @@ class ASREngine:
                     break
 
             if not model_path:
-                _os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
                 # 使用正确的模型 ID，而不是硬编码 1.7B
                 if model_variants:
                     model_path = model_variants[0][2]  # ms_id
@@ -233,8 +215,7 @@ class ASREngine:
         """转录音频文件"""
         if self.model is None:
             raise RuntimeError("ASR model not loaded")
-        
-        import time
+
         start = time.time()
         
         result = self._transcribe_qwen(audio_path)
@@ -245,7 +226,6 @@ class ASREngine:
 
     def transcribe_array(self, audio_array, sr=16000):
         """流式快速转录：直接接受numpy数组，跳过文件IO，用更少token加速"""
-        import time
         start = time.time()
 
         if self.model is None:

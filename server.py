@@ -91,6 +91,7 @@ h1 { font-size: 20px; margin-bottom: 6px; }
     <button id="btnReport" class="btn">📄 报告</button>
     <button id="btnSave" class="btn">💾 保存</button>
     <button id="btnLog" class="btn">📋 日志</button>
+    <a href="/visualization" target="_blank" style="text-decoration:none"><button type="button" class="btn" style="background:#1f6feb;border-color:#1f6feb;color:#fff">📊 可视化</button></a>
 
 
 </div>
@@ -537,6 +538,319 @@ setInterval(function() { if (!ws || ws.readyState !== 1) { if (!reconnectTimer) 
 </script>
 </body>
 </html>"""
+
+VISUALIZATION_PAGE = r"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>数据可视化 — LiveSpeech2Text</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:"Segoe UI","Microsoft YaHei",sans-serif;background:#0d1117;color:#c9d1d9;padding:20px;min-height:100vh}
+h1{font-size:20px;margin-bottom:4px;color:#58a6ff}
+.sub{color:#8b949e;font-size:12px;margin-bottom:16px}
+.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:16px}
+.controls label{font-size:13px;color:#8b949e}
+.controls select,.controls button{border:1px solid #30363d;border-radius:6px;padding:6px 14px;font-size:13px;background:#161b22;color:#c9d1d9;cursor:pointer}
+.controls button{background:#238636;border-color:#238636;color:#fff;font-weight:600}
+.controls button:hover{background:#2ea043}
+.controls select:focus,.controls button:focus{outline:none;border-color:#58a6ff}
+#chart{border:1px solid #30363d;border-radius:8px;background:#161b22;margin-bottom:16px;min-height:400px}
+.panels{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.panel{border:1px solid #30363d;border-radius:8px;background:#161b22;padding:14px}
+.panel h3{font-size:14px;color:#58a6ff;margin-bottom:10px;border-bottom:1px solid #30363d;padding-bottom:8px}
+.panel table{width:100%;border-collapse:collapse;font-size:12px}
+.panel th,.panel td{text-align:left;padding:5px 8px;border-bottom:1px solid #21262d}
+.panel th{color:#8b949e;font-weight:600}
+.peak-row{background:rgba(218,54,51,.15)}
+.peak-badge{display:inline-block;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:700;background:#da3633;color:#fff}
+.slice-panel{border:1px solid #30363d;border-radius:8px;background:#161b22;padding:14px;margin-bottom:16px}
+.slice-panel h3{font-size:14px;color:#58a6ff;margin-bottom:10px}
+.slice-item{padding:8px;margin:4px 0;border-left:3px solid #58a6ff;background:#0d1117;border-radius:0 4px 4px 0;cursor:pointer;transition:background .15s}
+.slice-item:hover{background:#161b22}
+.slice-item .stime{color:#58a6ff;font-size:11px;margin-right:6px}
+.slice-item .sspk{color:#f0883e;font-weight:700;margin-right:4px}
+.slice-detail{display:none;padding:8px 12px;margin:2px 0 8px 12px;background:#1c2128;border-radius:4px;font-size:13px;line-height:1.8;white-space:pre-wrap;max-height:200px;overflow-y:auto}
+.slice-detail.show{display:block}
+.status-bar{font-size:12px;color:#8b949e;padding:8px 0;border-top:1px solid #30363d;margin-top:12px}
+.refresh-info{display:flex;gap:20px;flex-wrap:wrap}
+@media(max-width:900px){.panels{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<h1>语音活跃度可视化分析</h1>
+<p class="sub">LiveSpeech2Text — 时间分段统计 · 折线图 · 峰值检测 · 时间切片</p>
+
+<div class="controls">
+    <label>统计粒度:</label>
+    <select id="intervalSelect">
+        <option value="30">30 秒</option>
+        <option value="60" selected>1 分钟</option>
+        <option value="120">2 分钟</option>
+        <option value="300">5 分钟</option>
+        <option value="600">10 分钟</option>
+    </select>
+    <label>峰值灵敏度:</label>
+    <select id="sensitivitySelect">
+        <option value="1.0">高 (1.0σ)</option>
+        <option value="1.5" selected>中 (1.5σ)</option>
+        <option value="2.0">低 (2.0σ)</option>
+    </select>
+    <button id="btnRefresh">刷新数据</button>
+    <button id="btnExport" style="background:#1f6feb;border-color:#1f6feb">导出统计 CSV</button>
+</div>
+
+<div id="chart"></div>
+
+<div class="panels">
+    <div class="panel">
+        <h3>时间段统计表</h3>
+        <div style="max-height:400px;overflow-y:auto">
+            <table id="statsTable">
+                <thead><tr><th>#</th><th>开始</th><th>结束</th><th>字符数</th><th>句数</th><th>状态</th></tr></thead>
+                <tbody id="statsBody"><tr><td colspan="6" style="color:#8b949e;text-align:center">加载中...</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+    <div class="panel">
+        <h3>高活跃度时段（峰值检测）</h3>
+        <div id="peaksList" style="font-size:12px;color:#8b949e">加载中...</div>
+    </div>
+</div>
+
+<div class="slice-panel" id="slicePanel" style="display:none">
+    <h3>时间切片 — 详细内容</h3>
+    <div id="sliceContent"></div>
+</div>
+
+<div class="status-bar">
+    <div class="refresh-info">
+        <span id="statusText">等待数据...</span>
+        <span id="totalChars"></span>
+        <span id="totalSegs"></span>
+    </div>
+</div>
+
+<script>
+var gData=null,gBuckets=[],gPeaks=[],gInterval=60;
+
+function fmtTime(sec){
+    var h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=Math.floor(sec%60);
+    if(h>0)return h+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
+    return m+':'+String(s).padStart(2,'0');
+}
+
+function fetchData(){
+    document.getElementById('statusText').textContent='加载数据中...';
+    fetch('/api/log')
+    .then(function(r){if(!r.ok)throw Error('HTTP '+r.status);return r.json();})
+    .then(function(d){
+        gData=d;
+        processData();
+    })
+    .catch(function(e){
+        document.getElementById('statusText').textContent='加载失败: '+e.message;
+        document.getElementById('chart').innerHTML='<div style="padding:40px;text-align:center;color:#da3633">'
+            +'<p>无法加载数据</p><p style="font-size:12px;color:#8b949e">'
+            +'请确保服务正在运行且有录制内容。点击"刷新数据"重试。</p></div>';
+    });
+}
+
+function processData(){
+    gInterval=parseInt(document.getElementById('intervalSelect').value)||60;
+    var sensitivity=parseFloat(document.getElementById('sensitivitySelect').value)||1.5;
+    if(!gData||!gData.segments||!gData.segments.length){
+        document.getElementById('statusText').textContent='暂无数据';
+        return;
+    }
+    var segs=gData.segments;
+    if(!segs.length)return;
+    var maxTime=segs[segs.length-1].time+segs[segs.length-1].duration;
+    if(maxTime<1)maxTime=1;
+    var nBuckets=Math.ceil(maxTime/gInterval);
+    gBuckets=[];
+    for(var i=0;i<nBuckets;i++){
+        gBuckets.push({start:i*gInterval, end:(i+1)*gInterval, chars:0, segCount:0});
+    }
+    for(var i=0;i<segs.length;i++){
+        var s=segs[i],t=s.time||0;
+        var bidx=Math.floor(t/gInterval);
+        if(bidx>=0&&bidx<nBuckets){
+            gBuckets[bidx].chars+=s.text.length;
+            gBuckets[bidx].segCount+=1;
+        }
+    }
+    // Peak detection
+    var chars=gBuckets.map(function(b){return b.chars;});
+    var sum=chars.reduce(function(a,b){return a+b;},0);
+    var mean=sum/chars.length;
+    var variance=chars.reduce(function(a,b){return a+Math.pow(b-mean,2);},0)/chars.length;
+    var std=Math.sqrt(variance);
+    var threshold=mean+sensitivity*std;
+    gPeaks=[];
+    var inPeak=false,peakStart=-1;
+    for(var i=0;i<gBuckets.length;i++){
+        if(gBuckets[i].chars>threshold&&gBuckets[i].chars>0){
+            if(!inPeak){inPeak=true;peakStart=i;}
+        }else{
+            if(inPeak&&peakStart>=0){
+                gPeaks.push({start:peakStart,end:i-1});
+                inPeak=false;peakStart=-1;
+            }
+        }
+    }
+    if(inPeak&&peakStart>=0)gPeaks.push({start:peakStart,end:gBuckets.length-1});
+    renderChart();
+    renderTable();
+    renderPeaks();
+    renderStatus();
+}
+
+function renderChart(){
+    var labels=gBuckets.map(function(b){return fmtTime(b.start)+'-'+fmtTime(b.end);});
+    var values=gBuckets.map(function(b){return b.chars;});
+    var colors=values.map(function(v,i){
+        var inPeak=gPeaks.some(function(p){return i>=p.start&&i<=p.end;});
+        return inPeak?'#da3633':'#58a6ff';
+    });
+    var peakAnnotations=[];
+    gPeaks.forEach(function(p){
+        var maxVal=0,maxIdx=p.start;
+        for(var i=p.start;i<=p.end;i++){if(values[i]>maxVal){maxVal=values[i];maxIdx=i;}}
+        peakAnnotations.push({
+            x:labels[maxIdx],y:values[maxIdx],
+            text:'峰值',showarrow:true,arrowhead:3,ax:0,ay:-30,
+            font:{color:'#da3633',size:11},bgcolor:'rgba(13,17,23,.85)',
+            borderpad:4
+        });
+    });
+    var trace={
+        x:labels,y:values,type:'scatter',mode:'lines+markers',
+        marker:{color:colors,size:6},line:{color:'#58a6ff',width:2},
+        hovertemplate:'<b>%{x}</b><br>字符数: <b>%{y}</b><extra></extra>'
+    };
+    var layout={
+        title:{text:'语音活跃度 — 时间分布（'+gInterval+'s粒度）',font:{color:'#c9d1d9',size:15}},
+        paper_bgcolor:'#161b22',plot_bgcolor:'#0d1117',
+        xaxis:{title:'时间轴',gridcolor:'#21262d',color:'#8b949e',tickangle:-30},
+        yaxis:{title:'字符数',gridcolor:'#21262d',color:'#8b949e'},
+        margin:{l:60,r:30,t:50,b:80},annotations:peakAnnotations,
+        dragmode:'pan',hovermode:'closest'
+    };
+    var config={scrollZoom:true,displayModeBar:true,modeBarButtonsToRemove:['lasso2d','select2d'],
+        displaylogo:false,responsive:true};
+    Plotly.newPlot('chart',[trace],layout,config);
+    document.getElementById('chart').on('plotly_click',function(d){
+        if(d.points&&d.points.length){
+            showSlice(d.points[0].pointIndex);
+        }
+    });
+}
+
+function renderTable(){
+    var rows='';
+    gBuckets.forEach(function(b,i){
+        var inPeak=gPeaks.some(function(p){return i>=p.start&&i<=p.end;});
+        var cls=inPeak?' class="peak-row"':'';
+        var badge=inPeak?' <span class="peak-badge">活跃</span>':'';
+        rows+='<tr'+cls+'><td>'+i+'</td><td>'+fmtTime(b.start)+'</td><td>'+fmtTime(b.end)+'</td>'
+            +'<td><b>'+b.chars+'</b></td><td>'+b.segCount+'</td><td>'+badge+'</td></tr>';
+    });
+    document.getElementById('statsBody').innerHTML=rows;
+}
+
+function renderPeaks(){
+    var el=document.getElementById('peaksList');
+    if(!gPeaks.length){el.innerHTML='<p>未检测到显著高活跃度时段</p>';return;}
+    var totalPeakChars=0;
+    gPeaks.forEach(function(p){
+        for(var i=p.start;i<=p.end;i++)totalPeakChars+=gBuckets[i].chars;
+    });
+    var html='<p style="margin-bottom:8px">阈值: mean+'+document.getElementById('sensitivitySelect').value;
+    html+='σ, 共 <b style="color:#da3633">'+gPeaks.length+'</b> 个高活跃区段';
+    html+=', 总字符: <b>'+totalPeakChars+'</b></p>';
+    gPeaks.forEach(function(p,i){
+        var maxChars=0,totalChars=0;
+        for(var j=p.start;j<=p.end;j++){
+            totalChars+=gBuckets[j].chars;
+            if(gBuckets[j].chars>maxChars)maxChars=gBuckets[j].chars;
+        }
+        html+='<div class="slice-item" onclick="showSliceRange('+p.start+','+p.end+')">'
+            +'<span class="stime">#'+(i+1)+'</span> '
+            +'<span class="stime">'+fmtTime(gBuckets[p.start].start)+' → '+fmtTime(gBuckets[p.end].end)+'</span>'
+            +' 字符: <b>'+totalChars+'</b> 峰值: <b style="color:#da3633">'+maxChars+'</b>'
+            +' 跨度: '+((p.end-p.start+1)*gInterval/60).toFixed(1)+'分钟'
+            +'</div>';
+    });
+    el.innerHTML=html;
+}
+
+function renderStatus(){
+    var totalChars=0,totalSegs=0;
+    gBuckets.forEach(function(b){totalChars+=b.chars;totalSegs+=b.segCount;});
+    document.getElementById('statusText').textContent='数据就绪 · '+gData.segments.length+'条记录';
+    document.getElementById('totalChars').textContent='总字符: '+totalChars.toLocaleString();
+    document.getElementById('totalSegs').textContent='总句数: '+totalSegs;
+}
+
+function showSliceRange(start,end){
+    if(!gData)return;
+    var tStart=gBuckets[start].start,tEnd=gBuckets[end].end;
+    var slices=gData.segments.filter(function(s){
+        return s.time>=tStart&&s.time<tEnd;
+    });
+    var panel=document.getElementById('slicePanel');
+    panel.style.display='block';
+    var html='<p style="font-size:12px;color:#8b949e;margin-bottom:8px">'
+        +'时间范围: <b>'+fmtTime(tStart)+' → '+fmtTime(tEnd)+'</b>'
+        +' · '+slices.length+' 条记录</p>';
+    if(!slices.length){html+='<p style="color:#8b949e">该时段无识别内容</p>';}
+    else{
+        slices.forEach(function(s){
+            html+='<div class="slice-item" onclick="this.nextElementSibling.classList.toggle(\'show\')">'
+                +'<span class="stime">'+fmtTime(s.time||0)+'</span>'
+                +'<span class="sspk">'+(s.speaker_name||s.speaker||'?')+'</span>'
+                +s.text.substring(0,60)+(s.text.length>60?'...':'')
+                +'</div>'
+                +'<div class="slice-detail">'+s.text+'</div>';
+        });
+    }
+    document.getElementById('sliceContent').innerHTML=html;
+    panel.scrollIntoView({behavior:'smooth'});
+}
+
+function showSlice(idx){
+    showSliceRange(idx,idx);
+}
+
+function exportCSV(){
+    var rows=['时间段,开始(s),结束(s),字符数,句数,状态'];
+    gBuckets.forEach(function(b,i){
+        var inPeak=gPeaks.some(function(p){return i>=p.start&&i<=p.end;});
+        rows.push([i,b.start.toFixed(0),b.end.toFixed(0),b.chars,b.segCount,inPeak?'活跃':''].join(','));
+    });
+    var blob=new Blob([rows.join('\n')],{type:'text/csv;charset=utf-8'});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');a.href=url;a.download='asr_stats.csv';
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+document.getElementById('btnRefresh').addEventListener('click',function(){
+    Plotly.purge('chart');
+    fetchData();
+});
+document.getElementById('btnExport').addEventListener('click',exportCSV);
+document.getElementById('intervalSelect').addEventListener('change',processData);
+document.getElementById('sensitivitySelect').addEventListener('change',processData);
+
+fetchData();
+</script>
+</body>
+</html>"""
+
 import asyncio
 import websockets
 from websockets.http11 import Response, Headers
@@ -675,11 +989,13 @@ class RealtimeASRServer:
         self.last_segment_wall_time = 0
         self.last_segment_end_audio_time = 0
 
+        self._session_start_time = None
+
         self.keyword_history = []
 
         # 异步转录控制
         self.transcripts_in_flight = 0
-        self.max_concurrent_transcripts = 2
+        self.max_concurrent_transcripts = 3
         self.last_periodic_transcribe = 0
         self._partial_in_flight = False  # 防止CPU模式下partial堆积
 
@@ -713,7 +1029,12 @@ class RealtimeASRServer:
             return signal.resample_poly(audio_data.astype(np.float64), to_rate, from_rate).astype(np.float32)
         except ImportError:
             ratio = from_rate // to_rate
-            return audio_data[::ratio].astype(np.float32)
+            if ratio > 1:
+                audio = audio_data.astype(np.float64)
+                kernel = np.ones(ratio) / ratio
+                filtered = np.convolve(audio, kernel, mode='same')
+                return filtered[::ratio].astype(np.float32)
+            return audio_data.astype(np.float32)
 
     async def handler(self, websocket):
         self._current_handler_ws = websocket
@@ -768,34 +1089,23 @@ class RealtimeASRServer:
                     return
                 self.is_running = True
                 self.recording_ws = websocket
-                self.full_text = ""
-                self.segments = []
-                self._audio_buf = np.array([], dtype=np.float32)
-                self.keyword_store = {cat: set() for cat in CATEGORIES}
+                self._session_start_time = datetime.now()
+                self._reset_session_state()
                 self.pinyin_corrector.reset_session()
                 self.correction_engine.reset_session()
                 self.speaker_manager._session_active_speakers = set()
-                self._session_new_keywords = set()
-                self.sent_texts = set()
-                self.speaker_manager.last_speaker_id = 0
-                self.total_audio_seconds = 0
-                self.speaker_manager.total_audio_seconds = 0
-                self.transcription_count = 0
                 self.transcripts_in_flight = 0
                 self.last_periodic_transcribe = 0
-                self.speaker_manager._pending_new = None
-                self.speaker_manager._last_speaker_label = 'Speaker0'
-                self.last_segment_wall_time = 0
-                self.last_segment_end_audio_time = 0
-                self.keyword_history = []
+                self.speaker_manager._quick_recognized = False
+                self.speaker_manager._quality_reported = False
+                # 重置VAD自适应状态，避免残留影响新session
+                self.vad_processor.reset()
                 self._stream_seg_id = 0
                 self._stream_last_partial = ""
                 self._stream_full_text = ""
                 self._stream_last_corrected = ""
                 self._stream_partial_time = 0
                 self._stream_partial_buf = []
-                self.speaker_manager._quick_recognized = False
-                self.speaker_manager._quality_reported = False
                 await self._send_to(websocket, {
                     'type': 'status', 'status': 'recording',
                     'message': 'Started', 'model': self.asr_engine.model_name,
@@ -813,9 +1123,17 @@ class RealtimeASRServer:
                 if self.recording_ws is websocket:
                     self.recording_ws = None
                 self.is_running = False
-                # Flush remaining buffer
-                if len(self._audio_buf) > 16000:
+                # Flush remaining buffer（降低阈值：>=最小语音段即可转录，避免结尾丢字）
+                min_flush_samples = int(self.min_speech_duration * 16000)
+                if len(self._audio_buf) >= max(min_flush_samples, 4000):
+                    remaining_dur = len(self._audio_buf) / 16000
+                    print(f"[WS] stop: 刷新剩余缓冲区 {remaining_dur:.1f}s", flush=True)
                     await self.transcribe_buffer(self._audio_buf.copy())
+                elif len(self._audio_buf) > 800:
+                    # 极短尾音（<0.25s）：也尝试转录，避免丢字
+                    print(f"[WS] stop: 刷新极短尾音 {len(self._audio_buf)/16000:.2f}s", flush=True)
+                    await self.transcribe_buffer(self._audio_buf.copy())
+                self._audio_buf = np.array([], dtype=np.float32)
                 merge_segments(self.segments)
                 await self._send_to(websocket, {
                     'type': 'status', 'status': 'stopped',
@@ -832,24 +1150,8 @@ class RealtimeASRServer:
                             pass
 
             elif msg_type == 'clear':
-                self.full_text = ""
-                self.segments = []
-                self._audio_buf = np.array([], dtype=np.float32)
-                self.keyword_store = {cat: set() for cat in CATEGORIES}
+                self._reset_session_state(reset_speakers=True)
                 self.pinyin_corrector.kw_set.clear()
-                self.sent_texts = set()
-                self.speaker_manager.speaker_profiles = []
-                self.speaker_manager.last_speaker_id = 0
-                self.speaker_manager._pending_new = None
-                self.speaker_manager._last_speaker_label = 'Speaker0'
-                self.last_segment_wall_time = 0
-                self.last_segment_end_audio_time = 0
-                self.total_audio_seconds = 0
-                self.speaker_manager.total_audio_seconds = 0
-                self.transcription_count = 0
-                self.keyword_history = []
-                self.speaker_manager._session_active_speakers = set()
-                self._session_new_keywords = set()
                 await self._send_to(websocket, {'type': 'status', 'status': 'cleared'})
                 await self._send_to(websocket, {'type': 'keywords_updated', 'keywords': []})
 
@@ -924,13 +1226,7 @@ class RealtimeASRServer:
                     icon = CATEGORY_ICONS.get(cat, '')
                     print(f"[WS] {icon}添加关键词 [{CATEGORIES[cat]}]: {keyword} (共{len(all_kws)}个)", flush=True)
                     self._session_new_keywords.add(keyword)
-                    await self._send_to(websocket, {
-                        'type': 'keywords_updated',
-                        'keywords': list(self.pinyin_corrector.kw_set),
-                        'keyword_store': {c: list(v) for c, v in self.keyword_store.items() if v},
-                        'categories': CATEGORIES,
-                        'category_icons': CATEGORY_ICONS,
-                    })
+                    await self._send_keywords_updated(websocket)
 
                     if cat == 'speaker':
                         self.speaker_manager._session_active_speakers.add(keyword)
@@ -962,13 +1258,7 @@ class RealtimeASRServer:
                             added += 1
                     if added:
                         print(f"[WS] 📺 标题提取: '{title[:40]}' → {added}个关键词", flush=True)
-                        await self._send_to(websocket, {
-                            'type': 'keywords_updated',
-                            'keywords': list(self.pinyin_corrector.kw_set),
-                            'keyword_store': {c: list(v) for c, v in self.keyword_store.items() if v},
-                            'categories': CATEGORIES,
-                            'category_icons': CATEGORY_ICONS,
-                        })
+                        await self._send_keywords_updated(websocket)
 
             elif msg_type == 'speaker_profile_get':
                 speaker_id = msg.get('speaker_id', self.speaker_manager._last_speaker_label)
@@ -998,8 +1288,7 @@ class RealtimeASRServer:
                     })
 
             elif msg_type == 'save_report':
-                merge_segments(self.segments)
-                display_names = self.speaker_manager.get_all_display_names()
+                display_names = self._prepare_report_data()
                 report = generate_comprehensive_report(
                     self.segments, self.speaker_manager.speaker_profiles,
                     self.keyword_history, self.pinyin_corrector.correction_records,
@@ -1010,12 +1299,12 @@ class RealtimeASRServer:
                     display_names=display_names,
                     min_speech_duration=self.min_speech_duration,
                     page_creator=self.speaker_manager._page_creator,
+                    session_start_time=getattr(self, '_session_start_time', None),
                 )
                 await self._send_to(websocket, {'type': 'save_report', 'content': report, 'filename': f'asr_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.md'})
 
             elif msg_type == 'save_log':
-                merge_segments(self.segments)
-                display_names = self.speaker_manager.get_all_display_names()
+                display_names = self._prepare_report_data()
                 log = generate_structured_log(
                     self.segments, self.speaker_manager.speaker_profiles,
                     self.keyword_history, self.pinyin_corrector.correction_records,
@@ -1031,11 +1320,32 @@ class RealtimeASRServer:
 
         except Exception as e:
             print(f"[WS] Control error: {e}")
-            await self._send_to(websocket, {'type': 'error', 'message': str(e)})
+            await self._send_to(websocket, {'type': 'error', 'message': '处理请求时发生内部错误'})
 
     def _get_all_keywords(self):
         """获取所有分类的去重关键词"""
         return list(self.pinyin_corrector.kw_set)
+
+    def _reset_session_state(self, reset_speakers=False):
+        """重置会话状态（start 和 clear 共享的重置逻辑）"""
+        self.full_text = ""
+        self.segments = []
+        self._audio_buf = np.array([], dtype=np.float32)
+        self.keyword_store = {cat: set() for cat in CATEGORIES}
+        self.sent_texts = set()
+        self.speaker_manager.last_speaker_id = 0
+        self.speaker_manager._pending_new = None
+        self.speaker_manager._last_speaker_label = 'Speaker0'
+        self.last_segment_wall_time = 0
+        self.last_segment_end_audio_time = 0
+        self.total_audio_seconds = 0
+        self.speaker_manager.total_audio_seconds = 0
+        self.transcription_count = 0
+        self.keyword_history = []
+        self.speaker_manager._session_active_speakers = set()
+        self._session_new_keywords = set()
+        if reset_speakers:
+            self.speaker_manager.speaker_profiles = []
 
     async def _load_topic_keywords(self, tags):
         """加载话题关键词、拼音/文本纠正、实体知识库（不发送消息，返回 added 计数）"""
@@ -1092,14 +1402,27 @@ class RealtimeASRServer:
             if buffer_dur >= 0.5 and len(self._audio_buf) > 0:
                 # 用VAD检测是否有完整的语音段
                 audio_seg, remaining, vad_info = self.vad_processor.cut(self._audio_buf, 16000)
-                if remaining is not None:
-                    self._audio_buf = remaining if len(remaining) > 0 else np.array([], dtype=np.float32)
 
                 if audio_seg is not None and len(audio_seg) > int(self.min_speech_duration * 16000):
-                    await self.transcribe_buffer(audio_seg, vad_info)
+                    # 音乐/噪声检测：仅对 >=3s 长段检测，避免误杀连续说话
+                    seg_dur = len(audio_seg) / 16000
+                    if seg_dur >= 3.0 and self.vad_processor.is_music_like(audio_seg):
+                        # 音乐/噪声：跳过，但推进缓冲区
+                        if remaining is not None:
+                            self._audio_buf = remaining if len(remaining) > 0 else np.array([], dtype=np.float32)
+                    else:
+                        accepted = await self.transcribe_buffer(audio_seg, vad_info)
+                        if accepted and remaining is not None:
+                            self._audio_buf = remaining if len(remaining) > 0 else np.array([], dtype=np.float32)
+                        # 未接受（并发满载）：保留缓冲区，下次 VAD 重试
+                elif remaining is not None:
+                    self._audio_buf = remaining if len(remaining) > 0 else np.array([], dtype=np.float32)
 
-                # 限制缓冲区大小
+                # 限制缓冲区大小（超限时记录警告）
                 if len(self._audio_buf) > self.max_buffer_size:
+                    overflow_sec = (len(self._audio_buf) - self.max_buffer_size) / 16000
+                    print(f"[WS] ⚠ 音频缓冲区溢出，丢弃最旧{overflow_sec:.1f}s "
+                          f"(可能丢失语音内容)", flush=True)
                     self._audio_buf = self._audio_buf[-self.max_buffer_size:]
 
         except Exception as e:
@@ -1114,13 +1437,14 @@ class RealtimeASRServer:
             return
         self._partial_in_flight = True
         try:
-            import numpy as np
             rms = np.sqrt(np.mean(np.asarray(audio_array, dtype=np.float32) ** 2))
-            if rms < 0.005:
+            # 降低阈值：从0.005→0.002，避免过滤轻声细语
+            if rms < 0.002:
                 return
 
-            # 前置音乐/噪声检测：纯音乐/噪声直接跳过，不做ASR
-            if self.vad_processor.is_music_like(audio_array):
+            # 前置音乐/噪声检测：仅对 >=3s 长段检测，避免误杀连续说话
+            seg_dur = len(audio_array) / 16000
+            if seg_dur >= 3.0 and self.vad_processor.is_music_like(audio_array):
                 return
 
             loop = asyncio.get_event_loop()
@@ -1137,9 +1461,8 @@ class RealtimeASRServer:
 
             self._stream_full_text = full_text
 
-            # 智能纠错引擎：拼音纠错 + 文本纠错 + 实体识别 + 模糊匹配 + 语法检查 + 置信度评分
-            eng_result = self.correction_engine.correct(full_text, pinyin_corrector=self.pinyin_corrector)
-            corrected = eng_result['text']
+            # 智能纠错引擎：拼音纠错 + 文本纠错 + 实体识别（三步管线）
+            corrected, _ = self.correction_engine.correct(full_text, pinyin_corrector=self.pinyin_corrector)
             corrected = normalize_letter_adjacent_numbers(corrected)
 
             self._stream_last_corrected = corrected
@@ -1158,14 +1481,24 @@ class RealtimeASRServer:
             self._partial_in_flight = False
 
     async def transcribe_buffer(self, audio_data, vad_info=None):
+        """提交音频片段到转录队列。
+        Returns:
+            True: 已提交转录
+            False: 并发满载，未提交（调用方应保留音频等待重试）
+        """
         if self.transcripts_in_flight >= self.max_concurrent_transcripts:
-            return
-
-        # 前置音乐/噪声检测：纯音乐/噪声直接跳过，不做ASR
-        if self.vad_processor.is_music_like(audio_data):
-            return
+            dur = len(audio_data) / 16000
+            print(f"[WS] ⚠ 转录并发满载({self.transcripts_in_flight}/{self.max_concurrent_transcripts})，"
+                  f"保留{dur:.1f}s片段待重试", flush=True)
+            return False
 
         self.transcripts_in_flight += 1
+
+        # 在异步提交前捕获音频时间戳，避免并发完成乱序导致时间错误
+        seg_audio_time = self.total_audio_seconds
+        seg_duration = len(audio_data) / 16000
+        self.total_audio_seconds += seg_duration
+        self.speaker_manager.total_audio_seconds = self.total_audio_seconds
 
         # 在完整ASR前先跑一次快速partial，给前端实时展示斜体字+字幕条
         if len(audio_data) / 16000 >= 0.2:
@@ -1184,9 +1517,13 @@ class RealtimeASRServer:
         future = loop.run_in_executor(
             self.executor, self._do_transcribe, str(temp_path))
 
-        asyncio.ensure_future(self._handle_transcription(future, temp_path, audio_data, vad_info))
+        asyncio.ensure_future(self._handle_transcription(
+            future, temp_path, audio_data, vad_info,
+            seg_audio_time=seg_audio_time, seg_duration=seg_duration))
+        return True
 
-    async def _handle_transcription(self, future, temp_path, audio_data, vad_info=None):
+    async def _handle_transcription(self, future, temp_path, audio_data, vad_info=None,
+                                     seg_audio_time=None, seg_duration=None):
         try:
             text = await future
 
@@ -1219,14 +1556,10 @@ class RealtimeASRServer:
                     print(f"    [DEDUP-SENT] 替换更短: old='{prev[:20]}' ← new='{text[:30]}'", flush=True)
                     self.sent_texts.discard(prev)
 
-            # 对完整ASR结果运行智能纠错引擎，得到最终纠正后文本
-            # 此时partial（斜体字+字幕条）已展示过实时纠正版本，
-            # speaker区域展示的是完整纠正后的最终版本（异步、慢一拍）
+            # 对完整ASR结果运行智能纠错引擎（三步管线），得到最终纠正后文本
             original_text = text
-            eng_result = self.correction_engine.correct(text, pinyin_corrector=self.pinyin_corrector)
-            corrected = eng_result['text']
+            corrected, corrections = self.correction_engine.correct(text, pinyin_corrector=self.pinyin_corrector)
             corrected = normalize_letter_adjacent_numbers(corrected)
-            corrections = eng_result.get('corrections', [])
 
             if not corrected or not corrected.strip():
                 return
@@ -1240,7 +1573,8 @@ class RealtimeASRServer:
             })
 
             await self._emit_segment(audio_data, corrected, True, vad_info=vad_info,
-                                      corrections=corrections, original_text=original_text)
+                                      corrections=corrections, original_text=original_text,
+                                      seg_audio_time=seg_audio_time, seg_duration=seg_duration)
             status = f"[WS] [{self.transcription_count}] [SEG]"
             print(f"{status} {corrected[:60]}...", flush=True)
 
@@ -1250,7 +1584,7 @@ class RealtimeASRServer:
             print(f"[WS] Transcription error: {e}", flush=True)
             import traceback
             traceback.print_exc()
-            await self.send({'type': 'error', 'message': str(e)})
+            await self._send_to(self._current_handler_ws, {'type': 'error', 'message': '转录处理时发生内部错误'})
         finally:
             self.transcripts_in_flight -= 1
             if temp_path.exists():
@@ -1260,7 +1594,9 @@ class RealtimeASRServer:
         """在子线程中执行转写，避免阻塞事件循环"""
         return self.asr_engine.transcribe(temp_path)
 
-    async def _emit_segment(self, audio_data, text, kw_applied=False, speaker_label=None, vad_info=None, corrections=None, original_text=None):
+    async def _emit_segment(self, audio_data, text, kw_applied=False, speaker_label=None,
+                            vad_info=None, corrections=None, original_text=None,
+                            seg_audio_time=None, seg_duration=None):
         """创建一条识别记录并发送到前端"""
         if not text or text in self.sent_texts:
             if text:
@@ -1287,9 +1623,11 @@ class RealtimeASRServer:
             speaker_label = await self.speaker_manager.detect_speaker(audio_data)
             self.speaker_manager._last_speaker_label = speaker_label
 
-        # 计算音频时间戳和gap
-        seg_audio_time = self.total_audio_seconds
-        seg_duration = len(audio_data) / 16000
+        # 使用提交时捕获的时间戳（避免并发完成乱序导致时间错误）
+        if seg_audio_time is None:
+            seg_audio_time = self.total_audio_seconds
+        if seg_duration is None:
+            seg_duration = len(audio_data) / 16000
         now_wall = time.time()
 
         gap_audio = 0.0
@@ -1305,7 +1643,7 @@ class RealtimeASRServer:
 
         seg_entry = {
             'text': text,
-            'time': self.total_audio_seconds,
+            'time': seg_audio_time,
             'speaker': speaker_label,
             'speaker_display': display_name,
             'duration': seg_duration,
@@ -1326,8 +1664,7 @@ class RealtimeASRServer:
         self.full_text += display + " "
         if len(self.sent_texts) < self._MAX_SENT_TEXTS:
             self.sent_texts.add(text)
-        self.total_audio_seconds += seg_duration
-        self.speaker_manager.total_audio_seconds = self.total_audio_seconds
+        # total_audio_seconds 已在 transcribe_buffer 提交时推进，此处不再重复
         self.transcription_count += 1
 
         await self.send({
@@ -1510,9 +1847,13 @@ class RealtimeASRServer:
             print(f"[WS] 抓取页面失败: {e}", flush=True)
             return None
 
-    async def generate_and_send_report(self, websocket):
+    def _prepare_report_data(self):
+        """准备报告所需的公共数据（合并片段 + 获取显示名称）"""
         merge_segments(self.segments)
-        display_names = self.speaker_manager.get_all_display_names()
+        return self.speaker_manager.get_all_display_names()
+
+    async def generate_and_send_report(self, websocket):
+        display_names = self._prepare_report_data()
         report = generate_comprehensive_report(
             self.segments, self.speaker_manager.speaker_profiles,
             self.keyword_history, self.pinyin_corrector.correction_records,
@@ -1523,8 +1864,24 @@ class RealtimeASRServer:
             display_names=display_names,
             min_speech_duration=self.min_speech_duration,
             page_creator=self.speaker_manager._page_creator,
+            session_start_time=getattr(self, '_session_start_time', None),
         )
         await self._send_to(websocket, {'type': 'report', 'content': report})
+
+    def generate_log_json(self):
+        """生成当前会话的结构化JSON日志（供可视化API使用）"""
+        display_names = self._prepare_report_data()
+        return generate_structured_log(
+            self.segments, self.speaker_manager.speaker_profiles,
+            self.keyword_history, self.pinyin_corrector.correction_records,
+            self.total_audio_seconds,
+            self.asr_engine.model_name if self.asr_engine else 'unknown',
+            self.pinyin_corrector._loaded_topics,
+            self.speaker_manager._page_type, self.speaker_manager._video_offset,
+            self.speaker_manager._session_active_speakers,
+            display_names=display_names,
+            page_creator=self.speaker_manager._page_creator,
+        )
 
     async def _send_to(self, websocket, message):
         try:
@@ -1539,6 +1896,7 @@ class RealtimeASRServer:
 
     async def start(self):
         page = STATUS_PAGE.replace("{host}", self.host).replace("{port}", str(self.port))
+        viz_page = VISUALIZATION_PAGE.replace("{host}", self.host).replace("{port}", str(self.port))
         async def process_request(connection, request):
             path = request.path if hasattr(request, 'path') else '/'
             print(f"[WS] HTTP request: {path}", flush=True)
@@ -1546,13 +1904,30 @@ class RealtimeASRServer:
                 print(f"[WS] WebSocket upgrade request", flush=True)
                 return None
             h = Headers()
-            h['Content-Type'] = 'text/html; charset=utf-8'
             h['Connection'] = 'close'
+
+            if path == '/api/log':
+                h['Content-Type'] = 'application/json; charset=utf-8'
+                h['Access-Control-Allow-Origin'] = '*'
+                try:
+                    log_json = self.generate_log_json()
+                    return Response(200, "OK", h, log_json.encode("utf-8"))
+                except Exception as e:
+                    print(f"[WS] /api/log error: {e}", flush=True)
+                    return Response(500, "Error", h, json.dumps({"error": str(e)}, ensure_ascii=False).encode("utf-8"))
+
+            if path == '/visualization':
+                h['Content-Type'] = 'text/html; charset=utf-8'
+                print(f"[WS] Serving visualization page ({len(viz_page)} bytes)", flush=True)
+                return Response(200, "OK", h, viz_page.encode("utf-8"))
+
+            h['Content-Type'] = 'text/html; charset=utf-8'
             print(f"[WS] Serving status page ({len(page)} bytes)", flush=True)
             return Response(200, "OK", h, page.encode("utf-8"))
 
         print(f"\n[WS] WebSocket server: ws://{self.host}:{self.port}", flush=True)
         print(f"[WS] Status page:     http://{self.host}:{self.port}", flush=True)
+        print(f"[WS] Visualization:  http://{self.host}:{self.port}/visualization", flush=True)
         async with websockets.serve(
             self.handler, self.host, self.port,
             ping_interval=20, ping_timeout=60, close_timeout=10,

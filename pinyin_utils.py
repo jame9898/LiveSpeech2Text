@@ -48,7 +48,7 @@ class PinyinCorrector:
         self.correction_records = []
 
     def reset_session(self):
-        """重置会话状态：清空话题纠正、kw_set、日志等，保留基础配置"""
+        """重置会话状态：清空话题纠正、kw_set、日志等，重新加载基础词典"""
         self._loaded_topics.clear()
         self._loaded_text_topics.clear()
         self.pinyin_corrections.clear()
@@ -59,6 +59,7 @@ class PinyinCorrector:
         self.protected_phrases.clear()
         self.correction_log.clear()
         self.correction_records.clear()
+        print(f"[PINYIN] 会话重置，已重新加载拼音纠错词典: {len(self.pinyin_corrections)}条", flush=True)
 
     @staticmethod
     def split_pinyin(py):
@@ -89,33 +90,53 @@ class PinyinCorrector:
         except (ValueError, TypeError, KeyError):
             return list(text)
 
+    @staticmethod
+    def _load_dict_file(path, label=""):
+        """加载JSON词典文件的通用辅助方法，返回过滤后的条目字典"""
+        if not path.exists():
+            return None
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            entries = {k: v for k, v in data.items() if not k.startswith('__')}
+            return entries
+        except FileNotFoundError:
+            return None
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[{label}] 加载词典失败 {path.name}: {e}", flush=True)
+            return None
+
     def load_pinyin_corrections(self, topic=None):
+        """加载拼音→正确文字 纠错词典（按话题加载对应词典文件）"""
         base_dir = DICT_DIR / 'pinyin_corrections'
         base_dir.mkdir(exist_ok=True)
-        general_path = base_dir / 'general.json'
-        if general_path.exists():
-            try:
-                with open(general_path, 'r', encoding='utf-8') as f:
-                    self.pinyin_corrections.update(json.load(f))
-            except FileNotFoundError:
-                pass
-            except (json.JSONDecodeError, OSError) as e:
-                print(f"[PINYIN] 加载通用拼音纠正失败: {e}", flush=True)
+
+        # 话题特定纠错
         if topic:
             topic_lower = topic.lower().strip()
             if topic_lower in self._loaded_topics:
                 return self.pinyin_corrections
             topic_path = base_dir / f'{topic_lower}.json'
-            if topic_path.exists():
-                try:
-                    with open(topic_path, 'r', encoding='utf-8') as f:
-                        self.pinyin_corrections.update(json.load(f))
-                    print(f"[PINYIN] 加载话题拼音纠正: {topic} ({topic_path.name})", flush=True)
-                    self._loaded_topics.add(topic_lower)
-                except FileNotFoundError:
-                    pass
-                except (json.JSONDecodeError, OSError) as e:
-                    print(f"[PINYIN] 加载话题拼音纠正失败 {topic}: {e}", flush=True)
+            entries = self._load_dict_file(topic_path, "PINYIN")
+            if entries is not None:
+                count = len(entries)
+                self.pinyin_corrections.update(entries)
+                if count:
+                    print(f"[PINYIN] 补充话题拼音纠正: {topic} ({topic_path.name}, +{count}条)", flush=True)
+                self._loaded_topics.add(topic_lower)
+
+        # 网络/通信话题：加载 datacom.json（不在 general.json 中）
+        if topic and topic_lower in ('datacom', 'network', '网络', '路由', '通信', '华', '思科', 'tech'):
+            datacom_path = base_dir / 'datacom.json'
+            if 'datacom' not in self._loaded_topics:
+                entries = self._load_dict_file(datacom_path, "PINYIN")
+                if entries is not None:
+                    count = len(entries)
+                    self.pinyin_corrections.update(entries)
+                    if count:
+                        print(f"[PINYIN] 加载网络术语拼音纠正: datacom.json (+{count}条)", flush=True)
+                    self._loaded_topics.add('datacom')
+
         return self.pinyin_corrections
 
     def sync_protected_from_keywords(self):
@@ -166,6 +187,11 @@ class PinyinCorrector:
                             match = False
                             break
                     else:
+                        # 单音节无调key不允许通过剥离声调来匹配：
+                        # 例如 "hen"(无调) 不应匹配 "hen3"(很)，否则常见字会被误纠
+                        if n == 1:
+                            match = False
+                            break
                         text_clean = ''.join(c for c in text_syl if not c.isdigit())
                         if key_syl != text_clean:
                             match = False
@@ -195,31 +221,24 @@ class PinyinCorrector:
         return corrected, corrections
 
     def load_text_corrections(self, topic=None):
-        """加载英文/数字文本直接替换纠错字典（用于选手名、ID等非拼音可处理的词）"""
+        """加载英文/数字文本直接替换纠错字典（辅助补丁，主纠错已用拼音完成）"""
         base_dir = DICT_DIR / 'text_corrections'
         base_dir.mkdir(exist_ok=True)
         general_path = base_dir / 'general.json'
-        if general_path.exists():
-            try:
-                with open(general_path, 'r', encoding='utf-8') as f:
-                    self.text_corrections.update(json.load(f))
-            except FileNotFoundError:
-                pass
-            except (json.JSONDecodeError, OSError) as e:
-                print(f"[TEXT] 加载通用文本纠正失败: {e}", flush=True)
+        entries = self._load_dict_file(general_path, "TEXT")
+        if entries is not None:
+            self.text_corrections.update(entries)
         if topic:
             topic_lower = topic.lower().strip()
             if topic_lower in self._loaded_text_topics:
                 return self.text_corrections
             topic_path = base_dir / f'{topic_lower}.json'
-            if topic_path.exists():
-                try:
-                    with open(topic_path, 'r', encoding='utf-8') as f:
-                        self.text_corrections.update(json.load(f))
-                    print(f"[TEXT] 加载话题文本纠正: {topic} ({topic_path.name})", flush=True)
-                    self._loaded_text_topics.add(topic_lower)
-                except (json.JSONDecodeError, OSError):
-                    pass
+            entries = self._load_dict_file(topic_path, "TEXT")
+            if entries is not None:
+                self.text_corrections.update(entries)
+                if entries:
+                    print(f"[TEXT] 加载话题文本纠正: {topic} ({topic_path.name}, +{len(entries)}条)", flush=True)
+                self._loaded_text_topics.add(topic_lower)
         return self.text_corrections
 
     def apply_text_correction(self, text):

@@ -25,6 +25,11 @@ class VADProcessor:
         self.speech_gaps = []
         self.adaptive_threshold = 1.35
 
+    def reset(self):
+        """重置会话状态：清空自适应历史数据"""
+        self.speech_gaps = []
+        self.adaptive_threshold = 1.35
+
     def cut(self, audio_data, sr):
         """
         自适应VAD：根据说话语速动态调整静音断句阈值
@@ -84,9 +89,9 @@ class VADProcessor:
             first_speech_frame = np.where(is_speech)[0][0]
             speech_duration = (last_speech_frame - first_speech_frame + 1) * 0.01
 
-            # 连续说话快速切分
+            # 连续说话快速切分（提高静音阈值：0.5s→0.8s，减少误切）
             quick_cut_dur = 1.5
-            quick_cut_silence = int(0.5 / 0.01)
+            quick_cut_silence = int(0.8 / 0.01)
             if self.vad_force_cut and speech_duration > quick_cut_dur and silence_after >= quick_cut_silence:
                 cut_point = (last_speech_frame + 1) * hop_len
                 speech_segment = audio_data[:cut_point]
@@ -138,12 +143,6 @@ class VADProcessor:
         buffer_dur = len(audio_data) / sr
         if self.vad_force_cut and buffer_dur > desperate_sec:
             cut_samples = int(min(buffer_dur, fc) * sr)
-            # Check if audio has actual speech content
-            segment_rms = np.sqrt(np.mean(audio_data[:cut_samples] ** 2))
-            if segment_rms < 0.002:
-                # Pure noise/silence, don't send to ASR
-                remaining = audio_data[cut_samples:]
-                return None, remaining, {'forced': True, 'skipped': True}
             speech_segment = audio_data[:cut_samples]
             remaining = audio_data[cut_samples:]
             vad_info['forced'] = True
@@ -172,4 +171,4 @@ class VADProcessor:
             return True
 
         cv = np.std(energies) / np.mean(energies)
-        return cv < self.MUSIC_ZCR_THRESHOLD
+        return cv < 0.18
