@@ -33,6 +33,8 @@ CONFIG_FILE = DICT_DIR / "asr_config.json"
 for d in [DICT_DIR, TEMP_DIR, MODELS_DIR]:
     d.mkdir(exist_ok=True)
 
+MODELSCOPE_CACHE = Path.home() / ".cache" / "modelscope" / "hub"
+
 _os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
 
 _DEFAULT_CONFIG = {
@@ -172,8 +174,12 @@ class ASREngine:
             for folder_name, size_label, ms_id, hf_id in model_variants:
                 search_paths = [
                     MODELS_DIR / 'hub' / 'models' / 'Qwen' / folder_name,
+                    MODELSCOPE_CACHE / 'models' / 'Qwen' / folder_name,
                 ]
                 for candidate in list(MODELS_DIR.glob(f'**/{folder_name}')):
+                    if candidate.is_dir() and candidate not in search_paths:
+                        search_paths.insert(0, candidate)
+                for candidate in list(MODELSCOPE_CACHE.glob(f'**/{folder_name}')):
                     if candidate.is_dir() and candidate not in search_paths:
                         search_paths.insert(0, candidate)
                 for p in search_paths:
@@ -186,9 +192,13 @@ class ASREngine:
                     break
 
             if not model_path:
-                os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
-                model_path = "Qwen/Qwen3-ASR-1.7B"
-                print(f"[LOAD] Qwen3-ASR from HuggingFace: {model_path}", flush=True)
+                _os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
+                # 使用正确的模型 ID，而不是硬编码 1.7B
+                if model_variants:
+                    model_path = model_variants[0][2]  # ms_id
+                else:
+                    model_path = "Qwen/Qwen3-ASR-0.6B"  # 兜底
+                print(f"[LOAD] Qwen3-ASR from ModelScope: {model_path}", flush=True)
 
             has_cuda = torch.cuda.is_available()
             dtype = torch.bfloat16 if has_cuda else torch.float32
