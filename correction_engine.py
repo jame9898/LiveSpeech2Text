@@ -498,7 +498,7 @@ class CorrectionEngine:
         return entities
 
     def _normalize_aliases(self, text):
-        """将已知别名替换为规范名（如 safe→saffee, monesy→m0NESY, 小孩→m0NESY）"""
+        """将已知别名替换为规范名（跨语言不替换，保留原文语言）"""
         corrections = []
         already_done = set()
 
@@ -514,6 +514,10 @@ class CorrectionEngine:
         candidates.sort(key=lambda x: len(x[0]), reverse=True)
 
         for alias, canonical, etype in candidates:
+            # 跨语言不替换：别名含中文而规范名纯英文时跳过，反之亦然
+            _has_cjk = lambda s: bool(re.search(r'[\u4e00-\u9fff\u3400-\u4dbf]', s))
+            if _has_cjk(alias) != _has_cjk(canonical):
+                continue
             pattern = r'(?<![a-zA-Z0-9])' + re.escape(alias) + r'(?![a-zA-Z0-9])'
             new_text = re.sub(pattern, canonical, text, count=1, flags=re.IGNORECASE)
             if new_text != text:
