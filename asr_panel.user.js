@@ -161,6 +161,7 @@ function _hasInteractiveVideo() {
     return false;
 }
 
+var detectCreator, detectTags, detectTitle;
 { // inject platform-specific detection functions
     detectCreator = function() {
         const u = location.href;
