@@ -10,11 +10,18 @@
 // @match        *://*.douyin.com/*
 // @match        *://*.cc.163.com/*
 // @match        *://*.egame.qq.com/*
-// @grant        none
+// @grant        GM_addStyle
+// @grant        GM_getValue
+// @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
+// @connect      localhost
+// @connect      127.0.0.1
 // ==/UserScript==
 
 (function() {
 'use strict';
+
+
 
 const LAUNCH_URL = 'asr-launcher://start';
 const RECONNECT_BASE = 2000;
@@ -39,9 +46,9 @@ function eHtml(s) {
 }
 
 if (document.getElementById('asr-panel-v3')) return;
-if (window.self !== window.top) return;
+if (unsafeWindow.self !== unsafeWindow.top) return;
 
-let ws = null, isRecording = false, audioCtx = null, mediaStream = null;
+let isRecording = false, audioCtx = null, mediaStream = null;
 let reconnectTimer = null, reconnectAttempts = 0;
 let segCount = 0, lastWelcomeTime = 0;
 let keywords = [], keywordStore = {};
@@ -54,19 +61,75 @@ let _lastUrl = location.href, _panelClosedByUser = false;
 let lastSpeakerId = 'Speaker0';
 let _pendingSegs = [];
 
+// WebSocket via Web Worker (bypasses CSP)
+const _WS_WORKER_CODE = 'const U=["ws://localhost:8765","ws://127.0.0.1:8765"];let s=null,a=0,t=null;function c(i){if(i>=U.length){p("s",{ok:0,msg:"无法连接"});a++;t=setTimeout(function(){c(0)},Math.min(2000*Math.pow(1.5,a),30000));return}try{s=new WebSocket(U[i]);s.binaryType="arraybuffer";s.onopen=function(){p("s",{ok:1});a=0;if(t){clearTimeout(t);t=null}};s.onmessage=function(e){p("m",e.data)};s.onclose=function(e){p("s",{ok:0,msg:"断开 ("+(e.code||"?")+")"});s=null;a++;t=setTimeout(function(){c(0)},Math.min(2000*Math.pow(1.5,a),30000))};s.onerror=function(){p("s",{ok:0,msg:"无法连接"});if(s){s.close();s=null}}}catch(e){p("s",{ok:0,msg:"无法连接"});a++;t=setTimeout(function(){c(0)},Math.min(2000*Math.pow(1.5,a),30000))}}function p(y,d){try{self.postMessage({t:y,d:d})}catch(e){}}self.onmessage=function(e){var m=e.data;if(m.t==="c"){c(0)}else if(m.t==="s"){if(s&&s.readyState===1){try{s.send(m.d)}catch(e){}}}else if(m.t==="x"){if(t){clearTimeout(t);t=null}a=0;if(s){try{s.close()}catch(e){}s=null}}};';
+let _wsWorker = null, _wsReady = false;
+function _wsInit() {
+    if (_wsWorker) return;
+    try {
+        var blob = new Blob([_WS_WORKER_CODE], {type: 'application/javascript'});
+        _wsWorker = new Worker(URL.createObjectURL(blob));
+        _wsWorker.onmessage = function(e) {
+            var m = e.data;
+            if (m.t === 's') {
+                if (m.d.ok) {
+                    _wsReady = true;
+                    setConn(true);
+                    reconnectAttempts = 0;
+                    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+                    pingTimer = setInterval(function() { _wsSend(JSON.stringify({type:'ping'})); }, PING_INTERVAL);
+                } else {
+                    _wsReady = false;
+                    setConn(false, String.fromCharCode(0x1F534)+' '+m.d.msg);
+                    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+                }
+            } else if (m.t === 'm') {
+                try { onMsg(JSON.parse(typeof m.d === 'string' ? m.d : new TextDecoder().decode(new Uint8Array(m.d)))); } catch(x) {}
+            }
+        };
+    } catch(e) {
+        L('Worker init failed: ' + e.message);
+    }
+}
+function _wsSend(data) {
+    if (_wsWorker && _wsReady) {
+        _wsWorker.postMessage({t: 's', d: data});
+    }
+}
+function _wsSendBinary(buffer) {
+    if (_wsWorker && _wsReady) {
+        _wsWorker.postMessage({t: 's', d: buffer}, [buffer]);
+    }
+}
+function _wsClose() {
+    if (_wsWorker) {
+        _wsWorker.postMessage({t: 'x'});
+        _wsWorker.terminate();
+        _wsWorker = null;
+    }
+    _wsReady = false;
+}
+
 function isVideoPage() {
     const u = location.href;
 
     if (u.includes('bilibili.com')) {
         if (u.includes('/video/') || u.includes('bangumi/play')) return _hasInteractiveVideo();
-        if (u.includes('live.bilibili.com')) return _hasInteractiveVideo();
+        if (u.includes('live.bilibili.com')) {
+            // B站直播房间页：URL含数字ID或blanc/数字ID时返回true
+            // 首页(live.bilibili.com/) 和 目录页(/p/eden/area等) 不显示插件
+            if (/live\.bilibili\.com\/(\d+|blanc\/\d+|blackboard\/)/.test(u)) return true;
+            return false;
+        }
         return false;
     }
 
     if (u.includes('douyu.com')) {
         if (u.includes('/directory') || u.includes('/topic') || u.includes('/myFollow')) return false;
-        if (u === 'https://www.douyu.com/' || u === 'https://douyu.com/' || u === 'https://www.douyu.com' || u === 'https://douyu.com') return false;
-        return _hasInteractiveVideo();
+        // 房间页：www.douyu.com/房间号
+        if (/douyu\.com\/(\d+)/.test(u)) return true;
+        // 首页等：不显示插件
+        return false;
     }
 
     if (u.includes('youtube.com')) {
@@ -75,7 +138,9 @@ function isVideoPage() {
     }
 
     if (u.includes('huya.com')) {
-        if (/\d+/.test(u) && !u.includes('/topic') && !u.includes('/user')) return _hasInteractiveVideo();
+        if (u.includes('/topic') || u.includes('/user') || u.includes('/myFollow') || u.includes('/directory')) return false;
+        const m = u.match(/huya\.com\/([^/?#]+)/);
+        if (m && m[1]) return true;
         return false;
     }
 
@@ -96,33 +161,112 @@ function _hasInteractiveVideo() {
     return false;
 }
 
-function detectCreator() { /* same as v2 */ return null; }
-function detectTags() { return []; }
-function detectTitle() { return ''; }
-async function detectLiveSquad() { return []; }
-
-{ // inject original detection functions
-    const _ddc = detectCreator, _ddt = detectTags, _ddti = detectTitle, _ddls = detectLiveSquad;
+{ // inject platform-specific detection functions
     detectCreator = function() {
         const u = location.href;
         if (u.includes('bilibili.com/video/')) {
-            const sels = ['[class*="up-name"]','.up-name','.username','[class*="up-detail"] a','a[href*="space.bilibili.com"]'];
+            const sels = [
+                '[class*="up-name"]','.up-name','.username',
+                '[class*="up-detail"] a','[class*="video-info"] [class*="name"]',
+                '[class*="owner-name"]','[class*="author-name"]',
+                'a[href*="space.bilibili.com"]'
+            ];
             for (const sel of sels) {
                 const el = document.querySelector(sel);
                 if (el) { const t = el.textContent.trim(); if (t.length>=2&&t.length<30&&!t.includes('关注')&&!t.includes('粉丝')) return t; }
             }
             const ma = document.querySelector('meta[name="author"]');
             if (ma) { const v = ma.getAttribute('content'); if (v&&v.length>=2&&v.length<30) return v; }
+            // 尝试所有 space.bilibili.com 链接
+            const spaceLinks = document.querySelectorAll('a[href*="space.bilibili.com"]');
+            for (const link of spaceLinks) {
+                const t = link.textContent.trim();
+                if (t.length>=2&&t.length<30&&!t.includes('关注')&&!t.includes('粉丝')) return t;
+            }
+            return null;
+        }
+        if (u.includes('live.bilibili.com')) {
+            // B站直播：尝试多种选择器获取主播名
+            const sels = [
+                '[class*="room-owner"]','[class*="anchor-name"]','[class*="host-name"]',
+                '[class*="up-name"]','.username','[class*="live-skin"] [class*="name"]',
+                '[class*="anchor-info"] [class*="name"]','[class*="room-info"] [class*="name"]',
+                'a[href*="space.bilibili.com"]'
+            ];
+            for (const sel of sels) {
+                const el = document.querySelector(sel);
+                if (el) { const t = el.textContent.trim(); if (t.length>=2&&t.length<30&&!t.includes('关注')&&!t.includes('粉丝')&&!t.includes('直播')) return t; }
+            }
+            // 尝试所有 space.bilibili.com 链接
+            const spaceLinks = document.querySelectorAll('a[href*="space.bilibili.com"]');
+            for (const link of spaceLinks) {
+                const t = link.textContent.trim();
+                if (t.length>=2&&t.length<30&&!t.includes('关注')&&!t.includes('粉丝')&&!t.includes('直播')) return t;
+            }
+            // 尝试从页面标题提取主播名
+            const title = document.querySelector('title');
+            if (title) {
+                const t = title.textContent.trim();
+                const m = t.match(/^(.+?)[的之]?直播/);
+                if (m && m[1].length>=2 && m[1].length<30) return m[1].trim();
+                const m2 = t.match(/^(.+?)[-—–\\s]+/);
+                if (m2 && m2[1].length>=2 && m2[1].length<30) return m2[1].trim();
+                const m3 = t.match(/^(.+?)_/);
+                if (m3 && m3[1].length>=2 && m3[1].length<30) return m3[1].trim();
+            }
             return null;
         }
         if (u.includes('douyu.com/')&&!u.includes('douyu.com/directory')) {
-            const sels = ['[class*="Title-anchorName"]','[class*="AnchorName"]','[class*="anchor-name"]'];
-            for (const sel of sels) { const el = document.querySelector(sel); if (el) { const t=el.textContent.trim(); if(t.length>=2&&t.length<30) return t; } }
+            const sels = [
+                '[class*="Title-anchorName"]','[class*="AnchorName"]','[class*="anchor-name"]',
+                '[class*="host-name"]','[class*="room-owner"]','[class*="anchor-info"] [class*="name"]',
+                '.Title-titleName','.title-name','[class*="host-info"]','[class*="room-title"]'
+            ];
+            for (const sel of sels) {
+                const el = document.querySelector(sel);
+                if (el) { const t = el.textContent.trim(); if (t.length>=2&&t.length<30&&!t.includes('关注')&&!t.includes('粉丝')&&!t.includes('直播')) return t; }
+            }
+            // 兜底：从页面标题提取（斗鱼格式: "标题_主播名[分区]直播_斗鱼直播"）
+            const tEl = document.querySelector('title');
+            if (tEl) {
+                const t = tEl.textContent.trim();
+                // 提取 _斗鱼直播 或 _正在直播 之前最后一段
+                const m = t.match(/[_\s]([^_\s]{2,30})_(?:斗鱼|正在)直播/);
+                if (m) {
+                    let name = m[1].trim();
+                    // 去掉尾部的游戏分区名+直播（如 "CS2直播", "英雄联盟直播"）
+                    name = name.replace(/(?:CS[:]?GO|CS2|VALORANT|APEX|PUBG|DOTA2?|LOL|CF|[A-Z]{2,6}|[\u4e00-\u9fff]{2,4})直播$/i, '');
+                    if (name.length>=2 && name.length<30) return name;
+                }
+                // 直接分割，取倒数第二段
+                const parts = t.split('_').filter(p => p && p.length>=2 && !p.includes('斗鱼') && !p.includes('正在') && p !== '直播');
+                if (parts.length > 0) {
+                    let last = parts[parts.length - 1];
+                    last = last.replace(/(?:CS[:]?GO|CS2|VALORANT|APEX|PUBG|DOTA2?|LOL|CF|[A-Z]{2,6}|[\u4e00-\u9fff]{2,4})直播$/i, '');
+                    if (last.length >= 2 && last.length < 30) return last;
+                }
+            }
             return null;
         }
         if (u.includes('huya.com/')&&/\d+/.test(u)) {
-            const sels = ['[class*="host-name"]','[class*="anchor-name"]'];
-            for (const sel of sels) { const el = document.querySelector(sel); if (el) { const t=el.textContent.trim(); if(t.length>=2&&t.length<30) return t; } }
+            const sels = [
+                '[class*="host-name"]','[class*="anchor-name"]','[class*="author-name"]',
+                '[class*="host-info"] [class*="name"]','[class*="room-info"] [class*="name"]',
+                '#J_anchorName','.host-title','.anchor-title','[class*="live-title"] [class*="name"]'
+            ];
+            for (const sel of sels) {
+                const el = document.querySelector(sel);
+                if (el) { const t = el.textContent.trim(); if (t.length>=2&&t.length<30&&!t.includes('关注')&&!t.includes('粉丝')&&!t.includes('直播')) return t; }
+            }
+            // 兜底：从页面标题提取
+            const tEl = document.querySelector('title');
+            if (tEl) {
+                const t = tEl.textContent.trim();
+                const m = t.match(/^(.+?)[的之\-—–_]?直播间/);
+                if (m && m[1].length>=2 && m[1].length<30) return m[1].trim();
+                const m2 = t.match(/^(.+?)[-—–_]/);
+                if (m2 && m2[1].length>=2 && m2[1].length<30) return m2[1].trim();
+            }
             return null;
         }
         return null;
@@ -154,92 +298,6 @@ async function detectLiveSquad() { return []; }
         if (te) { const t=te.textContent.trim(); const i=t.lastIndexOf('_哔哩哔哩'); if(i>0) return t.substring(0,i).trim(); }
         return '';
     };
-    detectLiveSquad = async function() {
-        const u = location.href;
-
-        if (u.includes('douyu.com/') && /\d+/.test(u)) {
-            const members = [], seen = new Set();
-            try {
-                const roomId = u.match(/\/(\d+)/);
-                if (roomId) {
-                    const r = await fetch(`https://www.douyu.com/betard/${roomId[1]}`, {credentials:'omit'});
-                    const j = await r.json();
-                    if (j.room && j.room.owner_name) {
-                        seen.add(j.room.owner_name);
-                        members.push(j.room.owner_name);
-                    }
-                }
-            } catch(e) {}
-            try {
-                const sels = ['[class*="Title-anchorName"]','[class*="AnchorName"]',
-                    '[class*="anchor-name"]','[class*="anchorName"]','[class*="host-name"]'];
-                for (const sel of sels) {
-                    const el = document.querySelector(sel);
-                    if (el) {
-                        const t = el.textContent.trim();
-                        if (t.length>=2&&t.length<30&&!seen.has(t)) { seen.add(t); members.push(t); }
-                    }
-                }
-            } catch(e) {}
-            return members;
-        }
-
-        if (u.includes('huya.com/') && /\d+/.test(u)) {
-            const members = [], seen = new Set();
-            try {
-                const sels = ['[class*="host-name"]','[class*="anchor-name"]',
-                    '[class*="host-info"] [class*="name"]','[class*="live-title"] [class*="name"]'];
-                for (const sel of sels) {
-                    const el = document.querySelector(sel);
-                    if (el) {
-                        const t = el.textContent.trim();
-                        if (t.length>=2&&t.length<30&&!seen.has(t)) { seen.add(t); members.push(t); }
-                    }
-                }
-            } catch(e) {}
-            return members;
-        }
-
-        if (!u.includes('live.bilibili.com')) return [];
-        const members = [], seen = new Set();
-        const BL = new Set(['哔哩哔哩','bilibili','友情链接','加入我们','服务协议','隐私政策','联系我们','关于我们',
-            '帮助中心','意见反馈','下载APP','首页','直播','推荐','热门','番剧','关注','粉丝','人气',
-            '正在直播','直播中','未开播','已结束','房间','主播','开播','下播','互动','礼物','弹幕',
-            'PK','胜','负','守护','舰长','提督','总督','大航海','勋章','活动','公告','加载中','更多','万','亿']);
-        function looksUser(t) {
-            if (!t||t.length<2||t.length>20||BL.has(t)) return false;
-            for (const b of BL) if (t===b||t.includes(b)) return false;
-            if (/^\d+$/.test(t)||/^[\s\u3000-\u303f\uff00-\uffef]+$/u.test(t)) return false;
-            return true;
-        }
-        try {
-            const roomId = location.pathname.split('/').pop().replace(/[^0-9]/g,'');
-            if (roomId) {
-                const r = await fetch(`https://api.live.bilibili.com/xlive/web-room/v1/index/getRoomBaseInfo?req_biz=web_room_componet&room_ids=${roomId}`,{credentials:'omit'});
-                const j = await r.json();
-                if (j.code===0&&j.data&&j.data.by_room_ids) {
-                    const rd = j.data.by_room_ids[Object.keys(j.data.by_room_ids)[0]];
-                    if (rd&&rd.uname&&looksUser(rd.uname)&&!seen.has(rd.uname)) { seen.add(rd.uname); members.push(rd.uname); }
-                }
-            }
-        } catch(e) {}
-        try {
-            const np = window.__NEPTUNE_IS_MY_WAIFU__;
-            if (np) {
-                const bi = np.baseInfoRes?.data||np.roomInfoRes?.data||{};
-                const ri = bi.room_info||bi.anchor_info||{};
-                if (ri.uname&&looksUser(ri.uname)&&!seen.has(ri.uname)) { seen.add(ri.uname); members.push(ri.uname); }
-                if (np.pkInfoRes?.data) {
-                    const pk = np.pkInfoRes.data;
-                    (pk.anchor_list||pk.anchors||[]).forEach(a=>{
-                        const n=a.uname||a.name||'';
-                        if (n&&looksUser(n)&&!seen.has(n)) { seen.add(n); members.push(n); }
-                    });
-                }
-            }
-        } catch(e) {}
-        return members;
-    };
 }
 
 function injectPanel() {
@@ -255,7 +313,7 @@ function removePanel() {
     if (isRecording) stopRec();
     cleanup();
     if (p.parentNode) p.parentNode.removeChild(p);
-    if (ws) { ws.close(); ws = null; }
+    _wsClose();
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     _hideSubtitle();
     _panelInjected = false;
@@ -339,7 +397,8 @@ p.innerHTML = `<div id="asr-v3">
         <div id="asr3-conn" class="asr3-bar" style="background:rgba(248,81,73,.1);color:#f85149">🔴 未连接</div>
         <div id="asr3-st" class="asr3-bar" style="background:rgba(63,185,80,.06);color:#3fb950">准备就绪</div>
         <div style="display:flex;gap:5px">
-            <button id="asr3-start" class="asr3-bt1" style="background:#3fb950;border-color:#3fb950;color:#fff">▶ 开始</button>
+            <button id="asr3-start" class="asr3-bt1" style="background:#3fb950;border-color:#3fb950;color:#fff">▶ 标签页</button>
+            <button id="asr3-start-full" class="asr3-bt1" style="background:#58a6ff;border-color:#58a6ff;color:#fff">▶ 全屏</button>
             <button id="asr3-stop" class="asr3-bt1" style="background:#f85149;border-color:#f85149;color:#fff" disabled>⏹ 停止</button></div>
         <div style="display:flex;gap:4px">
             <button id="asr3-clr" class="asr3-bt2">🗑 清除</button>
@@ -356,8 +415,9 @@ p.innerHTML = `<div id="asr-v3">
             <button id="asr3-add" style="padding:3px 8px;border:0;border-radius:5px;background:#58a6ff;color:#fff;cursor:pointer;font-size:11px;white-space:nowrap">+ 添加</button></div>
         <div style="font-size:11px;color:#8b949e;display:flex;justify-content:space-between">
             <span id="asr3-tm">0.0秒</span><span id="asr3-cnt">0条 | 0字</span></div>
-        <div id="asr3-partial" style="display:none;padding:2px 0;font-size:13px;color:#8b949e;font-style:italic;line-height:1.5;min-height:0"></div>
-        <div class="asr3-text-box"><div id="asr3-txt" class="asr3-text-scroll">
+        <div class="asr3-text-box" style="position:relative">
+        <div id="asr3-partial" style="display:none;position:absolute;top:0;left:0;right:0;z-index:10;padding:6px 10px;font-size:13px;color:#8b949e;font-style:italic;line-height:1.5;background:rgba(13,17,23,.92);backdrop-filter:blur(4px);border-bottom:1px solid #21262d"></div>
+        <div id="asr3-txt" class="asr3-text-scroll">
             <div style="text-align:center;color:#484f58;padding-top:40px">
                 <p style="font-size:28px;margin-bottom:10px">🎤</p>
                 <p>点击「开始」启动识别</p>
@@ -403,7 +463,8 @@ function _repositionSub() {
 }
 
 function _showSubtitle(text) {
-    if (!_subVisible) return;
+    // 仅当前可见标签页才显示字幕条，避免多页面同时显示
+    if (!_subVisible || document.hidden) return;
     _repositionSub();
     $('asr3-sub-txt').textContent = text;
     sub.style.display = 'block';
@@ -413,6 +474,13 @@ function _hideSubtitle() {
     sub.style.display = 'none';
     $('asr3-sub-txt').textContent = '';
 }
+
+// 标签页切到后台时自动隐藏字幕条
+document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+        _hideSubtitle();
+    }
+});
 
 function _toggleSubtitle() {
     _subVisible = !_subVisible;
@@ -490,7 +558,8 @@ function bindEvents() {
             $('asr3-min').textContent = '□';
         }
     });
-    bind('asr3-start', startRec);
+    bind('asr3-start', () => startRec('tab'));
+    bind('asr3-start-full', () => startRec('full'));
     bind('asr3-stop', stopRec);
     bind('asr3-clr', () => { send({type:'clear'}); clearUI(); });
     bind('asr3-rpt', () => send({type:'generate_report'}));
@@ -502,7 +571,7 @@ function bindEvents() {
         try {
             window.open(LAUNCH_URL, '_blank');
             setTimeout(() => {
-                if (ws&&ws.readyState===1) toast('✅ 服务启动成功！已连接', 'ok', 3000);
+                if (_wsReady) toast('✅ 服务启动成功！已连接', 'ok', 3000);
                 else toast('⏳ 服务启动中，请等待连接...', 'loading', 6000);
             }, 5000);
         } catch(e) { toast('❌ 启动失败: '+e.message, 'err', 5000); }
@@ -533,45 +602,10 @@ function cleanup() {
     isRecording = false;
 }
 
-function connect(tryIdx) {
-    if (tryIdx === undefined) tryIdx = 0;
+function connect() {
     setConn(false, '⏳ 连接中...');
-    if (tryIdx >= WS_URLS.length) {
-        setConn(false, '🔴 无法连接');
-        if (!reconnectTimer) reconnectTimer = setTimeout(() => connect(0), Math.min(RECONNECT_BASE*Math.pow(1.5,reconnectAttempts),RECONNECT_MAX));
-        reconnectAttempts++;
-        return;
-    }
-    const url = WS_URLS[tryIdx];
-    try {
-        ws = new WebSocket(url);
-        ws.onopen = () => {
-            setConn(true);
-            reconnectAttempts = 0;
-            if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-            pingTimer = setInterval(() => send({type:'ping'}), PING_INTERVAL);
-        };
-        ws.onmessage = e => { try { onMsg(JSON.parse(e.data)); } catch(x){} };
-        ws.onclose = e => {
-            setConn(false, '🔴 断开 ('+(e.code||'?')+')');
-            if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
-            ws = null;
-            if (!_panelInjected) return;
-            const delay = Math.min(RECONNECT_BASE*Math.pow(1.5,reconnectAttempts),RECONNECT_MAX);
-            reconnectAttempts++;
-            if (!reconnectTimer) reconnectTimer = setTimeout(() => connect(0), delay);
-        };
-        ws.onerror = () => {
-            setConn(false, '🔴 无法连接');
-            if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
-            ws?.close();
-        };
-    } catch(e) {
-        setConn(false, '🔴 无法连接');
-        const delay = Math.min(RECONNECT_BASE*Math.pow(1.5,reconnectAttempts),RECONNECT_MAX);
-        reconnectAttempts++;
-        if (!reconnectTimer) reconnectTimer = setTimeout(() => connect(0), delay);
-    }
+    _wsInit();
+    _wsWorker.postMessage({t: 'c'});
 }
 
 function setConn(ok, reason) {
@@ -588,7 +622,7 @@ function setConn(ok, reason) {
     if (lb) lb.style.display = ok ? 'none' : '';
 }
 
-function send(d) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(d)); }
+function send(d) { _wsSend(JSON.stringify(d)); }
 
 function onMsg(data) {
     switch(data.type) {
@@ -605,7 +639,7 @@ function onMsg(data) {
         case 'recording_state':
             if (data.recording) {
                 isRecording = true;
-                $('asr3-start').disabled = true;
+                $('asr3-start').disabled = true; $('asr3-start-full').disabled = true;
                 $('asr3-stop').disabled = false;
                 const rst = $('asr3-st');
                 rst.style.background = 'rgba(248,81,73,.08)';
@@ -613,7 +647,7 @@ function onMsg(data) {
                 rst.textContent = '🔴 识别中...（网页端）';
             } else {
                 if (!isRecording) {
-                    $('asr3-start').disabled = false;
+                    $('asr3-start').disabled = false; $('asr3-start-full').disabled = false;
                     $('asr3-stop').disabled = true;
                     const rst = $('asr3-st');
                     rst.style.background = 'rgba(63,185,80,.06)';
@@ -624,7 +658,7 @@ function onMsg(data) {
             }
             break;
         case 'transcription':
-            addSeg(data.text,data.speaker,data.ocr_corrected,data.ocr_count,data.seg_time,data.seg_dur,data.gap_audio,data.corrections,data.is_host,data.original_text);
+            addSeg(data.text,data.speaker,data.ocr_corrected,data.ocr_count,data.seg_time,data.seg_dur,data.gap_audio,data.corrections,data.is_host,data.original_text,data.timestamp);
             updStats(data);
             if (data.keywords) updKws(data.keywords, keywordStore);
             break;
@@ -632,12 +666,6 @@ function onMsg(data) {
             var p = $('asr3-partial');
             if (p) { p.style.display = 'block'; p.innerHTML = '<span style="color:#8b949e;font-style:italic;">' + eHtml(data.text) + '</span><span class="asr3-cursor" style="display:inline-block;width:2px;height:14px;background:#58a6ff;margin-left:2px;vertical-align:middle;animation:asr3-blink 0.8s infinite"></span>'; }
             _showSubtitle(data.text);
-            break;
-        case 'mode_changed':
-            if (data.mode === 'sentence') {
-                var pp = $('asr3-partial'); if (pp) { pp.style.display = 'none'; pp.innerHTML = ''; }
-                _hideSubtitle();
-            }
             break;
         case 'keywords_updated':
             if (data.keyword_store) keywordStore = data.keyword_store;
@@ -651,15 +679,12 @@ function onMsg(data) {
             if (data.library_matched) { matchedSpeakers.add(data.keyword); toast('✅ "'+data.keyword+'" → 画像库命中','ok',4000); }
             else toast('📝 "'+data.keyword+'" 未匹配画像库','loading',5000);
             updKws(keywords, keywordStore); break;
-        case 'voice_profiles_saved':
-            if (data.profiles&&data.profiles.length>0) toast('💾 声纹已保存: '+data.profiles.map(p=>p.saved_name).join(', '),'ok',5000);
-            break;
         case 'error':
             L('⚠️ '+data.message);
             $('asr3-st').textContent = '错误: '+data.message;
             $('asr3-st').style.background = 'rgba(248,81,73,.12)';
             $('asr3-st').style.color = '#f85149';
-            isRecording = false; $('asr3-start').disabled = false; $('asr3-stop').disabled = true;
+            isRecording = false; $('asr3-start').disabled = false; $('asr3-start-full').disabled = false; $('asr3-stop').disabled = true;
             _hideSubtitle();
             break;
     }
@@ -673,7 +698,7 @@ function getSpeakerColor(speaker) {
     return SP_COLORS[speakerColors[speaker]];
 }
 
-function addSeg(text, speaker, ocrFixed, ocrCount, segTime, segDur, gapAudio, corrections, isHost, originalText) {
+function addSeg(text, speaker, ocrFixed, ocrCount, segTime, segDur, gapAudio, corrections, isHost, originalText, timestamp) {
     if (!_ensurePanel()) { _pendingSegs.push({text,speaker,ocrFixed,ocrCount,segTime,segDur,gapAudio,corrections,isHost,originalText}); return; }
     const box = $('asr3-txt');
     if (!box) { _pendingSegs.push({text,speaker,ocrFixed,ocrCount,segTime,segDur,gapAudio,corrections,isHost,originalText}); return; }
@@ -690,10 +715,15 @@ function addSeg(text, speaker, ocrFixed, ocrCount, segTime, segDur, gapAudio, co
     div.className = 'asr3-seg asr3-in';
     if (clr) { div.style.background = clr.bg; div.style.borderLeftColor = clr.border; }
 
-    if (segTime !== undefined && segTime !== null) {
+    if (timestamp) {
         const ts = document.createElement('span');
         ts.style.cssText = 'font-size:10px;color:#484f58;margin-right:5px;font-family:monospace';
-        ts.textContent = 'T+'+segTime.toFixed(1)+'s';
+        try {
+            const d = new Date(timestamp);
+            ts.textContent = d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0')+':'+d.getSeconds().toString().padStart(2,'0');
+        } catch(e) {
+            ts.textContent = 'T+'+segTime.toFixed(1)+'s';
+        }
         div.appendChild(ts);
     }
 
@@ -711,13 +741,6 @@ function addSeg(text, speaker, ocrFixed, ocrCount, segTime, segDur, gapAudio, co
         lbl.textContent = speaker;
         if (clr) { lbl.style.color = clr.name; lbl.style.background = clr.border+'22'; }
         div.appendChild(lbl);
-    }
-    if (isHost) {
-        const crown = document.createElement('span');
-        crown.style.cssText = 'font-size:11px;margin-left:2px;color:#d2991d;font-weight:700';
-        crown.textContent = '👑主播';
-        crown.title = '本直播间主播';
-        div.appendChild(crown);
     }
     if (ocrFixed && (!corrections || corrections.length===0)) {
         const bd = document.createElement('span');
@@ -814,22 +837,33 @@ function clearUI() {
     _hideSubtitle();
 }
 
-async function startRec() {
-    if (!ws||ws.readyState!==1) { alert('服务未连接！请启动 start.bat'); return; }
+async function startRec(mode) {
+    if (!_wsReady) { alert('服务未连接！请启动 start.bat'); return; }
     try {
-        mediaStream = await navigator.mediaDevices.getDisplayMedia({audio:true,video:true});
+        const isTab = (mode === 'tab');
+        const opts = isTab
+            ? {audio:true, video:true, preferCurrentTab:true}
+            : {audio:true, video:true};
+        mediaStream = await navigator.mediaDevices.getDisplayMedia(opts);
+        if (!mediaStream.getAudioTracks().length) {
+            mediaStream.getTracks().forEach(t=>t.stop()); mediaStream = null;
+            alert(isTab
+                ? '标签页模式未获取到音频。\n请在弹出的对话框中选择"Chrome标签页"，并确保该标签页正在播放音频。'
+                : '未获取到音频轨道，请确保在分享对话框中勾选了"分享音频"。');
+            return;
+        }
         audioCtx = new AudioContext({sampleRate:48000});
         const src = audioCtx.createMediaStreamSource(mediaStream);
         const proc = audioCtx.createScriptProcessor(8192,1,1);
         proc.onaudioprocess = e => {
-            if (isRecording&&ws&&ws.readyState===1) ws.send(new Float32Array(e.inputBuffer.getChannelData(0)).buffer);
+            if (isRecording && _wsReady) _wsSendBinary(new Float32Array(e.inputBuffer.getChannelData(0)).buffer);
         };
         src.connect(proc); proc.connect(audioCtx.destination);
         isRecording = true;
         send({type:'start'});
 
         const pu = location.href;
-        const pt = pu.includes('live.bilibili.com')?'live':(pu.includes('bilibili.com/video/')||pu.includes('youtube.com/watch'))?'video':'web';
+        const pt = (pu.includes('live.bilibili.com')||pu.includes('douyu.com/')||pu.includes('huya.com/'))?'live':(pu.includes('bilibili.com/video/')||pu.includes('youtube.com/watch'))?'video':'web';
         let vo = 0;
         if (pt==='video') {
             const vs = document.querySelectorAll('video');
@@ -838,12 +872,12 @@ async function startRec() {
 
         setTimeout(async () => {
             const cr = detectCreator();
-            if (cr) {
-                send({type:'page_creator',creator:cr,page_type:pt,video_offset:vo,platform:(()=>{
-                    const u=location.href; if(u.includes('bilibili')) return 'bilibili';
-                    if(u.includes('douyu')) return 'douyu'; if(u.includes('huya')) return 'huya'; return 'web';
-                })()});
-            }
+            const platform_ = (()=>{
+                const u=location.href; if(u.includes('bilibili')) return 'bilibili';
+                if(u.includes('douyu')) return 'douyu'; if(u.includes('huya')) return 'huya'; return 'web';
+            })();
+            // 始终发送 page_creator（带 URL），即使客户端未检测到也让服务端兜底
+            send({type:'page_creator',creator:cr||'',page_type:pt,video_offset:vo,platform:platform_,url:location.href});
             if (cr&&!autoAddedSpeakers.has(cr)) {
                 autoAddedSpeakers.add(cr);
                 if (!keywordStore||!keywordStore['speaker']||!keywordStore['speaker'].includes(cr)) {
@@ -858,11 +892,9 @@ async function startRec() {
             }
             const title = detectTitle();
             if (title&&title.length>=4) send({type:'video_title',title:title});
-            const sm = await detectLiveSquad();
-            if (sm.length>0) send({type:'live_squad',members:sm});
         }, 2000);
 
-        $('asr3-start').disabled = true; $('asr3-stop').disabled = false;
+        $('asr3-start').disabled = true; $('asr3-start-full').disabled = true; $('asr3-stop').disabled = false;
     } catch(e) { L('Record err: '+e.message); if (e.name!=='AbortError') alert('授权失败: '+(e.message||'用户取消')); }
 }
 
@@ -871,7 +903,7 @@ function stopRec() {
     send({type:'stop'});
     if (mediaStream) { mediaStream.getTracks().forEach(t=>t.stop()); mediaStream = null; }
     if (audioCtx) { audioCtx.close(); audioCtx = null; }
-    $('asr3-start').disabled = false; $('asr3-stop').disabled = true;
+    $('asr3-start').disabled = false; $('asr3-start-full').disabled = false; $('asr3-stop').disabled = true;
     _hideSubtitle();
 }
 

@@ -1,18 +1,15 @@
 # -*- coding: utf-8 -*-
 import sys
-import os
 import threading
-import traceback
-from pathlib import Path
 from datetime import datetime
 
-BASE_DIR = Path(__file__).parent
+from core import load_config
 
 import importlib.util
 
 def check_deps():
     missing = []
-    for mod in ["torch", "torchaudio", "modelscope", "qwen_asr", "PySide6"]:
+    for mod in ["torch", "torchaudio", "qwen_asr", "PySide6"]:
         if importlib.util.find_spec(mod) is None:
             missing.append(mod)
     return missing
@@ -39,7 +36,6 @@ LIGHT = {
     "log_bg":       "#f6f8fa",
 }
 
-SERVER_THREAD = None
 UI_REFRESH_MS = 3000
 
 
@@ -181,41 +177,10 @@ def _make_icon():
     return QIcon(pix)
 
 
-def load_config():
-    import json
-    cf = BASE_DIR / "dict" / "asr_config.json"
-    defaults = {
-        "current_model": "auto",
-        "device": "auto",
-        "model_settings": {
-            "vad_enabled": True, "vad_model": "fsmn-vad",
-            "punc_enabled": True, "speaker_enabled": True, "lyrics_enabled": True,
-            "keyword_expand_enabled": True, "adaptive_vad": True, "music_detect": True,
-            "vad_force_cut": True, "vad_threshold": 0.85, "force_cut_sec": 3.8, "max_buffer_seconds": 30,
-            "min_speech_duration": 0.08,
-            "threads": 8, "ws_port": 8765, "auto_save_report": False,
-        }
-    }
-    if cf.exists():
-        try:
-            with open(cf, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            for k, v in defaults.items():
-                if k not in data:
-                    data[k] = v
-            for k, v in defaults["model_settings"].items():
-                if k not in data.get("model_settings", {}):
-                    data.setdefault("model_settings", {})[k] = v
-            return data
-        except Exception:
-            pass
-    return defaults
-
-
 def start_server_backend(config, log_cb):
     global SERVER_THREAD
     try:
-        from core import ASREngine, CorrectionManager, resolve_device
+        from core import ASREngine, resolve_device
         from server import run_server
 
         class LR:
@@ -245,7 +210,6 @@ def start_server_backend(config, log_cb):
                 if not eng.load_model(preferred=pref):
                     log_cb("[ERROR] \u6a21\u578b\u52a0\u8f7d\u5931\u8d25\n"); return
                 log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u6a21\u578b: {eng.model_name}\n")
-                corr = CorrectionManager()
                 st = config.get("model_settings", {})
                 port = st.get("ws_port", 8765)
 
@@ -266,7 +230,7 @@ def start_server_backend(config, log_cb):
 
                 log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] WebSocket ws://localhost:{port}\n")
                 log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u7b49\u5f85\u8fde\u63a5...\n")
-                run_server(eng, corr, 'localhost', port)
+                run_server(eng, 'localhost', port)
                 log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u670d\u52a1\u5df2\u505c\u6b62\n")
             except Exception as e:
                 import traceback

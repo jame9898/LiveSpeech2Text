@@ -40,3 +40,6 @@ venv/
 .dbg/
 crash.log
 diagnostic.log
+
+# Generated reports
+测试报告/

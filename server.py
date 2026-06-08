@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 在线实时语音识别系统 - WebSocket Server
-VAD断句 + OCR关键词纠错 + 说话人分离 (CAM++)
+VAD断句 + KW关键词纠错 + 说话人分离 (CAM++)
 """
 
 STATUS_PAGE = """<!DOCTYPE html>
@@ -42,7 +42,7 @@ h1 { font-size: 20px; margin-bottom: 6px; }
 .kw-box { min-height: 22px; font-size: 11px; line-height: 1.8; display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 10px; }
 .kw-tag { display: inline-block; padding: 1px 7px; border-radius: 3px; background: #ddf4ff; color: #0969da; font-size: 11px; border: 1px solid rgba(9,105,218,.15); }
 .stats { display: flex; gap: 18px; font-size: 12px; color: #656d76; margin-bottom: 8px; }
-#transcripts { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 14px; min-height: 280px; max-height: 65vh; overflow-y: auto; font-size: 14px; line-height: 1.9; }
+#transcripts { position:relative; background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 14px; min-height: 280px; max-height: 65vh; overflow-y: auto; font-size: 14px; line-height: 1.9; }
 .item { padding: 7px 0; border-bottom: 1px solid #f0f0f0; animation: fadeIn 0.3s; }
 .item:last-child { border-bottom: none; }
 .ts { color: #656d76; font-size: 11px; margin-right: 8px; }
@@ -61,12 +61,10 @@ h1 { font-size: 20px; margin-bottom: 6px; }
 @keyframes toastIn { from { opacity:0; transform:translateY(12px) } to { opacity:1; transform:translateY(0) } }
 .speaker-tag { display: inline-block; margin: 1px 3px 1px 0; padding: 1px 7px; border-radius: 3px; font-size: 11px; font-weight: 700; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-#partialArea { min-height: 0; padding: 4px 0; font-size: 14px; color: #656d76; font-style: italic; line-height: 1.6; }
+#partialArea { display:none; position:absolute; top:0; left:0; right:0; z-index:10; padding:6px 10px; font-size:14px; color:#656d76; font-style:italic; line-height:1.6; background:rgba(255,255,255,.92); border-bottom:1px solid #d0d7de; }
 #partialArea .cursor { display: inline-block; width: 2px; height: 16px; background: #0969da; margin-left: 2px; vertical-align: text-bottom; animation: blink 0.8s infinite; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
-.mode-toggle { display: inline-flex; border: 1px solid #d0d7de; border-radius: 6px; overflow: hidden; }
-.mode-toggle button { border: none; border-radius: 0; padding: 5px 12px; font-size: 12px; cursor: pointer; background: #f6f8fa; color: #656d76; }
-.mode-toggle button.active { background: #0969da; color: #fff; font-weight: 600; }
+
 </style>
 </head>
 <body>
@@ -86,20 +84,16 @@ h1 { font-size: 20px; margin-bottom: 6px; }
 </div>
 
 <div class="ctrl-bar">
-    <button id="btnStart" class="btn primary">▶ 开始</button>
+    <button id="btnStart" class="btn primary">▶ 标签页</button>
+    <button id="btnStartFull" class="btn" style="background:#58a6ff;border-color:#58a6ff;color:#fff">▶ 全屏</button>
     <button id="btnStop" class="btn danger" disabled>⏹ 停止</button>
     <button id="btnClear" class="btn">🗑 清除</button>
     <button id="btnReport" class="btn">📄 报告</button>
     <button id="btnSave" class="btn">💾 保存</button>
     <button id="btnLog" class="btn">📋 日志</button>
-    <span style="margin-left:auto;font-size:12px;color:#656d76;">模式</span>
-    <span class="mode-toggle">
-        <button id="btnModeSentence" title="等待完整句子后一次性输出，准确度最高">整句</button>
-        <button id="btnModeStreaming" class="active" title="毫秒级实时输出，说完后自动修正">流式</button>
-    </span>
-</div>
 
-<div id="partialArea"></div>
+
+</div>
 
 <div class="kw-line">
     <select id="kwCat">
@@ -113,11 +107,11 @@ h1 { font-size: 20px; margin-bottom: 6px; }
 
 <div class="kw-box" id="keywordsBox"></div>
 
+<div id="transcripts"><div id="partialArea"></div><em style="color:#656d76">等待识别结果...</em></div>
+
 <div class="stats">
     时长: <b id="statDur">0.0</b>秒 &nbsp;|&nbsp; 句数: <b id="statCnt">0</b>条 &nbsp;|&nbsp; 字数: <b id="statChar">0</b>字
 </div>
-
-<div id="transcripts"><em style="color:#656d76">等待识别结果...</em></div>
 
 <script>
 (function() {
@@ -127,15 +121,12 @@ var MODEL = document.getElementById('modelInfo');
 var BOX = document.getElementById('transcripts');
 var KWBOX = document.getElementById('keywordsBox');
 var BTN_START = document.getElementById('btnStart');
+var BTN_START_FULL = document.getElementById('btnStartFull');
 var BTN_STOP = document.getElementById('btnStop');
-var BTN_MODE_S = document.getElementById('btnModeSentence');
-var BTN_MODE_ST = document.getElementById('btnModeStreaming');
 var PARTIAL = document.getElementById('partialArea');
 var STAT_DUR = document.getElementById('statDur');
 var STAT_CNT = document.getElementById('statCnt');
 var STAT_CHAR = document.getElementById('statChar');
-
-var currentMode = 'streaming';
 
 var ws = null;
 var isRecording = false;
@@ -253,11 +244,6 @@ function handleMsg(d) {
         case 'welcome':
             MODEL.style.display = '';
             MODEL.textContent = '模型: ' + (d.model || '?');
-            if (d.mode === 'streaming') {
-                BTN_MODE_ST.classList.add('active');
-                BTN_MODE_S.classList.remove('active');
-                currentMode = 'streaming';
-            }
             break;
         case 'status':
             if (d.status === 'recording') setRec('recording', '识别中...');
@@ -280,19 +266,8 @@ function handleMsg(d) {
             if (d.keywords) updateKeywords(d.keywords);
             break;
         case 'partial':
+            PARTIAL.style.display = 'block';
             PARTIAL.innerHTML = '<span style="color:#656d76;font-style:italic;">' + eHtml(d.text) + '</span><span class="cursor"></span>';
-            break;
-        case 'mode_changed':
-            if (d.mode === 'sentence') {
-                BTN_MODE_S.classList.add('active');
-                BTN_MODE_ST.classList.remove('active');
-                currentMode = 'sentence';
-                PARTIAL.innerHTML = '';
-            } else {
-                BTN_MODE_ST.classList.add('active');
-                BTN_MODE_S.classList.remove('active');
-                currentMode = 'streaming';
-            }
             break;
         case 'keywords_updated':
             if (d.keyword_store) keywordStore = d.keyword_store;
@@ -304,14 +279,19 @@ function handleMsg(d) {
         case 'speaker_profile_matched':
             toast('✅ "' + d.keyword + '" → 画像库命中', 'ok', 4000);
             break;
-        case 'voice_profiles_saved':
-            if (d.profiles && d.profiles.length > 0) {
-                toast('💾 声纹已保存: ' + d.profiles.map(function(p) { return p.saved_name; }).join(', '), 'ok', 5000);
-            }
-            break;
         case 'page_creator':
             if (d.creator && !pageCreator.value) pageCreator.value = d.creator;
             if (d.platform) pagePlatform.textContent = '平台: ' + d.platform + ' (来自其他端)';
+            break;
+        case 'toast':
+            toast(d.text, d.ok ? 'ok' : 'err', d.ms || 3000);
+            break;
+        case 'keyword_added':
+            if (d.keyword && d.category) {
+                if (!keywordStore[d.category]) keywordStore[d.category] = [];
+                if (!keywordStore[d.category].includes(d.keyword)) keywordStore[d.category].push(d.keyword);
+                toast('✅ 自动添加 "' + d.keyword + '" (' + (d.category==='speaker'?'主讲人':'关键词') + ')', 'ok', 4000);
+            }
             break;
         case 'error': alert('错误: ' + d.message); break;
     }
@@ -321,7 +301,7 @@ function eHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(
 
 function addSeg(d) {
     if (firstMsg) { BOX.innerHTML = ''; firstMsg = false; }
-    PARTIAL.innerHTML = '';
+    PARTIAL.style.display = 'none'; PARTIAL.innerHTML = '';
     segCount++;
     if (BOX.children.length >= 200) BOX.removeChild(BOX.firstChild);
 
@@ -331,14 +311,21 @@ function addSeg(d) {
     if (d.gap_audio > 1.5 && segCount > 1) {
         div.innerHTML += '<span class="gap-warn">⚠漏' + d.gap_audio.toFixed(1) + 's</span>';
     }
-    if (d.ocr_corrected) {
+    if (d.kw_corrected) {
         div.innerHTML += '<span class="kw-fixed">[KW]</span>';
     }
 
-    var segTime = d.seg_time !== undefined ? d.seg_time : d.duration;
-    if (segTime !== undefined && segTime !== null) {
-        var m = Math.floor(segTime / 60), s = (segTime % 60).toFixed(1);
-        div.innerHTML += '<span class="ts">T+' + (m>0?m+':'+(s<10?'0':'')+s:s+'s') + '</span>';
+    if (d.timestamp) {
+        try {
+            var dt = new Date(d.timestamp);
+            div.innerHTML += '<span class="ts">' + String(dt.getHours()).padStart(2,'0') + ':' + String(dt.getMinutes()).padStart(2,'0') + ':' + String(dt.getSeconds()).padStart(2,'0') + '</span>';
+        } catch(e) {
+            var segTime = d.seg_time !== undefined ? d.seg_time : d.duration;
+            if (segTime !== undefined && segTime !== null) {
+                var m = Math.floor(segTime / 60), s = (segTime % 60).toFixed(1);
+                div.innerHTML += '<span class="ts">T+' + (m>0?m+':'+(s<10?'0':'')+s:s+'s') + '</span>';
+            }
+        }
     }
     if (d.speaker) {
         var sp = d.speaker;
@@ -405,7 +392,7 @@ function updateKeywords(kws) {
 function clearUI() {
     segCount = 0; firstMsg = true; keywords = []; keywordStore = {}; speakerColors = {};
     BOX.innerHTML = '<em style="color:#656d76">等待识别结果...</em>';
-    PARTIAL.innerHTML = '';
+    PARTIAL.style.display = 'none'; PARTIAL.innerHTML = '';
     STAT_DUR.textContent = '0.0'; STAT_CNT.textContent = '0条'; STAT_CHAR.textContent = '0字';
     KWBOX.innerHTML = '';
     setRec('ready', '准备就绪');
@@ -428,10 +415,11 @@ function download(content, filename, mime) {
 
 function updateBtns() {
     BTN_START.disabled = isRecording;
+    BTN_START_FULL.disabled = isRecording;
     BTN_STOP.disabled = !isRecording;
 }
 
-async function doStartRec() {
+async function doStartRec(mode) {
     if (!ws || ws.readyState !== 1) { alert('服务未连接！请确保服务已启动'); return; }
 
     var _info = parsePageInfo();
@@ -442,7 +430,18 @@ async function doStartRec() {
     }
 
     try {
-        mediaStream = await navigator.mediaDevices.getDisplayMedia({audio: true, video: true});
+        var isTab = (mode === 'tab');
+        var opts = isTab
+            ? {audio: true, video: true, preferCurrentTab: true}
+            : {audio: true, video: true};
+        mediaStream = await navigator.mediaDevices.getDisplayMedia(opts);
+        if (!mediaStream.getAudioTracks().length) {
+            mediaStream.getTracks().forEach(function(t) { t.stop(); }); mediaStream = null;
+            alert(isTab
+                ? '标签页模式未获取到音频。\\n请在弹出的对话框中选择"Chrome标签页"，并确保该标签页正在播放音频。'
+                : '未获取到音频轨道，请确保在分享对话框中勾选了"分享音频"。');
+            return;
+        }
         audioCtx = new AudioContext({sampleRate: 48000});
         var src = audioCtx.createMediaStreamSource(mediaStream);
         var proc = audioCtx.createScriptProcessor(8192, 1, 1);
@@ -463,11 +462,12 @@ async function doStartRec() {
 
         setTimeout(function() {
             if (_info.creator) {
-                send({type: 'page_creator', creator: _info.creator, platform: _info.platform, page_type: _info.pageType, video_offset: 0});
+                send({type: 'page_creator', creator: _info.creator, platform: _info.platform, page_type: _info.pageType, video_offset: 0, url: _info.url});
                 send({type: 'keyword_add', keyword: _info.creator, category: 'speaker'});
                 toast('✅ 自动添加创作者: ' + _info.creator, 'ok', 4000);
             } else if (_info.platform !== 'web') {
-                send({type: 'page_creator', creator: '', platform: _info.platform, page_type: _info.pageType, video_offset: 0});
+                // 网页端无 creator，把 URL 发给服务端尝试自动提取 UP 主名
+                send({type: 'page_creator', creator: '', platform: _info.platform, page_type: _info.pageType, video_offset: 0, url: _info.url});
             }
         }, 2000);
     } catch(e) {
@@ -489,23 +489,10 @@ function cleanupAudio() {
     if (audioCtx) { audioCtx.close(); audioCtx = null; }
 }
 
-BTN_START.addEventListener('click', doStartRec);
+BTN_START.addEventListener('click', function() { doStartRec('tab'); });
+BTN_START_FULL.addEventListener('click', function() { doStartRec('full'); });
 
 BTN_STOP.addEventListener('click', stopRec);
-
-BTN_MODE_S.addEventListener('click', function() {
-    currentMode = 'sentence';
-    BTN_MODE_S.classList.add('active');
-    BTN_MODE_ST.classList.remove('active');
-    send({type: 'set_mode', mode: 'sentence'});
-});
-
-BTN_MODE_ST.addEventListener('click', function() {
-    currentMode = 'streaming';
-    BTN_MODE_ST.classList.add('active');
-    BTN_MODE_S.classList.remove('active');
-    send({type: 'set_mode', mode: 'streaming'});
-});
 
 document.getElementById('btnClear').addEventListener('click', function() {
     send({type: 'clear'}); clearUI();
@@ -559,20 +546,23 @@ import soundfile as sf
 import time
 import logging
 import re
+import urllib.request
 from pathlib import Path
 from datetime import datetime
-from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-try:
-    from pypinyin import lazy_pinyin, Style
-except ImportError:
-    lazy_pinyin = None
-    Style = None
-from core import MODELS_DIR
+from core import MODELS_DIR, DICT_DIR, silence_noisy_loggers
 from keyword_expander import CATEGORIES, CATEGORY_ICONS
-from speaker_profile import sp_manager, DIALECT_TRAITS, DIALECT_PRESETS, search_speaker_accent, TOPIC_MANAGER
-
-DICT_DIR = Path(__file__).parent / 'dict'
+from speaker_profile import TOPIC_MANAGER
+from speaker_manager import SpeakerManager
+from text_utils import (
+    extract_title_keywords,
+    dedup_overlap, dedup_chars,
+    normalize_letter_adjacent_numbers,
+)
+from pinyin_utils import PinyinCorrector
+from correction_engine import CorrectionEngine
+from vad_processor import VADProcessor
+from report_generator import generate_comprehensive_report, generate_structured_log, merge_segments
 
 logging.getLogger('websockets.server').setLevel(logging.CRITICAL)
 logging.getLogger('websockets').setLevel(logging.CRITICAL)
@@ -583,16 +573,8 @@ TEMP_DIR.mkdir(exist_ok=True)
 
 class RealtimeASRServer:
 
-    MUSIC_ZCR_THRESHOLD = 0.25
-    MUSIC_ENERGY_EPSILON = 1e-6
-    OCR_MIN_KW_LEN = 2
-    OCR_SIMILARITY_THRESHOLD = 0.90
-    PHONETIC_PARTIAL_MATCH = 0.6
-    ENGLISH_MATCH_THRESHOLD = 0.70
-
-    def __init__(self, asr_engine, correction_manager, host='localhost', port=8765):
+    def __init__(self, asr_engine, host='localhost', port=8765):
         self.asr_engine = asr_engine
-        self.correction_manager = correction_manager
         self.host = host
         self.port = port
 
@@ -602,32 +584,26 @@ class RealtimeASRServer:
         self.recording_ws = None
         self._current_handler_ws = None
         self._clients = set()
-        self.executor = ThreadPoolExecutor(max_workers=8)
+        threads = self.asr_engine._config.get("model_settings", {}).get("threads", 8)
+        self.executor = ThreadPoolExecutor(max_workers=threads)
 
         self.full_text = ""
         self.segments = []
         self.keyword_store = {cat: set() for cat in CATEGORIES}
-        self.ocr_keywords = set()
-        self.last_ocr_text = ""
-        self.correction_log = set()  # 记录被关键词纠正过的词，用于报告高亮
-        self.correction_records = []  # 记录纠正明细 (原词, 纠正词)
-        self._session_active_speakers = set()  # 本会话匹配了画像库的speaker名
         self._session_new_keywords = set()  # 本会话手动添加的关键词(用于自动保存到画像库)
-        self._loaded_topics = set()  # 本会话已加载的话题
 
-        self.pinyin_corrections = self._load_pinyin_corrections()
+        self.pinyin_corrector = PinyinCorrector(
+            keyword_store=self.keyword_store,
+        )
+
+        # 智能纠错引擎（实体识别、模糊匹配、语法检查、置信度评分）
+        self.correction_engine = CorrectionEngine()
 
         # 说话人分离 (CAM++ 中英文通用声纹模型)
         print("[SPEAKER] Loading CAM++ speaker verification model...", flush=True)
-        self.sv_pipeline = None
+        sv_pipeline = None
         try:
-            import logging
-            for _name in ["transformers", "diffusers", "huggingface_hub",
-                          "datasets", "accelerate", "tokenizers", "modelscope"]:
-                _lg = logging.getLogger(_name)
-                _lg.handlers.clear()
-                _lg.addHandler(logging.NullHandler())
-                _lg.propagate = False
+            silence_noisy_loggers()
 
             from modelscope.pipelines import pipeline
             from modelscope.utils.constant import Tasks
@@ -652,12 +628,12 @@ class RealtimeASRServer:
                     break
 
             if cam_local:
-                self.sv_pipeline = pipeline(
+                sv_pipeline = pipeline(
                     task=Tasks.speaker_verification,
                     model=cam_local,
                 )
             else:
-                self.sv_pipeline = pipeline(
+                sv_pipeline = pipeline(
                     task=Tasks.speaker_verification,
                     model=cam_model_id,
                     model_revision='v1.0.0'
@@ -666,62 +642,46 @@ class RealtimeASRServer:
         except Exception as e:
             print(f"[SPEAKER] CAM++ load failed: {e}", flush=True)
             print("[SPEAKER] Speaker diarization disabled, ASR will still work", flush=True)
-            self.sv_pipeline = None
-        self.speaker_profiles = []
-        self.last_speaker_id = 0
-        self._last_speaker_label = 'Speaker0'
-        self._host_speaker_label = None  # 本会话检测到的主播label
+            sv_pipeline = None
 
         DICT_DIR.mkdir(exist_ok=True)
-        self._voiceprint_dir = DICT_DIR / 'voiceprints'
-        self._voiceprint_dir.mkdir(exist_ok=True)
 
-        self._bindings_path = self._voiceprint_dir / 'speaker_bindings.json'
-        self._speaker_bindings = self._load_speaker_bindings()
-
-        # 加载历史保存的声纹
-        self._load_saved_voice_profiles()
+        self.speaker_manager = SpeakerManager(
+            sv_pipeline=sv_pipeline,
+            executor=self.executor,
+            dict_dir=DICT_DIR,
+            temp_dir=TEMP_DIR,
+        )
 
         # 音频缓冲区
-        self.audio_buffer = []
+        self._audio_buf = np.array([], dtype=np.float32)
         self.browser_sample_rate = 48000
         self.target_sample_rate = 16000
         self.max_buffer_seconds = 30
         self.max_buffer_size = 16000 * self.max_buffer_seconds
-        self.vad_silence_threshold = 0.85
+        self.vad_silence_threshold = self.asr_engine._config.get("model_settings", {}).get("vad_threshold", 0.85)
 
         self.vad_force_cut = self.asr_engine._config.get("model_settings", {}).get("vad_force_cut", True)
         self.vad_force_cut_sec = self.asr_engine._config.get("model_settings", {}).get("force_cut_sec", 3.8)
         self.min_speech_duration = self.asr_engine._config.get("model_settings", {}).get("min_speech_duration", 0.08)
 
-        self._overlap_seconds = 0.2
-        self._audio_tail = np.array([], dtype=np.float32)
-
-        # 避免重复发送已识别的文本
+        # 避免重复发送已识别的文本（上限防止长会话O(n²)退化）
         self.sent_texts = set()
-
-        # 自适应VAD阈值
-        self.speech_gaps = []
-        self.adaptive_threshold = 1.35
+        self._MAX_SENT_TEXTS = 300
 
         self.total_audio_seconds = 0
+        self.speaker_manager.total_audio_seconds = 0
         self.transcription_count = 0
         self.last_segment_wall_time = 0
         self.last_segment_end_audio_time = 0
 
-        self.ocr_history = []
         self.keyword_history = []
-
-        # 页面信息（用于声纹智能命名）
-        self._page_creator = None
-        self._page_platform = None
-        self._page_type = 'web'  # 'live' | 'video' | 'web'
-        self._video_offset = 0  # 视频已播放时间偏移
 
         # 异步转录控制
         self.transcripts_in_flight = 0
         self.max_concurrent_transcripts = 2
         self.last_periodic_transcribe = 0
+        self._partial_in_flight = False  # 防止CPU模式下partial堆积
 
         # 连接稳定性
         self.last_activity = time.time()
@@ -729,8 +689,6 @@ class RealtimeASRServer:
         print(f"[VAD] vad_force_cut={self.vad_force_cut}", flush=True)
 
         # 流式模式（伪流式：短chunk快速partial + 整句final修正）
-        config_mode = self.asr_engine._config.get("model_settings", {}).get("transcription_mode", "streaming")
-        self.mode = config_mode if config_mode in ("sentence", "streaming") else "sentence"
         self._stream_seg_id = 0
         self._stream_last_partial = ""
         self._stream_partial_time = 0
@@ -738,10 +696,14 @@ class RealtimeASRServer:
         self._stream_partial_interval = 0.8
         self._stream_full_text = ""
         self._stream_last_corrected = ""
-        self._transcription_snapshot = ""
 
-        self._stream_vad_silence = 1.2
-        self._stream_vad_force_cut = 6.0
+        self.vad_processor = VADProcessor(
+            vad_silence_threshold=self.vad_silence_threshold,
+            vad_force_cut=self.vad_force_cut,
+            vad_force_cut_sec=self.vad_force_cut_sec,
+            min_speech_duration=self.min_speech_duration,
+            max_buffer_seconds=self.max_buffer_seconds,
+        )
 
     def _resample_audio(self, audio_data, from_rate, to_rate):
         if from_rate == to_rate:
@@ -760,7 +722,6 @@ class RealtimeASRServer:
                 'type': 'welcome',
                 'message': 'Realtime ASR service connected',
                 'model': self.asr_engine.model_name,
-                'mode': self.mode,
                 'timestamp': datetime.now().isoformat()
             }, ensure_ascii=False))
 
@@ -809,38 +770,36 @@ class RealtimeASRServer:
                 self.recording_ws = websocket
                 self.full_text = ""
                 self.segments = []
-                self.audio_buffer = []
+                self._audio_buf = np.array([], dtype=np.float32)
                 self.keyword_store = {cat: set() for cat in CATEGORIES}
-                self.ocr_keywords = set()
-                self.last_ocr_text = ""
-                self.correction_log = set()
-                self.correction_records = []
-                self._session_active_speakers = set()
+                self.pinyin_corrector.reset_session()
+                self.correction_engine.reset_session()
+                self.speaker_manager._session_active_speakers = set()
                 self._session_new_keywords = set()
                 self.sent_texts = set()
-                self._audio_tail = np.array([], dtype=np.float32)
-                self.last_speaker_id = 0
+                self.speaker_manager.last_speaker_id = 0
                 self.total_audio_seconds = 0
+                self.speaker_manager.total_audio_seconds = 0
                 self.transcription_count = 0
                 self.transcripts_in_flight = 0
                 self.last_periodic_transcribe = 0
-                self._pending_new = None
-                self._last_speaker_label = 'Speaker0'
+                self.speaker_manager._pending_new = None
+                self.speaker_manager._last_speaker_label = 'Speaker0'
                 self.last_segment_wall_time = 0
                 self.last_segment_end_audio_time = 0
                 self.keyword_history = []
-                self.ocr_history = []
                 self._stream_seg_id = 0
                 self._stream_last_partial = ""
                 self._stream_full_text = ""
                 self._stream_last_corrected = ""
-                self._transcription_snapshot = ""
                 self._stream_partial_time = 0
                 self._stream_partial_buf = []
+                self.speaker_manager._quick_recognized = False
+                self.speaker_manager._quality_reported = False
                 await self._send_to(websocket, {
                     'type': 'status', 'status': 'recording',
                     'message': 'Started', 'model': self.asr_engine.model_name,
-                    'keywords': list(self.ocr_keywords)
+                    'keywords': list(self.pinyin_corrector.kw_set)
                 })
                 print("[WS] Recording started")
                 for client in list(self._clients):
@@ -855,26 +814,15 @@ class RealtimeASRServer:
                     self.recording_ws = None
                 self.is_running = False
                 # Flush remaining buffer
-                if len(self.audio_buffer) > 16000:
-                    await self.transcribe_buffer(np.array(self.audio_buffer, dtype=np.float32))
-                self._merge_segments()
+                if len(self._audio_buf) > 16000:
+                    await self.transcribe_buffer(self._audio_buf.copy())
+                merge_segments(self.segments)
                 await self._send_to(websocket, {
                     'type': 'status', 'status': 'stopped',
                     'message': 'Stopped', 'full_text': self.full_text.strip(),
                     'segments': self.segments
                 })
-                # 自动保存手动关键词到画像库
-                if self._session_active_speakers and self._session_new_keywords:
-                    saved = 0
-                    new_kws = self._session_new_keywords - set().union(*[
-                        set(sp_manager.get_catchphrases(sp)) for sp in self._session_active_speakers
-                    ])
-                    for sp in self._session_active_speakers:
-                        added = sp_manager.add_catchphrases(sp, list(new_kws))
-                        saved += added
-                    if saved:
-                        sp_manager.save_library()
-                        print(f"[WS] 💾 自动保存 {saved} 个新口头禅到画像库 (speakers={list(self._session_active_speakers)})", flush=True)
+
                 print("[WS] Recording stopped")
                 for client in list(self._clients):
                     if client is not websocket:
@@ -883,33 +831,24 @@ class RealtimeASRServer:
                         except Exception:
                             pass
 
-                # 保存声纹
-                vp_result = self._save_voice_profiles()
-                if vp_result:
-                    await self._send_to(websocket, {
-                        'type': 'voice_profiles_saved',
-                        'profiles': vp_result
-                    })
-
             elif msg_type == 'clear':
                 self.full_text = ""
                 self.segments = []
-                self.audio_buffer = []
+                self._audio_buf = np.array([], dtype=np.float32)
                 self.keyword_store = {cat: set() for cat in CATEGORIES}
-                self.ocr_keywords.clear()
-                self.last_ocr_text = ""
+                self.pinyin_corrector.kw_set.clear()
                 self.sent_texts = set()
-                self.speaker_profiles = []
-                self.last_speaker_id = 0
-                self._pending_new = None
-                self._last_speaker_label = 'Speaker0'
+                self.speaker_manager.speaker_profiles = []
+                self.speaker_manager.last_speaker_id = 0
+                self.speaker_manager._pending_new = None
+                self.speaker_manager._last_speaker_label = 'Speaker0'
                 self.last_segment_wall_time = 0
                 self.last_segment_end_audio_time = 0
                 self.total_audio_seconds = 0
+                self.speaker_manager.total_audio_seconds = 0
                 self.transcription_count = 0
-                self.ocr_history = []
                 self.keyword_history = []
-                self._session_active_speakers = set()
+                self.speaker_manager._session_active_speakers = set()
                 self._session_new_keywords = set()
                 await self._send_to(websocket, {'type': 'status', 'status': 'cleared'})
                 await self._send_to(websocket, {'type': 'keywords_updated', 'keywords': []})
@@ -921,9 +860,9 @@ class RealtimeASRServer:
                     added = set()
                     for kw in keywords:
                         kw = str(kw).strip()
-                        if kw and len(kw) >= 2 and kw not in self.ocr_keywords:
+                        if kw and len(kw) >= 2 and kw not in self.pinyin_corrector.kw_set:
                             self.keyword_store.setdefault(kcat, set()).add(kw)
-                            self.ocr_keywords.add(kw)
+                            self.pinyin_corrector.kw_set.add(kw)
                             added.add(kw)
                             self.keyword_history.append({'time': datetime.now().strftime('%H:%M:%S'), 'keyword': kw, 'category': kcat})
                     if added:
@@ -932,45 +871,26 @@ class RealtimeASRServer:
             elif msg_type == 'generate_report':
                 await self.generate_and_send_report(websocket)
 
-            elif msg_type == 'set_mode':
-                new_mode = msg.get('mode', 'sentence')
-                if new_mode in ('sentence', 'streaming'):
-                    self.mode = new_mode
-                    print(f"[WS] 模式切换: {self.mode}", flush=True)
-                    await self._send_to(websocket, {
-                        'type': 'mode_changed',
-                        'mode': self.mode
-                    })
-
             elif msg_type == 'page_creator':
-                self._page_creator = msg.get('creator')
-                self._page_platform = msg.get('platform')
-                self._page_type = msg.get('page_type', 'web')
-                self._video_offset = msg.get('video_offset', 0)
-                print(f"[WS] 页面信息: 创作者={self._page_creator} 平台={self._page_platform} 类型={self._page_type} 偏移={self._video_offset}s", flush=True)
+                self.speaker_manager._page_creator = msg.get('creator')
+                self.speaker_manager._page_platform = msg.get('platform')
+                self.speaker_manager._page_type = msg.get('page_type', 'web')
+                self.speaker_manager._video_offset = msg.get('video_offset', 0)
+
+                print(f"[WS] 页面信息: 创作者={self.speaker_manager._page_creator} 平台={self.speaker_manager._page_platform} 类型={self.speaker_manager._page_type} 偏移={self.speaker_manager._video_offset}s", flush=True)
+
+                # 网页端无 creator 但提供了 URL 时，尝试服务端抓取页面提取 UP 主名
+                page_url = msg.get('url', '')
+                if not msg.get('creator') and page_url:
+                    asyncio.ensure_future(self._auto_detect_creator(page_url, websocket))
 
             elif msg_type == 'load_vocab':
                 tags = [msg.get('name', '')]
                 if tags and tags[0]:
-                    topic_kws, matched_topics = TOPIC_MANAGER.match_and_load(tags)
-                    added = 0
-                    for kw in topic_kws:
-                        kw = kw.strip()
-                        if kw and len(kw) >= 2 and kw not in self.ocr_keywords:
-                            self.ocr_keywords.add(kw)
-                            added += 1
-                    for topic in matched_topics:
-                        self.pinyin_corrections = self._load_pinyin_corrections(topic)
+                    added = await self._load_topic_keywords(tags)
                     if added:
-                        print(f"[WS] 🏷 话题匹配(vocab路由): {tags} → 加载{added}个关键词", flush=True)
-                        await self._send_to(websocket, {
-                            'type': 'keywords_updated',
-                            'keywords': list(self.ocr_keywords),
-                            'keyword_store': {c: list(v) for c, v in self.keyword_store.items() if v},
-                            'categories': CATEGORIES,
-                            'category_icons': CATEGORY_ICONS,
-                            'topic_loaded': added,
-                        })
+                        await self._send_keywords_updated(websocket,
+                            extra={'topic_loaded': added})
                     else:
                         await self._send_to(websocket, {
                             'type': 'vocab_loaded',
@@ -979,8 +899,8 @@ class RealtimeASRServer:
                         })
 
             elif msg_type == 'new_speaker':
-                name = msg.get('name', f'发言人{self.last_speaker_id}')
-                for profile in self.speaker_profiles:
+                name = msg.get('name', f'发言人{self.speaker_manager.last_speaker_id}')
+                for profile in self.speaker_manager.speaker_profiles:
                     if profile['label'] == f"Speaker{msg.get('id', 0)}":
                         profile['alias'] = name
                         break
@@ -995,7 +915,7 @@ class RealtimeASRServer:
                     cat = 'other'
                 if keyword and len(keyword) >= 2:
                     self.keyword_store[cat].add(keyword)
-                    self.ocr_keywords.add(keyword)
+                    self.pinyin_corrector.kw_set.add(keyword)
                     all_kws = self._get_all_keywords()
                     self.keyword_history.append({
                         'time': datetime.now().strftime('%H:%M:%S'),
@@ -1006,228 +926,69 @@ class RealtimeASRServer:
                     self._session_new_keywords.add(keyword)
                     await self._send_to(websocket, {
                         'type': 'keywords_updated',
-                        'keywords': list(self.ocr_keywords),
+                        'keywords': list(self.pinyin_corrector.kw_set),
                         'keyword_store': {c: list(v) for c, v in self.keyword_store.items() if v},
                         'categories': CATEGORIES,
                         'category_icons': CATEGORY_ICONS,
                     })
 
                     if cat == 'speaker':
-                        profile = sp_manager.get_or_create(keyword, keyword)
-                        kw_loaded = 0
-                        if profile.library_loaded:
-                            self._session_active_speakers.add(keyword)
-                        if profile.library_loaded and profile.catchphrases:
-                            for cp in profile.catchphrases:
-                                cp = cp.strip()
-                                if cp and len(cp) >= 2 and cp not in self.ocr_keywords:
-                                    self.ocr_keywords.add(cp)
-                                    kw_loaded += 1
-                            if kw_loaded:
-                                print(f"[WS] 📢 '{profile.label}' 口头禅导入: {profile.catchphrases} ({kw_loaded}个，后台纠正)", flush=True)
-                        await self._send_to(websocket, {
-                            'type': 'speaker_profile_matched',
-                            'keyword': keyword,
-                            'library_matched': profile.library_loaded,
-                            'profile_label': profile.label,
-                            'accent_region': profile.accent_region,
-                            'accent_desc': profile.accent_desc,
-                        })
-                        if kw_loaded:
-                            await self._send_to(websocket, {
-                                'type': 'keywords_updated',
-                                'keywords': list(self.ocr_keywords),
-                                'keyword_store': {c: list(v) for c, v in self.keyword_store.items() if v},
-                                'categories': CATEGORIES,
-                                'category_icons': CATEGORY_ICONS,
-                            })
+                        self.speaker_manager._session_active_speakers.add(keyword)
 
                     if cat == 'topic':
-                        topic_kws, matched_topics = TOPIC_MANAGER.match_and_load([keyword])
-                        topic_added = 0
-                        for kw in topic_kws:
-                            kw = kw.strip()
-                            if kw and len(kw) >= 2 and kw not in self.ocr_keywords:
-                                self.ocr_keywords.add(kw)
-                                topic_added += 1
-                        for topic in matched_topics:
-                            self.pinyin_corrections = self._load_pinyin_corrections(topic)
+                        topic_added = await self._load_topic_keywords([keyword])
                         if topic_added:
                             print(f"[WS] 🏷 自动匹配话题 '{keyword}' → 加载{topic_added}个专用词", flush=True)
-                            await self._send_to(websocket, {
-                                'type': 'keywords_updated',
-                                'keywords': list(self.ocr_keywords),
-                                'keyword_store': {c: list(v) for c, v in self.keyword_store.items() if v},
-                                'categories': CATEGORIES,
-                                'category_icons': CATEGORY_ICONS,
-                                'topic_auto_loaded': {'name': keyword, 'count': topic_added},
-                            })
+                            await self._send_keywords_updated(websocket,
+                                extra={'topic_auto_loaded': {'name': keyword, 'count': topic_added}})
 
             elif msg_type == 'topic_keywords_load':
                 tags = msg.get('tags', [])
                 if tags:
-                    topic_kws, matched_topics = TOPIC_MANAGER.match_and_load(tags)
-                    added = 0
-                    for kw in topic_kws:
-                        kw = kw.strip()
-                        if kw and len(kw) >= 2 and kw not in self.ocr_keywords:
-                            self.ocr_keywords.add(kw)
-                            added += 1
-                    for topic in matched_topics:
-                        self.pinyin_corrections = self._load_pinyin_corrections(topic)
+                    added = await self._load_topic_keywords(tags)
                     if added:
                         print(f"[WS] 🏷 话题匹配: {tags[:5]} → 加载{added}个关键词(后台纠正，不显示在面板)", flush=True)
-                        await self._send_to(websocket, {
-                            'type': 'keywords_updated',
-                            'keywords': list(self.ocr_keywords),
-                            'keyword_store': {c: list(v) for c, v in self.keyword_store.items() if v},
-                            'categories': CATEGORIES,
-                            'category_icons': CATEGORY_ICONS,
-                            'topic_loaded': len(topic_kws),
-                        })
+                        await self._send_keywords_updated(websocket,
+                            extra={'topic_loaded': len(tags)})
 
             elif msg_type == 'video_title':
                 title = msg.get('title', '').strip()
                 if title:
-                    extracted = self._extract_title_keywords(title)
+                    extracted = extract_title_keywords(title)
                     added = 0
                     for kw in extracted:
-                        if kw and len(kw) >= 2 and kw not in self.ocr_keywords:
-                            self.ocr_keywords.add(kw)
+                        if kw and len(kw) >= 2 and kw not in self.pinyin_corrector.kw_set:
+                            self.pinyin_corrector.kw_set.add(kw)
                             added += 1
                     if added:
                         print(f"[WS] 📺 标题提取: '{title[:40]}' → {added}个关键词", flush=True)
                         await self._send_to(websocket, {
                             'type': 'keywords_updated',
-                            'keywords': list(self.ocr_keywords),
+                            'keywords': list(self.pinyin_corrector.kw_set),
                             'keyword_store': {c: list(v) for c, v in self.keyword_store.items() if v},
                             'categories': CATEGORIES,
                             'category_icons': CATEGORY_ICONS,
                         })
 
-            elif msg_type == 'live_squad':
-                members = msg.get('members', [])
-                if members:
-                    print(f"[WS] 👥 直播小队: {members}", flush=True)
-                    profile_hits = []
-                    profile_misses = []
-                    for name in members:
-                        name = name.strip()
-                        if not name or len(name) < 2:
-                            continue
-                        # 加入 speaker 关键词（用于声纹纠正）
-                        if name not in self.ocr_keywords:
-                            self.ocr_keywords.add(name)
-                            self.keyword_store.setdefault('speaker', set()).add(name)
-                        # 尝试从画像库加载
-                        profile = sp_manager.get_or_create(name, name)
-                        if profile.library_loaded:
-                            profile_hits.append(name)
-                            self._session_active_speakers.add(name)
-                            if profile.catchphrases:
-                                added = 0
-                                for cp in profile.catchphrases:
-                                    cp = cp.strip()
-                                    if cp and len(cp) >= 2 and cp not in self.ocr_keywords:
-                                        self.ocr_keywords.add(cp)
-                                        added += 1
-                                if added:
-                                    print(f"[WS] 📢 '{name}' 口头禅导入: {profile.catchphrases} ({added}个)", flush=True)
-                        else:
-                            profile_misses.append(name)
-
-                    if profile_hits:
-                        print(f"[WS] ✅ 画像库命中: {profile_hits}", flush=True)
-                    if profile_misses:
-                        print(f"[WS] 📝 未匹配画像库: {profile_misses}", flush=True)
-
-                    await self._send_to(websocket, {
-                        'type': 'keywords_updated',
-                        'keywords': list(self.ocr_keywords),
-                        'keyword_store': {c: list(v) for c, v in self.keyword_store.items() if v},
-                        'categories': CATEGORIES,
-                        'category_icons': CATEGORY_ICONS,
-                    })
-                    await self._send_to(websocket, {
-                        'type': 'live_squad',
-                        'members': members,
-                        'profile_hits': profile_hits,
-                        'profile_misses': profile_misses,
-                    })
-
-            elif msg_type == 'keyword_expand':
-                pass
-
             elif msg_type == 'speaker_profile_get':
-                speaker_id = msg.get('speaker_id', self._last_speaker_label)
-                profile = sp_manager.get_or_create(speaker_id)
-
-                kw_loaded = 0
-                if profile.library_loaded and profile.catchphrases:
-                    for cp in profile.catchphrases:
-                        cp = cp.strip()
-                        if cp and len(cp) >= 2 and cp not in self.ocr_keywords:
-                            self.ocr_keywords.add(cp)
-                            self.keyword_store.setdefault('speaker', set()).add(cp)
-                            kw_loaded += 1
-                    if kw_loaded:
-                        print(f"[WS] 📢 '{profile.label}' 口头禅导入: {profile.catchphrases} ({kw_loaded}个)", flush=True)
-
+                speaker_id = msg.get('speaker_id', self.speaker_manager._last_speaker_label)
                 await self._send_to(websocket, {
                     'type': 'speaker_profile',
-                    'profile': profile.to_dict(),
-                    'library_matched': profile.library_loaded,
-                    'all_speakers': list(self.speaker_profiles.keys()),
-                    'catchphrases_loaded': kw_loaded,
+                    'speaker_id': speaker_id,
+                    'label': speaker_id,
+                    'all_speakers': [p.get('label', '') for p in self.speaker_manager.speaker_profiles],
                 })
-                if kw_loaded:
-                    await self._send_to(websocket, {
-                        'type': 'keywords_updated',
-                        'keywords': list(self.ocr_keywords),
-                        'keyword_store': {c: list(v) for c, v in self.keyword_store.items() if v},
-                        'categories': CATEGORIES,
-                        'category_icons': CATEGORY_ICONS,
-                    })
 
-            elif msg_type == 'speaker_profile_update':
-                speaker_id = msg.get('speaker_id', '')
-                updates = msg.get('updates', {})
-                if speaker_id:
-                    profile = sp_manager.update(speaker_id, **updates)
-                    await self._send_to(websocket, {
-                        'type': 'speaker_profile',
-                        'profile': profile.to_dict(),
-                        'dialect_traits': DIALECT_TRAITS,
-                        'dialect_presets': DIALECT_PRESETS,
-                    })
-                    print(f"[WS] 👤 更新说话人画像: {speaker_id} → {profile.label} traits={profile.get_trait_summary()}", flush=True)
-
-            elif msg_type == 'speaker_accent_search':
-                name = msg.get('name', '')
-                birthplace = msg.get('birthplace', '')
-                success, traits, description, accent_region = search_speaker_accent(name, birthplace)
-                if success:
-                    speaker_id = msg.get('speaker_id', self._last_speaker_label)
-                    sp_manager.update(speaker_id, traits=traits, accent_region=accent_region, birthplace=birthplace)
-                    print(f"[WS] 🔍 口音搜索: '{name or birthplace}' → {description}", flush=True)
-                await self._send_to(websocket, {
-                    'type': 'speaker_accent_result',
-                    'success': success,
-                    'traits': traits,
-                    'description': description,
-                    'accent_region': accent_region,
-                })
 
             elif msg_type == 'speaker_rename':
                 speaker_id = msg.get('speaker_id', '')
                 new_label = msg.get('label', '')
                 if speaker_id and new_label:
-                    sp_manager.update(speaker_id, label=new_label)
-                    # 同步重命名 speaker_profiles 列表中的显示名
-                    for sp in self.speaker_profiles:
-                        if sp == speaker_id:
-                            self.speaker_profiles.remove(sp)
-                            self.speaker_profiles.append(new_label)
+                    self.speaker_manager._speaker_display_names[speaker_id] = new_label
+                    # 同步更新 speaker_profiles 中的 alias
+                    for profile in self.speaker_manager.speaker_profiles:
+                        if profile.get('label') == speaker_id:
+                            profile['alias'] = new_label
                             break
                     print(f"[WS] 重命名: {speaker_id} → {new_label}", flush=True)
                     await self._send_to(websocket, {
@@ -1237,84 +998,73 @@ class RealtimeASRServer:
                     })
 
             elif msg_type == 'save_report':
-                self._merge_segments()
-                report = self._generate_comprehensive_report()
+                merge_segments(self.segments)
+                display_names = self.speaker_manager.get_all_display_names()
+                report = generate_comprehensive_report(
+                    self.segments, self.speaker_manager.speaker_profiles,
+                    self.keyword_history, self.pinyin_corrector.correction_records,
+                    self.pinyin_corrector.correction_log, self.total_audio_seconds,
+                    self.asr_engine.model_name, self.pinyin_corrector._loaded_topics,
+                    self.speaker_manager._page_type, self.speaker_manager._video_offset,
+                    self.speaker_manager._session_active_speakers,
+                    display_names=display_names,
+                    min_speech_duration=self.min_speech_duration,
+                    page_creator=self.speaker_manager._page_creator,
+                )
                 await self._send_to(websocket, {'type': 'save_report', 'content': report, 'filename': f'asr_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.md'})
 
             elif msg_type == 'save_log':
-                self._merge_segments()
-                log = self._generate_structured_log()
+                merge_segments(self.segments)
+                display_names = self.speaker_manager.get_all_display_names()
+                log = generate_structured_log(
+                    self.segments, self.speaker_manager.speaker_profiles,
+                    self.keyword_history, self.pinyin_corrector.correction_records,
+                    self.total_audio_seconds,
+                    self.asr_engine.model_name if self.asr_engine else 'unknown',
+                    self.pinyin_corrector._loaded_topics,
+                    self.speaker_manager._page_type, self.speaker_manager._video_offset,
+                    self.speaker_manager._session_active_speakers,
+                    display_names=display_names,
+                    page_creator=self.speaker_manager._page_creator,
+                )
                 await self._send_to(websocket, {'type': 'save_log', 'content': log, 'filename': f'asr_log_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'})
 
         except Exception as e:
             print(f"[WS] Control error: {e}")
             await self._send_to(websocket, {'type': 'error', 'message': str(e)})
 
-    def _extract_keywords(self, text):
-        text = re.sub(r'[^\w\s\u4e00-\u9fff]', ' ', text)
-        words = text.split()
-        stop_words = {'的', '了', '是', '在', '和', '有', '不', '这', '那', '也', '就', '都', '要', '会',
-                      'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'to', 'of', 'in', 'for', 'on',
-                      'and', 'or', 'but', 'with', 'it', 'that', 'this', 'I', 'you', 'he', 'she', 'we'}
-        keywords = []
-        for word in words:
-            word = word.strip()
-            if len(word) < 2 or word.lower() in stop_words:
-                continue
-            if re.search(r'[\u4e00-\u9fff]', word) or word.isalpha():
-                keywords.append(word)
-        return set(dict.fromkeys(keywords))
-
-    def _extract_title_keywords(self, title):
-        """从视频标题中提取有意义的专有名词/术语，用于ASR纠正"""
-        stop_words = {'的', '了', '是', '在', '和', '有', '不', '这', '那', '也', '就', '都', '要', '会',
-                      '我', '你', '他', '她', '它', '们', '个', '吗', '吧', '呢', '啊', '哦', '嗯',
-                      '怎么', '什么', '为什么', '可以', '不能', '没有', '不是', '还是', '已经',
-                      '一个', '这个', '那个', '哪个', '什么', '怎么', '这样', '那样',
-                      '视频', '直播', '全集', '精彩', '高能', '日常', '第一', '第二', '第三',
-                      '上集', '下集', '中集', '上期', '下期', '合集', '实况', '解说'}
-        keywords = set()
-        cleaned = re.sub(r'[【】《》「」『』\[\]()（）""''「」]', ' ', title)
-        cleaned = re.sub(r'[｜|\-—–/、，。,\.！!？?：:；;…]', ' ', cleaned)
-        for word in cleaned.split():
-            word = word.strip()
-            if len(word) >= 2 and len(word) < 20 and word not in stop_words:
-                if re.search(r'[\u4e00-\u9fff]', word) or word.isalpha():
-                    keywords.add(word)
-
-        # 拆分中英混合词："m0NESY不敢相信" → "m0NESY" + "不敢相信"
-        split_kws = set()
-        for kw in list(keywords):
-            if re.search(r'[\u4e00-\u9fff]', kw) and re.search(r'[a-zA-Z0-9]', kw):
-                parts = re.split(
-                    r'(?<=[\u4e00-\u9fff])(?=[a-zA-Z0-9])|(?<=[a-zA-Z0-9])(?=[\u4e00-\u9fff])',
-                    kw)
-                for part in parts:
-                    part = part.strip()
-                    if len(part) >= 2 and part not in stop_words:
-                        split_kws.add(part)
-            else:
-                split_kws.add(kw)
-        keywords = split_kws
-
-        # 长中文短语再拆分为2-4字词（英文/数字短语不拆分，避免"m0NESY"→"m0N"等碎片）
-        extra = set()
-        for kw in list(keywords):
-            if len(kw) >= 4 and re.search(r'[\u4e00-\u9fff]', kw):
-                if re.search(r'[a-zA-Z0-9]', kw):
-                    continue
-                for i in range(len(kw) - 1):
-                    for j in range(2, 5):
-                        if i + j <= len(kw):
-                            sub = kw[i:i+j]
-                            if sub not in stop_words and len(sub) >= 2:
-                                extra.add(sub)
-        keywords.update(extra)
-        return [w for w in keywords if len(w) >= 2 and w not in stop_words]
-
     def _get_all_keywords(self):
         """获取所有分类的去重关键词"""
-        return list(self.ocr_keywords)
+        return list(self.pinyin_corrector.kw_set)
+
+    async def _load_topic_keywords(self, tags):
+        """加载话题关键词、拼音/文本纠正、实体知识库（不发送消息，返回 added 计数）"""
+        topic_kws, matched_topics = TOPIC_MANAGER.match_and_load(tags)
+        added = 0
+        for kw in topic_kws:
+            kw = kw.strip()
+            if kw and len(kw) >= 2 and kw not in self.pinyin_corrector.kw_set:
+                self.pinyin_corrector.kw_set.add(kw)
+                added += 1
+        for topic in matched_topics:
+            self.pinyin_corrector.load_pinyin_corrections(topic)
+            self.pinyin_corrector.load_text_corrections(topic)
+            self.correction_engine.load_topic(topic)
+        self.pinyin_corrector.sync_protected_from_keywords()
+        return added
+
+    async def _send_keywords_updated(self, websocket, extra=None):
+        """发送 keywords_updated 消息，附加可选 extra 字段"""
+        msg = {
+            'type': 'keywords_updated',
+            'keywords': list(self.pinyin_corrector.kw_set),
+            'keyword_store': {c: list(v) for c, v in self.keyword_store.items() if v},
+            'categories': CATEGORIES,
+            'category_icons': CATEGORY_ICONS,
+        }
+        if extra:
+            msg.update(extra)
+        await self._send_to(websocket, msg)
 
     async def process_audio(self, audio_data, websocket):
         if not self.is_running or websocket is not self.recording_ws:
@@ -1326,30 +1076,31 @@ class RealtimeASRServer:
                 audio_array = self._resample_audio(
                     audio_array, self.browser_sample_rate, self.target_sample_rate)
 
-            self.audio_buffer.extend(audio_array.tolist())
+            self._audio_buf = np.append(self._audio_buf, audio_array)
 
-            # 流式模式：每0.5秒做一次快速partial推理
-            if self.mode == "streaming":
-                now = time.time()
-                if now - self._stream_partial_time >= self._stream_partial_interval:
-                    self._stream_partial_time = now
-                    buf = np.array(self.audio_buffer, dtype=np.float32)
-                    dur = len(buf) / 16000
-                    if dur >= 0.5:
-                        asyncio.ensure_future(self._do_streaming_partial(buf.copy()))
+            # 每0.5秒做一次快速partial推理
+            now = time.time()
+            if now - self._stream_partial_time >= self._stream_partial_interval:
+                self._stream_partial_time = now
+                buf = self._audio_buf
+                dur = len(buf) / 16000
+                if dur >= 0.5:
+                    asyncio.ensure_future(self._do_streaming_partial(buf.copy()))
 
             # 每0.5秒检查一次是否可以转录
-            buffer_dur = len(self.audio_buffer) / 16000
-            if buffer_dur >= 0.5 and self.audio_buffer:
+            buffer_dur = len(self._audio_buf) / 16000
+            if buffer_dur >= 0.5 and len(self._audio_buf) > 0:
                 # 用VAD检测是否有完整的语音段
-                audio_seg, vad_info = self._vad_cut(np.array(self.audio_buffer, dtype=np.float32), 16000)
+                audio_seg, remaining, vad_info = self.vad_processor.cut(self._audio_buf, 16000)
+                if remaining is not None:
+                    self._audio_buf = remaining if len(remaining) > 0 else np.array([], dtype=np.float32)
 
                 if audio_seg is not None and len(audio_seg) > int(self.min_speech_duration * 16000):
                     await self.transcribe_buffer(audio_seg, vad_info)
 
                 # 限制缓冲区大小
-                if len(self.audio_buffer) > self.max_buffer_size:
-                    self.audio_buffer = self.audio_buffer[-self.max_buffer_size:]
+                if len(self._audio_buf) > self.max_buffer_size:
+                    self._audio_buf = self._audio_buf[-self.max_buffer_size:]
 
         except Exception as e:
             print(f"[WS] Audio error: {e}")
@@ -1358,10 +1109,18 @@ class RealtimeASRServer:
 
     async def _do_streaming_partial(self, audio_array):
         """流式模式：快速partial推理，结果发送到前端"""
+        # 防止CPU模式下前一个partial尚未完成时堆积新请求
+        if self._partial_in_flight:
+            return
+        self._partial_in_flight = True
         try:
             import numpy as np
             rms = np.sqrt(np.mean(np.asarray(audio_array, dtype=np.float32) ** 2))
-            if rms < 0.001:
+            if rms < 0.005:
+                return
+
+            # 前置音乐/噪声检测：纯音乐/噪声直接跳过，不做ASR
+            if self.vad_processor.is_music_like(audio_array):
                 return
 
             loop = asyncio.get_event_loop()
@@ -1378,22 +1137,11 @@ class RealtimeASRServer:
 
             self._stream_full_text = full_text
 
-            corrected, _ = self._apply_pinyin_dict_correction(full_text)
+            # 智能纠错引擎：拼音纠错 + 文本纠错 + 实体识别 + 模糊匹配 + 语法检查 + 置信度评分
+            eng_result = self.correction_engine.correct(full_text, pinyin_corrector=self.pinyin_corrector)
+            corrected = eng_result['text']
+            corrected = normalize_letter_adjacent_numbers(corrected)
 
-            # 口音矫正：实时应用到斜体/字幕
-            loaded_count = sum(1 for p in sp_manager.profiles.values() if p.library_loaded or p.traits)
-            all_traits = sp_manager.get_all_loaded_traits()
-            if loaded_count > 0 and all_traits:
-                if len(self.speaker_profiles) > 1 or loaded_count > 1:
-                    accent_corrected, _ = sp_manager.accent_correct_all(
-                        corrected, list(self.ocr_keywords))
-                else:
-                    accent_corrected, _ = sp_manager.accent_correct(
-                        self._last_speaker_label, corrected, list(self.ocr_keywords))
-                if accent_corrected != corrected:
-                    corrected = accent_corrected
-
-            corrected = self._normalize_letter_adjacent_numbers(corrected)
             self._stream_last_corrected = corrected
 
             self._stream_seg_id += 1
@@ -1403,166 +1151,34 @@ class RealtimeASRServer:
                 'seg_id': self._stream_seg_id,
             })
         except Exception as e:
-            pass
-
-    def _vad_cut(self, audio_data, sr):
-        """
-        自适应VAD：根据说话语速动态调整静音断句阈值
-        - 说话快（间隙短）→ 阈值小（1秒），快速断句
-        - 说话慢（间隙长）→ 阈值大（2-4秒），耐心等待不打断
-        返回 (语音段, 是否检测到静音间隙)
-        """
-        frame_len = int(sr * 0.03)
-        hop_len = int(sr * 0.01)
-        n_frames = (len(audio_data) - frame_len) // hop_len + 1
-
-        vad_info = {'silence': 1.35, 'forced': False, 'overlap': 1.35, 'chunk_dur': 0}
-
-        min_dur_frames = int(self.min_speech_duration / 0.03)
-        if n_frames < min_dur_frames:
-            return None, vad_info
-
-        energies = np.zeros(n_frames)
-        for i in range(n_frames):
-            start = i * hop_len
-            frame = audio_data[start:start + frame_len]
-            energies[i] = np.sqrt(np.mean(frame ** 2))
-
-        threshold = np.median(energies) * 1.5 if np.median(energies) > 0 else 0.0005
-        is_speech = energies > threshold
-
-        # === 流式模式：固定静音阈值1.2s + 强制切分5~7s ===
-        if self.mode == "streaming":
-            min_silence_frames = int(self._stream_vad_silence / 0.01)
-            fc = self._stream_vad_force_cut
-            force_cut_sec = fc + 0.5
-            force_cut_size = fc
-            desperate_sec = fc + 1.5
-        else:
-            # === 音乐/噪声检测：影响强制切分阈值 ===
-            music_like = self._is_music_like(audio_data)
-            vad_info['music_like'] = music_like
-            if self.vad_force_cut:
-                fc = self.vad_force_cut_sec
-                force_cut_sec = round(fc * 1.5, 1) if music_like else round(fc + 0.1, 1)
-                force_cut_size = round(fc * 1.3, 1) if music_like else fc
-                desperate_sec = round(fc * 2.1, 1) if music_like else round(fc + 1.2, 1)
-            else:
-                force_cut_sec = self.max_buffer_seconds
-                force_cut_size = self.max_buffer_seconds
-                desperate_sec = self.max_buffer_seconds
-
-        # === 计算语音爆发间隙，更新自适应阈值 ===
-        changes = np.diff(np.concatenate([[False], is_speech, [False]]).astype(int))
-        starts = np.where(changes == 1)[0]   # 语音爆发开始帧
-        ends = np.where(changes == -1)[0]     # 语音爆发结束帧
-        ends = ends[:len(starts)]              # 对齐
-
-        # 计算间隙（上一段结束到下一段开始）
-        for i in range(1, len(starts)):
-            gap = (starts[i] - ends[i-1]) * 0.01  # 转换为秒
-            if 0.05 < gap < 10:  # 忽略太短和太长的异常间隙
-                self.speech_gaps.append(gap)
-                if len(self.speech_gaps) > 20:
-                    self.speech_gaps.pop(0)
-
-        if self.mode != "streaming":
-            min_silence_frames = int(self.adaptive_threshold / 0.01)
-        min_speech_frames = max(1, int(self.min_speech_duration / 0.01))
-
-        # === 找到完整语音段（末尾有足够静音）===
-        if np.any(is_speech):
-            last_speech_frame = np.where(is_speech)[0][-1]
-            silence_after = n_frames - last_speech_frame
-            first_speech_frame = np.where(is_speech)[0][0]
-            speech_duration = (last_speech_frame - first_speech_frame + 1) * 0.01
-
-            # 连续说话快速切分
-            quick_cut_dur = 1.5 if self.mode == "streaming" else 2.5
-            quick_cut_silence = int(0.2 / 0.01) if self.mode == "streaming" else int(0.3 / 0.01)
-            if self.vad_force_cut and speech_duration > quick_cut_dur and silence_after >= quick_cut_silence:
-                cut_point = (last_speech_frame + 1) * hop_len
-                speech_segment = audio_data[:cut_point]
-                remaining_start = cut_point + int(0.3 * sr)
-                remaining = audio_data[remaining_start:]
-                self.audio_buffer = list(remaining) if len(remaining) > 0 else []
-                self.speech_gaps = []
-                self.adaptive_threshold = 1.35
-                vad_info['chunk_dur'] = len(speech_segment) / sr
-                vad_info['forced'] = False
-                return speech_segment, vad_info
-
-            if silence_after >= min_silence_frames:
-                cut_point = (last_speech_frame + 1) * hop_len
-                speech_segment = audio_data[:cut_point]
-                speech_duration = len(speech_segment) / sr
-
-                if self.mode == "streaming" or speech_duration <= 1.2:
-                    remaining_start = cut_point + min_silence_frames * hop_len
-                else:
-                    overlap_frames = int(1.5 / 0.01)
-                    remaining_start = max(0, cut_point + min_silence_frames * hop_len - overlap_frames * hop_len)
-                remaining = audio_data[remaining_start:]
-                self.audio_buffer = list(remaining) if len(remaining) > 0 else []
-
-                # 重置间隙统计
-                self.speech_gaps = []
-                self.adaptive_threshold = 1.35
-
-                vad_info['chunk_dur'] = len(speech_segment) / sr
-                vad_info['forced'] = False
-                return speech_segment, vad_info
-
-            # 缓冲区超过阈值且无静音间隙则强制切出
-            buffer_dur = len(audio_data) / sr
-            if buffer_dur > force_cut_sec:
-                cut_samples = int(force_cut_size * sr)
-                speech_segment = audio_data[:cut_samples]
-                self.audio_buffer = list(audio_data[cut_samples:])
-                vad_info['forced'] = True
-                vad_info['chunk_dur'] = len(speech_segment) / sr
-                return speech_segment, vad_info
-
-        # 无语音检测但缓冲区已积压：可能是轻声说话/连续背景音，强制送出转写
-        buffer_dur = len(audio_data) / sr
-        if buffer_dur > desperate_sec:
-            cut_samples = int(min(buffer_dur, 6.0) * sr)
-            speech_segment = audio_data[:cut_samples]
-            self.audio_buffer = list(audio_data[cut_samples:])
-            vad_info['forced'] = True
-            vad_info['chunk_dur'] = len(speech_segment) / sr
-            return speech_segment, vad_info
-
-        return None, vad_info
+            print(f"[WS] Partial error: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+        finally:
+            self._partial_in_flight = False
 
     async def transcribe_buffer(self, audio_data, vad_info=None):
         if self.transcripts_in_flight >= self.max_concurrent_transcripts:
             return
+
+        # 前置音乐/噪声检测：纯音乐/噪声直接跳过，不做ASR
+        if self.vad_processor.is_music_like(audio_data):
+            return
+
         self.transcripts_in_flight += 1
 
-        # 快照前先跑一次最终partial，确保拿到最新完整文本，避免竞态漏字
-        # 注意：此时 self.audio_buffer 已被 VAD 裁切为剩余缓冲区（tail），
-        # 必须用 audio_data（VAD切出的语音段）而非 self.audio_buffer 做partial，
-        # 否则 snapshot 会拿到上一句残留的 tail 文本，导致 Speaker 输出包含上一句末尾
-        if self.mode == "streaming":
-            if len(audio_data) / 16000 >= 0.2:
-                await self._do_streaming_partial(audio_data.copy())
-            self._transcription_snapshot = self._stream_last_corrected
-            if not self._transcription_snapshot:
-                self._transcription_snapshot = self._stream_full_text
-
-        if len(self._audio_tail) > 0:
-            audio_data = np.concatenate([self._audio_tail, audio_data])
-
-        tail_samples = int(self._overlap_seconds * 16000)
-        if len(audio_data) > tail_samples:
-            self._audio_tail = audio_data[-tail_samples:].copy()
-        else:
-            self._audio_tail = audio_data.copy()
+        # 在完整ASR前先跑一次快速partial，给前端实时展示斜体字+字幕条
+        if len(audio_data) / 16000 >= 0.2:
+            await self._do_streaming_partial(audio_data.copy())
 
         timestamp = int(time.time() * 1000)
         temp_path = TEMP_DIR / f'realtime_chunk_{timestamp}.wav'
-        sf.write(str(temp_path), audio_data, 16000)
+        try:
+            sf.write(str(temp_path), audio_data, 16000)
+        except Exception:
+            if temp_path.exists():
+                temp_path.unlink()
+            raise
 
         loop = asyncio.get_event_loop()
         future = loop.run_in_executor(
@@ -1573,10 +1189,6 @@ class RealtimeASRServer:
     async def _handle_transcription(self, future, temp_path, audio_data, vad_info=None):
         try:
             text = await future
-            self.transcripts_in_flight -= 1
-
-            if temp_path.exists():
-                temp_path.unlink()
 
             if not text or not text.strip():
                 return
@@ -1586,139 +1198,76 @@ class RealtimeASRServer:
             if self.segments:
                 prev = self.segments[-1]['text']
                 before_dedup = text
-                text = self._dedup_overlap(prev, text)
+                text = dedup_overlap(prev, text)
                 if text != before_dedup:
                     removed = before_dedup[:len(before_dedup)-len(text)] if len(before_dedup) > len(text) else before_dedup
                     print(f"    [DEDUP] 与上段重叠去重: removed='{removed[:20]}' → kept='{text[:30]}'", flush=True)
 
-            text = self._dedup_chars(text)
+            text = dedup_chars(text)
 
             if not text:
                 return
-
-            # 音乐/噪声检测
-            music_like = self._is_music_like(audio_data)
-
-            # 音乐/噪声场景下过滤英文幻听（如 "Oh.", "The.", "I'm sorry." 等）
-            # 非音乐场景不按语言过滤，避免误丢弃真实外语/英语语音
-            if music_like:
-                chinese_count = len(re.findall(r'[\u4e00-\u9fff]', text))
-                alpha_count = len(re.findall(r'[a-zA-Z]', text))
-                if chinese_count == 0:
-                    if alpha_count >= 2 and alpha_count < 20:
-                        print(f"    [SKIP-MUSIC] '{text[:30]}' (无中文+短英文, 疑似音乐幻听)", flush=True)
-                        return
-                    if alpha_count < 2:
-                        return
 
             if text in self.sent_texts:
                 print(f"    [DEDUP-SENT] 完全重复: '{text[:30]}'", flush=True)
                 return
             for prev in list(self.sent_texts):
-                if prev in text and len(prev) > len(text) * 0.5:
+                if prev in text and len(prev) > len(text) * 0.8:
                     print(f"    [DEDUP-SENT] 包含已发送: prev='{prev[:20]}' in text='{text[:30]}'", flush=True)
                     return
-                if text in prev and len(text) > len(prev) * 0.5:
+                if text in prev and len(text) > len(prev) * 0.8:
                     print(f"    [DEDUP-SENT] 替换更短: old='{prev[:20]}' ← new='{text[:30]}'", flush=True)
                     self.sent_texts.discard(prev)
 
-            if self.mode == "streaming":
-                # 流式模式：Speaker = 斜体最终结果快照，不重复纠错，不断句
-                corrected = self._transcription_snapshot or self._stream_full_text
-                if not corrected or not corrected.strip():
-                    print(f"    [WS] [{self.transcription_count}] [SKIP] snapshot empty, full ASR='{text[:30]}'", flush=True)
-                    return
-                original = self._stream_full_text or corrected
-                await self._emit_segment(audio_data, corrected, True, vad_info=vad_info, corrections=[], original_text=original)
-                status = f"[WS] [{self.transcription_count}] [SNAP]"
-                print(f"{status} {corrected[:60]}...", flush=True)
-            else:
-                # 非流式模式：全量ASR + 完整纠错流水线
-                corrected = text
-                original = corrected
-                corrected, py_corrections = self._apply_pinyin_dict_correction(corrected)
-                corrected = self._normalize_letter_adjacent_numbers(corrected)
-                corrections = py_corrections
-                ocr_applied = (original != corrected)
-                if py_corrections:
-                    for old, new in py_corrections:
-                        self.correction_log.add(new)
-                        self.correction_records.append((old, new))
+            # 对完整ASR结果运行智能纠错引擎，得到最终纠正后文本
+            # 此时partial（斜体字+字幕条）已展示过实时纠正版本，
+            # speaker区域展示的是完整纠正后的最终版本（异步、慢一拍）
+            original_text = text
+            eng_result = self.correction_engine.correct(text, pinyin_corrector=self.pinyin_corrector)
+            corrected = eng_result['text']
+            corrected = normalize_letter_adjacent_numbers(corrected)
+            corrections = eng_result.get('corrections', [])
 
-                # 口音矫正
-                loaded_count = sum(1 for p in sp_manager.profiles.values() if p.library_loaded or p.traits)
-                all_traits = sp_manager.get_all_loaded_traits()
-                if loaded_count > 0 and all_traits:
-                    if len(self.speaker_profiles) > 1 or loaded_count > 1:
-                        accent_corrected, accent_corrections = sp_manager.accent_correct_all(
-                            corrected, list(self.ocr_keywords))
-                    else:
-                        accent_corrected, accent_corrections = sp_manager.accent_correct(
-                            self._last_speaker_label, corrected, list(self.ocr_keywords))
-                    if accent_corrected != corrected:
-                        print(f"    [ACCENT] traits={sp_manager.get_all_loaded_traits() if loaded_count > 1 else sp_manager.get_accent_traits(self._last_speaker_label)}: '{corrected}' → '{accent_corrected}' ({len(accent_corrections)} corrections)", flush=True)
-                        corrections.extend([(old, new, desc) for old, new, desc in accent_corrections])
-                        for old, new, desc in accent_corrections:
-                            self.correction_records.append(('accent', old, new, desc))
-                        corrected = accent_corrected
-                        ocr_applied = True
+            if not corrected or not corrected.strip():
+                return
 
-                sentences = self._split_sentences(corrected)
-                if len(sentences) <= 1:
-                    await self._emit_segment(audio_data, corrected, ocr_applied, vad_info=vad_info, corrections=corrections, original_text=original if corrections else None)
-                else:
-                    shared_speaker = None
-                    if len(audio_data) >= int(16000 * 1.5):
-                        shared_speaker = await self._detect_speaker(audio_data)
-                        self._last_speaker_label = shared_speaker
-                    seg_len = len(audio_data) // len(sentences)
-                    for i, sent in enumerate(sentences):
-                        if not sent.strip():
-                            continue
-                        start = i * seg_len
-                        end = start + seg_len if i < len(sentences) - 1 else len(audio_data)
-                        sub_audio = audio_data[start:end]
-                        if len(sub_audio) < 16000 * 0.3:
-                            sub_audio = audio_data
-                        await self._emit_segment(sub_audio, sent.strip(), ocr_applied, speaker_label=shared_speaker, vad_info=vad_info, corrections=corrections)
+            # 先将最终纠正文本同步到斜体字+字幕条，确保三者（斜体/字幕/speaker）文字完全一致
+            self._stream_seg_id += 1
+            await self.send({
+                'type': 'partial',
+                'text': corrected,
+                'seg_id': self._stream_seg_id,
+            })
 
-                status = f"[WS] [{self.transcription_count}]"
-                if ocr_applied:
-                    status += " [KW]"
-                print(f"{status} {corrected[:60]}...", flush=True)
+            await self._emit_segment(audio_data, corrected, True, vad_info=vad_info,
+                                      corrections=corrections, original_text=original_text)
+            status = f"[WS] [{self.transcription_count}] [SEG]"
+            print(f"{status} {corrected[:60]}...", flush=True)
 
             self.last_activity = time.time()
 
         except Exception as e:
-            self.transcripts_in_flight -= 1
             print(f"[WS] Transcription error: {e}", flush=True)
             import traceback
             traceback.print_exc()
             await self.send({'type': 'error', 'message': str(e)})
+        finally:
+            self.transcripts_in_flight -= 1
+            if temp_path.exists():
+                temp_path.unlink()
 
     def _do_transcribe(self, temp_path):
         """在子线程中执行转写，避免阻塞事件循环"""
         return self.asr_engine.transcribe(temp_path)
 
-    @staticmethod
-    def _split_sentences(text):
-        """
-        按中文/英文标点分句，解决ASR一次返回多句的问题
-        每句独立做 Speaker 检测
-        注：逗号是句内停顿，不作为断句标志
-        """
-        import re
-        parts = re.split(r'(?<=[。！？；\n])\s*|(?<=[.!?;])\s+', text)
-        return [p.strip() for p in parts if p.strip()]
-
-    async def _emit_segment(self, audio_data, text, ocr_applied=False, speaker_label=None, vad_info=None, corrections=None, original_text=None):
+    async def _emit_segment(self, audio_data, text, kw_applied=False, speaker_label=None, vad_info=None, corrections=None, original_text=None):
         """创建一条识别记录并发送到前端"""
         if not text or text in self.sent_texts:
             if text:
                 print(f"    [DEDUP-EMIT] 已发送过: '{text[:30]}'", flush=True)
             return
         for prev in list(self.sent_texts):
-            if prev in text and len(prev) > len(text) * 0.5:
+            if prev in text and len(prev) > len(text) * 0.8:
                 print(f"    [DEDUP-EMIT] 包含已发送: prev='{prev[:20]}' in '{text[:30]}'", flush=True)
                 return
 
@@ -1727,10 +1276,16 @@ class RealtimeASRServer:
             pass
         # 短音频不跑 VoiceEncoder（单字如"我""嗯"嵌入是噪声），直接用上一个说话人
         elif len(audio_data) < int(16000 * 0.5):
-            speaker_label = self._last_speaker_label
+            speaker_label = self.speaker_manager._last_speaker_label
+        # 极短文本片段（<5个中文字）：大概率是VAD强制切分产生的尾部碎片
+        # 声纹嵌入在这么短的有效语音上几乎就是噪声，直接继承上一个说话人
+        elif text and len(re.findall(r'[\u4e00-\u9fff]', text)) < 5:
+            speaker_label = self.speaker_manager._last_speaker_label
+            print(f"    [SPEAKER] 短文本片段({len(re.findall(r'[\u4e00-\u9fff]', text))}字) "
+                  f"继承说话人: {speaker_label}", flush=True)
         else:
-            speaker_label = await self._detect_speaker(audio_data)
-            self._last_speaker_label = speaker_label
+            speaker_label = await self.speaker_manager.detect_speaker(audio_data)
+            self.speaker_manager._last_speaker_label = speaker_label
 
         # 计算音频时间戳和gap
         seg_audio_time = self.total_audio_seconds
@@ -1746,12 +1301,16 @@ class RealtimeASRServer:
         self.last_segment_wall_time = now_wall
         self.last_segment_end_audio_time = seg_audio_time + seg_duration
 
+        display_name = self.speaker_manager.get_speaker_display(speaker_label)
+
         seg_entry = {
             'text': text,
             'time': self.total_audio_seconds,
             'speaker': speaker_label,
+            'speaker_display': display_name,
             'duration': seg_duration,
-            'ocr_corrected': ocr_applied,
+            'kw_corrected': kw_applied,
+            'timestamp': datetime.now().isoformat(),
             'vad': vad_info or {},
             'gap_audio': gap_audio,
             'gap_wall': gap_wall,
@@ -1759,20 +1318,23 @@ class RealtimeASRServer:
         }
         self.segments.append(seg_entry)
 
-        if speaker_label and speaker_label != "Speaker":
-            display = f"[{speaker_label}] {text}"
+        if display_name and display_name != "Speaker":
+            display = f"[{display_name}] {text}"
         else:
             display = text
 
         self.full_text += display + " "
-        self.sent_texts.add(text)
+        if len(self.sent_texts) < self._MAX_SENT_TEXTS:
+            self.sent_texts.add(text)
         self.total_audio_seconds += seg_duration
+        self.speaker_manager.total_audio_seconds = self.total_audio_seconds
         self.transcription_count += 1
 
         await self.send({
             'type': 'transcription',
             'text': text,
-            'speaker': speaker_label,
+            'speaker': display_name,
+            'speaker_label': speaker_label,
             'full_text': self.full_text.strip(),
             'timestamp': datetime.now().isoformat(),
             'duration': self.total_audio_seconds,
@@ -1780,991 +1342,189 @@ class RealtimeASRServer:
             'seg_dur': seg_duration,
             'gap_audio': gap_audio,
             'gap_wall': gap_wall,
-            'keywords': list(self.ocr_keywords)[:10],
-            'ocr_corrected': ocr_applied,
-            'ocr_count': len(self.ocr_keywords),
+            'keywords': list(self.pinyin_corrector.kw_set)[:10],
+            'kw_corrected': kw_applied,
+            'kw_count': len(self.pinyin_corrector.kw_set),
             'corrections': corrections or [],
             'original_text': original_text or text,
-            'is_host': speaker_label == self._host_speaker_label if speaker_label else False,
+            'is_host': speaker_label == self.speaker_manager._host_speaker_label if speaker_label else False,
         })
 
-        # 流式模式：句子已确定，重置partial状态准备下一句
-        if self.mode == "streaming":
-            self._stream_last_partial = ""
-            self._stream_full_text = ""
-            self._stream_last_corrected = ""
-            self._transcription_snapshot = ""
+        # 句子已确定，重置partial状态准备下一句
+        self._stream_last_partial = ""
+        self._stream_full_text = ""
+        self._stream_last_corrected = ""
 
-    PHONETIC_MERGE = {
-        ('z','zh'),('zh','z'),('c','ch'),('ch','c'),('s','sh'),('sh','s'),
-        ('n','l'),('l','n'),('h','f'),('f','h'),('r','l'),('l','r'),
-        ('an','ang'),('ang','an'),('en','eng'),('eng','en'),
-        ('in','ing'),('ing','in'),
-    }
-
-    @staticmethod
-    def _split_pinyin(py):
-        initials = ['zh','ch','sh','b','p','m','f','d','t','n','l',
-                    'g','k','h','j','q','x','r','z','c','s','y','w']
-        py_clean = py.rstrip('12345')
-        for init in initials:
-            if py_clean.startswith(init):
-                return init, py_clean[len(init):]
-        return '', py_clean
-
-    def _pinyin_similar(self, py1, py2):
-        if py1 == py2:
-            return True
-        i1, f1 = self._split_pinyin(py1)
-        i2, f2 = self._split_pinyin(py2)
-        if (i1, i2) in self.PHONETIC_MERGE:
-            return True
-        if (f1, f2) in self.PHONETIC_MERGE:
-            return True
-        return False
-
-    def _get_pinyin_list(self, text):
+    async def _auto_detect_creator(self, page_url, websocket):
+        """通过平台 API 提取 UP 主 / 主播名（优先用 API，比 HTML 抓取可靠）"""
         try:
-            if lazy_pinyin is None:
-                return list(text)
-            return lazy_pinyin(text, style=Style.TONE3)
-        except (ValueError, TypeError, KeyError):
-            return list(text)
+            creator = None
+            loop = asyncio.get_event_loop()
 
-    def _apply_ocr_correction(self, text):
-        """用关键词纠正ASR近音错误。仅替换拼音相近的字符，杜绝 摩尔定律→摩韬定律 这类误替换。"""
-        if not self.ocr_keywords or len(text) < 3:
-            return text, []
+            # ── B站视频: 用 bilibili API ──
+            bv_match = re.search(r'(?:bilibili\.com/video/|BV)([A-Za-z0-9]{10,12})', page_url)
+            if bv_match:
+                bvid = 'BV' + bv_match.group(1) if not bv_match.group(0).startswith('BV') else bv_match.group(1)
+                api_url = f'https://api.bilibili.com/x/web-interface/view?bvid={bvid}'
+                data = await loop.run_in_executor(self.executor, self._fetch_json_api, api_url)
+                if data and data.get('code') == 0:
+                    owner = data.get('data', {}).get('owner', {})
+                    creator = owner.get('name', '')
+                    print(f"[WS] B站视频API: bvid={bvid} → owner={creator}", flush=True)
 
-        keywords = sorted(self.ocr_keywords, key=len, reverse=True)
-        corrected = text
-        corrections = []
+            # ── B站直播: 用 bilibili 直播 API ──
+            if not creator:
+                room_match = re.search(r'live\.bilibili\.com/(?:blanc/)?(\d+)', page_url)
+                if room_match:
+                    room_id = room_match.group(1)
+                    api_url = f'https://api.live.bilibili.com/room/v1/Room/get_info?room_id={room_id}'
+                    data = await loop.run_in_executor(self.executor, self._fetch_json_api, api_url)
+                    if data and data.get('code') == 0:
+                        anchor = data.get('data', {}).get('anchor_info', {}).get('base_info', {})
+                        creator = anchor.get('uname', '')
+                        print(f"[WS] B站直播API: room={room_id} → uname={creator}", flush=True)
 
-        for kw in keywords:
-            kw_len = len(kw)
-            if kw_len < self.OCR_MIN_KW_LEN:
-                continue
-            if kw in corrected:
-                continue
+            # ── 斗鱼直播 ──
+            if not creator and 'douyu.com' in page_url:
+                room_match = re.search(r'douyu\.com/(\d+)', page_url)
+                if not room_match:
+                    room_match = re.search(r'[?&]rid=(\d+)', page_url)
+                if room_match:
+                    room_id = room_match.group(1)
+                    # 斗鱼 betard API
+                    api_url = f'https://www.douyu.com/betard/{room_id}'
+                    data = await loop.run_in_executor(self.executor, self._fetch_json_api, api_url)
+                    if data:
+                        room_info = data.get('room', {}) or data.get('roomInfo', {})
+                        creator = room_info.get('nickname', '') or room_info.get('owner_name', '')
+                        print(f"[WS] 斗鱼API: room={room_id} → {creator}", flush=True)
+                # 兜底：从 title 提取（斗鱼格式: "标题_主播名[分区]直播_斗鱼直播"）
+                if not creator:
+                    html = await loop.run_in_executor(self.executor, self._fetch_page, page_url)
+                    if html:
+                        title_match = re.search(r'<title>([^<]+)</title>', html, re.IGNORECASE)
+                        if title_match:
+                            t = title_match.group(1).strip()
+                            # 取 _斗鱼直播 或 _正在直播 之前最后一段
+                            m = re.search(r'[_\s]([^_\s]{2,30})_(?:斗鱼|正在)直播', t)
+                            if m:
+                                name = m.group(1).strip()
+                                # 去掉尾部的游戏分区名+直播（如 "CS2直播", "英雄联盟直播"）
+                                name = re.sub(r'(?:CS[:]?GO|CS2|VALORANT|APEX|PUBG|DOTA2?|LOL|CF|[A-Z]{2,6}|[\u4e00-\u9fff]{2,4})直播$', '', name, flags=re.IGNORECASE)
+                                if 2 <= len(name) < 30:
+                                    creator = name
+                            if not creator:
+                                parts = [p for p in t.split('_') if p and len(p) >= 2 and '斗鱼' not in p and '正在' not in p and p != '直播']
+                                if parts:
+                                    last = re.sub(r'(?:CS[:]?GO|CS2|VALORANT|APEX|PUBG|DOTA2?|LOL|CF|[A-Z]{2,6}|[\u4e00-\u9fff]{2,4})直播$', '', parts[-1], flags=re.IGNORECASE)
+                                    if 2 <= len(last) < 30:
+                                        creator = last
 
-            kw_py = self._get_pinyin_list(kw)
-            if not kw_py or len(kw_py) != kw_len:
-                # Fallback: English/alphanumeric keywords (pinyin system can't handle them)
-                if re.search(r'[a-zA-Z]', kw):
-                    result = self._match_english_kw(corrected, kw)
-                    if result:
-                        sub, score = result
-                        print(f"    [CORRECT-EN] '{sub}' -> '{kw}' (similarity={score:.2f})", flush=True)
-                        corrections.append((sub, kw))
-                        self.correction_log.add(kw)
-                        self.correction_records.append((sub, kw))
-                        corrected = corrected.replace(sub, kw, 1)
-                continue
+            # ── 虎牙直播 ──
+            if not creator and 'huya.com' in page_url:
+                html = await loop.run_in_executor(self.executor, self._fetch_page, page_url)
+                if html:
+                    # 虎牙 HTML 中有 window.HNF_GLOBAL_DATA = {...} 或 var TT_ROOM_DATA
+                    hn_match = re.search(r'"nickName"\s*:\s*"([^"]+)"', html)
+                    if not hn_match:
+                        hn_match = re.search(r'"sNick"\s*:\s*"([^"]+)"', html)
+                    if hn_match:
+                        creator = hn_match.group(1)
+                        print(f"[WS] 虎牙HTML: → {creator}", flush=True)
+                    if not creator:
+                        title_match = re.search(r'<title>([^<]+)</title>', html, re.IGNORECASE)
+                        if title_match:
+                            title = title_match.group(1).strip()
+                            for sep in ['-', '_', '直播']:
+                                if sep in title:
+                                    parts = title.split(sep)
+                                    c = parts[0].strip()
+                                    if 2 <= len(c) <= 20:
+                                        creator = c
+                                        break
+            if not creator:
+                html = await loop.run_in_executor(self.executor, self._fetch_page, page_url)
+                if html:
+                    author_match = re.search(r'<meta\s+name="author"\s+content="([^"]+)"', html, re.IGNORECASE)
+                    if author_match:
+                        c = author_match.group(1).strip()
+                        if c and c not in ('哔哩哔哩', 'bilibili', 'BILIBILI'):
+                            creator = c
+                    if not creator and 'live.bilibili.com' in page_url:
+                        title_match = re.search(r'<title>([^<]+)</title>', html, re.IGNORECASE)
+                        if title_match:
+                            parts = title_match.group(1).strip().split(' - ', 1)
+                            if len(parts[0]) >= 2 and len(parts[0]) <= 20:
+                                creator = parts[0]
 
-            best_pos = -1
-            best_similar = -1
-            best_sub = ""
-
-            for i in range(len(corrected) - kw_len + 1):
-                sub = corrected[i:i + kw_len]
-                sub_py = self._get_pinyin_list(sub)
-                if not sub_py or len(sub_py) != kw_len:
-                    continue
-
-                similar = 0
-                total_diff = 0
-                for sp, kp in zip(sub_py, kw_py):
-                    if sp == kp:
-                        similar += 1
-                    elif self._pinyin_similar(sp, kp):
-                        similar += self.PHONETIC_PARTIAL_MATCH
-                    else:
-                        total_diff += 1
-
-                if total_diff > 0:
-                    continue
-
-                if similar > best_similar:
-                    best_similar = similar
-                    best_pos = i
-                    best_sub = sub
-
-            if best_pos >= 0 and best_similar >= kw_len * self.OCR_SIMILARITY_THRESHOLD and best_sub != kw:
-                print(f"    [CORRECT] '{best_sub}' -> '{kw}' (phonetic_similar={best_similar:.1f}/{kw_len})", flush=True)
-                corrections.append((best_sub, kw))
-                self.correction_log.add(kw)
-                self.correction_records.append((best_sub, kw))
-                corrected = corrected[:best_pos] + kw + corrected[best_pos + kw_len:]
-
-        return corrected, corrections
-
-    CN_NUM_MAP = {'零':'0','一':'1','二':'2','三':'3','四':'4','五':'5','六':'6','七':'7','八':'8','九':'9'}
-
-    def _normalize_letter_adjacent_numbers(self, text):
-        chars = list(text)
-        for i, ch in enumerate(chars):
-            if ch in self.CN_NUM_MAP:
-                before = chars[i - 1] if i > 0 else ''
-                after = chars[i + 1] if i + 1 < len(chars) else ''
-                if before.isalpha() and before.isascii():
-                    chars[i] = self.CN_NUM_MAP[ch]
-                elif after.isalpha() and after.isascii():
-                    chars[i] = self.CN_NUM_MAP[ch]
-        return ''.join(chars)
-
-    def _load_pinyin_corrections(self, topic=None):
-        corrections = {}
-        base_dir = DICT_DIR / 'pinyin_corrections'
-        base_dir.mkdir(exist_ok=True)
-        general_path = base_dir / 'general.json'
-        if general_path.exists():
-            try:
-                with open(general_path, 'r', encoding='utf-8') as f:
-                    corrections.update(json.load(f))
-            except (json.JSONDecodeError, OSError):
-                pass
-        if topic:
-            topic_path = base_dir / f'{topic.lower()}.json'
-            if topic_path.exists():
-                try:
-                    with open(topic_path, 'r', encoding='utf-8') as f:
-                        corrections.update(json.load(f))
-                    print(f"[PINYIN] 加载话题拼音纠正: {topic} ({topic_path.name})", flush=True)
-                    self._loaded_topics.add(topic)
-                except (json.JSONDecodeError, OSError):
-                    pass
-        return corrections
-
-    def _apply_pinyin_dict_correction(self, text):
-        if not self.pinyin_corrections or not text:
-            return text, []
-        sorted_entries = sorted(
-            ((k, v) for k, v in self.pinyin_corrections.items() if not k.startswith('__')),
-            key=lambda x: len(x[0].split()), reverse=True)
-
-        use_tone = any(
-            any(ch.isdigit() for ch in k) for k, v in sorted_entries
-        )
-
-        chars = list(text)
-        py_list = []
-        if lazy_pinyin is not None:
-            py_style = Style.TONE3 if use_tone else Style.NORMAL
-            for ch in chars:
-                try:
-                    py = lazy_pinyin(ch, style=py_style)
-                    py_list.append(py[0].lower() if py else ch.lower())
-                except (ValueError, TypeError, KeyError):
-                    py_list.append(ch.lower())
-        else:
-            py_list = [ch.lower() for ch in chars]
-        corrections = []
-        result = []
-        i = 0
-        while i < len(chars):
-            replaced = False
-            for py_pattern, correct_text in sorted_entries:
-                syllables = py_pattern.lower().split()
-                n = len(syllables)
-                if i + n > len(chars):
-                    continue
-                match = True
-                for j in range(n):
-                    key_syl = syllables[j]
-                    text_syl = py_list[i + j]
-                    if any(c.isdigit() for c in key_syl):
-                        if key_syl != text_syl:
-                            match = False
-                            break
-                    else:
-                        text_clean = ''.join(c for c in text_syl if not c.isdigit())
-                        if key_syl != text_clean:
-                            match = False
-                            break
-                if not match:
-                    continue
-                sub = ''.join(chars[i:i + n])
-                if sub != correct_text:
-                    corrections.append((sub, correct_text))
-                result.append(correct_text)
-                i += n
-                replaced = True
-                break
-            if not replaced:
-                result.append(chars[i])
-                i += 1
-        corrected = ''.join(result)
-        if corrections:
-            print(f"    [PINYIN-DICT] {len(corrections)}处拼音纠正: {corrections[:5]}", flush=True)
-        return corrected, corrections
-
-    @staticmethod
-    def _levenshtein(s1, s2):
-        """Levenshtein编辑距离"""
-        if len(s1) < len(s2):
-            return RealtimeASRServer._levenshtein(s2, s1)
-        if len(s2) == 0:
-            return len(s1)
-        prev = list(range(len(s2) + 1))
-        for i, c1 in enumerate(s1):
-            curr = [i + 1]
-            for j, c2 in enumerate(s2):
-                cost = 0 if c1 == c2 else 1
-                curr.append(min(curr[-1] + 1, prev[j + 1] + 1, prev[j] + cost))
-            prev = curr
-        return prev[-1]
-
-    @staticmethod
-    def _match_english_kw(text, keyword):
-        """英文/数字关键词后备匹配：标准化+子串+编辑距离"""
-        def _norm(s):
-            s = s.lower()
-            s = s.replace('0', 'o').replace('1', 'i').replace('3', 'e').replace('4', 'a')
-            return s
-
-        kw_norm = _norm(keyword)
-        if len(kw_norm) < 1:
-            return None
-        tokens = re.findall(r'[a-zA-Z0-9]+', text)
-        best_score = 0
-        best_token = None
-
-        for token in tokens:
-            tok_norm = _norm(token)
-            if len(tok_norm) < 1:
-                continue
-
-            # 子串包含
-            if kw_norm in tok_norm or tok_norm in kw_norm:
-                score = min(len(kw_norm), len(tok_norm)) / max(len(kw_norm), len(tok_norm))
-                if score > best_score:
-                    best_score = score
-                    best_token = token
-
-            # 编辑距离（容错ASR音译错误）
-            if abs(len(tok_norm) - len(kw_norm)) <= 3:
-                dist = RealtimeASRServer._levenshtein(tok_norm, kw_norm)
-                sim = 1 - dist / max(len(tok_norm), len(kw_norm))
-                if sim > best_score:
-                    best_score = sim
-                    best_token = token
-
-        if best_token and best_score >= RealtimeASRServer.ENGLISH_MATCH_THRESHOLD:
-            return (best_token, best_score)
-        return None
-
-    @staticmethod
-    def _dedup_overlap(prev_text, new_text):
-        """去除相邻两段的重叠部分（新段包含旧段末尾的内容）"""
-        if not prev_text or not new_text:
-            return new_text
-
-        # 找 prev_text 末尾和 new_text 开头的最长公共子串
-        max_overlap = min(len(prev_text), len(new_text), 20)
-        best_len = 0
-
-        for overlap_len in range(max_overlap, 2, -1):
-            suffix = prev_text[-overlap_len:]
-            prefix = new_text[:overlap_len]
-            if suffix == prefix:
-                best_len = overlap_len
-                break
-
-        if best_len > 0:
-            return new_text[best_len:].strip()
-
-        # 模糊匹配：旧段末尾几个词是否在新段开头出现
-        prev_tail = prev_text[-15:] if len(prev_text) >= 15 else prev_text
-        if len(prev_tail) >= 4 and prev_tail in new_text[:len(new_text)//2]:
-            idx = new_text.find(prev_tail)
-            return new_text[idx + len(prev_tail):].strip()
-
-        return new_text
-
-    @staticmethod
-    def _dedup_chars(text):
-        """移除流式ASR产生的字符级重复幻觉（如 那那→那、现现在→现在、落落地地→落地）。
-        仅在重复密度 >15% 时触发，避免误删正常的叠词（慢慢、常常、高高兴兴等）。"""
-        if not text or len(text) < 3:
-            return text
-
-        chinese = re.findall(r'[\u4e00-\u9fff]', text)
-        if len(chinese) < 4:
-            return text
-
-        dup_count = 0
-        for i in range(len(text) - 1):
-            if text[i] == text[i+1] and '\u4e00' <= text[i] <= '\u9fff':
-                dup_count += 1
-
-        dup_ratio = dup_count / len(chinese)
-        if dup_ratio < 0.15 or dup_count < 3:
-            return text
-
-        result = []
-        i = 0
-        while i < len(text):
-            if i + 1 < len(text) and text[i] == text[i+1] and '\u4e00' <= text[i] <= '\u9fff':
-                result.append(text[i])
-                i += 2
-            else:
-                result.append(text[i])
-                i += 1
-
-        deduped = ''.join(result)
-        if deduped != text:
-            print(f"    [DEDUP] '{text[:40]}' → '{deduped[:40]}'", flush=True)
-        return deduped
-
-    async def _detect_speaker(self, audio_data):
-        """
-        说话人识别 — 使用 CAM++ 声纹嵌入 (达摩院 3D-Speaker)
-        CAM++ 在 200k 中文说话人 + VoxCeleb 英文数据集联合训练
-        输出 192 维归一化向量，余弦相似度区分力远超 resemblyzer
-        同一个人：余弦相似度 ≈ 0.60–0.95
-        不同人：  余弦相似度 ≈ 0.05–0.30
-
-        v2.9 改进：越用越灵敏
-        - 灰色地带(0.30-0.60)：软更新声纹，不再浪费数据
-        - 新人冷启动：3次确认 + 保存所有原始embedding，确认后取均值
-        - 短句降至0.5s也跑声纹
-        """
-        MIN_DURATION = int(16000 * 0.5)
-        if len(audio_data) < MIN_DURATION:
-            audio_data = np.pad(audio_data, (0, MIN_DURATION - len(audio_data)))
-
-        if self.sv_pipeline is None:
-            if not self.speaker_profiles:
-                self.speaker_profiles.append({
-                    'embedding': np.zeros(192, dtype=np.float32),
-                    'count': 1, 'label': 'Speaker0', 'quality': 0.0,
+            if creator and creator != self.speaker_manager._page_creator:
+                self.speaker_manager._page_creator = creator
+                self.speaker_manager._session_active_speakers.add(creator)
+                print(f"[WS] 自动识别创作者: {creator} (from {page_url[:60]})", flush=True)
+                await self._send_to(websocket, {
+                    'type': 'page_creator',
+                    'creator': creator,
+                    'platform': self.speaker_manager._page_platform,
+                    'page_type': self.speaker_manager._page_type,
+                    'video_offset': self.speaker_manager._video_offset,
                 })
-            return 'Speaker0'
+                await self._send_to(websocket, {
+                    'type': 'keyword_added',
+                    'keyword': creator,
+                    'category': 'speaker',
+                })
+                await self._send_to(websocket, {
+                    'type': 'toast',
+                    'text': f'✅ 自动识别创作者: {creator}',
+                    'ok': True,
+                })
+            else:
+                print(f"[WS] 未识别到创作者 (URL={page_url[:60]})", flush=True)
 
-        timestamp = int(time.time() * 1000000)
-        temp_path = TEMP_DIR / f'sp_{timestamp}.wav'
-        sf.write(str(temp_path), audio_data.astype(np.float32), 16000)
+        except Exception as e:
+            print(f"[WS] 自动识别创作者失败: {e}", flush=True)
 
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            self.executor,
-            lambda: self.sv_pipeline([str(temp_path), str(temp_path)], output_emb=True))
-
-        if temp_path.exists():
-            temp_path.unlink()
-
-        embedding = np.array(result['embs'][0])
-        embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
-
-        if not self.speaker_profiles:
-            self.speaker_profiles.append({
-                'embedding': embedding.copy(),
-                'count': 1,
-                'label': 'Speaker0',
-                'quality': 1.0,
+    def _fetch_json_api(self, url):
+        """同步调用 JSON API（在 executor 线程中运行）"""
+        try:
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://www.bilibili.com/',
             })
-            print(f"[SPEAKER] 创建 Speaker0 (count=1)", flush=True)
-            return 'Speaker0'
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                return json.loads(resp.read().decode('utf-8', errors='ignore'))
+        except Exception as e:
+            print(f"[WS] API 调用失败: {e}", flush=True)
+            return None
 
-        SAME_THRESHOLD = 0.60
-        NEW_THRESHOLD = 0.30
-        training_minutes = self.total_audio_seconds / 60.0
-        if training_minutes < 5.0:
-            SAME_THRESHOLD = 0.50
-            NEW_THRESHOLD = 0.20
-        elif training_minutes < 30.0:
-            ratio = (training_minutes - 5.0) / 25.0
-            SAME_THRESHOLD = 0.50 + ratio * 0.10
-            NEW_THRESHOLD = 0.20 + ratio * 0.10
-        REQUIRED_CONFIRMATIONS = 3
-
-        best_score = -1.0
-        best_idx = -1
-
-        for i, profile in enumerate(self.speaker_profiles):
-            score = float(np.dot(profile['embedding'], embedding))
-            if score > best_score:
-                best_score = score
-                best_idx = i
-
-        if best_score >= SAME_THRESHOLD:
-            self._reset_pending_speaker()
-            profile = self.speaker_profiles[best_idx]
-            profile['embedding'] = (profile['embedding'] * profile['count'] + embedding) / (profile['count'] + 1)
-            profile['count'] += 1
-            profile['quality'] = min(1.0, profile['count'] / 30.0)
-            bound_name = self._check_bindings(profile['embedding'])
-            if bound_name and not profile.get('alias'):
-                profile['alias'] = bound_name
-                print(f"[BIND] 跨会话恢复: {profile['label']} → {bound_name}", flush=True)
-            if profile['count'] % 20 == 0:
-                print(f"[SPEAKER] {profile['label']} 声纹成熟度: {profile['count']}样本 (quality={profile['quality']:.2f})", flush=True)
-            self._check_voiceprint_quality()
-            return profile['label']
-
-        if best_score < NEW_THRESHOLD:
-            if not hasattr(self, '_pending_new') or self._pending_new is None:
-                self._pending_new = {'count': 1, 'embeddings': [embedding.copy()]}
-                print(f"[SPEAKER] 候选新人(1/{REQUIRED_CONFIRMATIONS}) score={best_score:.3f}", flush=True)
-            else:
-                self._pending_new['count'] += 1
-                self._pending_new['embeddings'].append(embedding.copy())
-                if self._pending_new['count'] >= REQUIRED_CONFIRMATIONS:
-                    emb_list = self._pending_new['embeddings']
-                    avg_emb = np.mean(emb_list, axis=0)
-                    avg_emb = avg_emb / (np.linalg.norm(avg_emb) + 1e-8)
-                    self.last_speaker_id += 1
-                    label = f'Speaker{self.last_speaker_id}'
-                    self.speaker_profiles.append({
-                        'embedding': avg_emb,
-                        'count': len(emb_list),
-                        'label': label,
-                        'quality': 0.1,
-                    })
-                    bound_name = self._check_bindings(avg_emb)
-                    if bound_name:
-                        self.speaker_profiles[-1]['alias'] = bound_name
-                        print(f"[BIND] 新speaker匹配绑定: {label} → {bound_name}", flush=True)
-                    self._pending_new = None
-                    print(f"[SPEAKER] 新角色确认: {label} (来自{len(emb_list)}个样本均值)", flush=True)
-                    return label
-                else:
-                    print(f"[SPEAKER] 候选新人({self._pending_new['count']}/{REQUIRED_CONFIRMATIONS}) score={best_score:.3f}", flush=True)
-            return self.speaker_profiles[best_idx]['label']
-
-        # 灰色地带 (0.30 ~ 0.60)：软更新，不浪费数据
-        # 相似度越高，更新权重越大
-        weight = (best_score - NEW_THRESHOLD) / (SAME_THRESHOLD - NEW_THRESHOLD)
-        weight = weight * 0.5  # 最大0.5的权重，防止污染
-        profile = self.speaker_profiles[best_idx]
-        total_weight = profile['count'] + weight
-        profile['embedding'] = (profile['embedding'] * profile['count'] + embedding * weight) / total_weight
-        profile['count'] += weight
-        print(f"[SPEAKER] 灰色软更新 {profile['label']} score={best_score:.3f} weight={weight:.2f} count={profile['count']:.1f}", flush=True)
-        self._reset_pending_speaker()
-        return profile['label']
-
-    def _reset_pending_speaker(self):
-        if hasattr(self, '_pending_new'):
-            self._pending_new = None
-
-    def _check_voiceprint_quality(self):
-        """30分钟后输出声纹质量评估报告"""
-        if self.total_audio_seconds < 1800:
-            return
-        if hasattr(self, '_quality_reported') and self._quality_reported:
-            return
-        self._quality_reported = True
-        print(f"\n{'='*50}", flush=True)
-        print(f"[VOICEPRINT] 声纹质量评估 (累计 {self.total_audio_seconds:.0f}s)", flush=True)
-        print(f"{'='*50}", flush=True)
-        for i, profile in enumerate(self.speaker_profiles):
-            count = profile.get('count', 0)
-            quality = profile.get('quality', 0)
-            label = profile.get('label', f'Speaker{i}')
-            name = self._resolve_speaker_name(profile, i)
-            avg_sim = self._compute_avg_similarity(profile)
-            status = '✅' if quality >= 0.85 else '⚠️ 需更多训练'
-            print(f"  {label} → {name} | 样本:{count:.0f} quality:{quality:.2f} avg_sim:{avg_sim:.3f} {status}", flush=True)
-        print(f"{'='*50}\n", flush=True)
-
-    def _compute_avg_similarity(self, profile):
-        """计算某speaker与其他speaker的平均余弦相似度"""
-        if len(self.speaker_profiles) < 2:
-            return 1.0
-        emb = profile['embedding']
-        sims = []
-        for other in self.speaker_profiles:
-            if other is profile:
-                continue
-            sim = float(np.dot(emb, other['embedding']))
-            sims.append(sim)
-        return sum(sims) / len(sims) if sims else 1.0
-
-    def _is_music_like(self, audio_data):
-        """检测音频是否更像音乐/噪声而非语音。
-        语音有交替的高低能量（字间停顿），音乐/噪声能量更连续均匀。
-        返回 True 表示疑似音乐/噪声。"""
-        frame_len = int(16000 * 0.03)
-        hop_len = int(16000 * 0.01)
-        n_frames = max(1, (len(audio_data) - frame_len) // hop_len + 1)
-        n_frames = min(n_frames, 100)
-
-        energies = []
-        for i in range(n_frames):
-            start = i * hop_len
-            frame = audio_data[start:start + frame_len]
-            energies.append(np.sqrt(np.mean(frame ** 2) + 1e-12))
-
-        energies = np.array(energies)
-        if np.mean(energies) < self.MUSIC_ENERGY_EPSILON:
-            return True
-
-        cv = np.std(energies) / np.mean(energies)
-        return cv < self.MUSIC_ZCR_THRESHOLD
-
-    def _generate_comprehensive_report(self):
-        """生成四板块结构化报告：正文 + OCR记录 + 关键词 + 技术附录"""
-        lines = []
-
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-        # ═══ 标题 ═══
-        title = "实时语音识别报告"
-        if self._loaded_topics:
-            topic_names = ', '.join(sorted(self._loaded_topics))
-            title += f" [{topic_names}]"
-        lines.append(f"# {title}")
-        lines.append(f"")
-        lines.append(f"**生成时间**: {timestamp}")
-        lines.append(f"**总时长**: {self.total_audio_seconds:.1f}秒")
-        lines.append(f"**识别模型**: {self.asr_engine.model_name}")
-        lines.append(f"**说话人数量**: {len(self.speaker_profiles)}")
-        for sp in self.speaker_profiles:
-            sp_count = sp.get('count', 0)
-            sp_quality = sp.get('quality', 0)
-            sp_label = sp.get('label', '?')
-            lines.append(f"  - {sp_label}: {sp_count:.0f}个声纹样本 (成熟度={sp_quality:.0%})")
-        lines.append(f"**识别句数**: {len(self.segments)}")
-        if self._page_type == 'live':
-            lines.append(f"**录制起点**: T0 = {timestamp}")
-        lines.append(f"")
-        lines.append("---")
-        lines.append("")
-
-        # ═══ 板块一：对话正文 ═══
-        lines.append("## 一、对话正文")
-        lines.append("")
-        sp_map = {}
-        for profile in self.speaker_profiles:
-            sp_map[profile['label']] = profile.get('alias', profile['label'])
-        current_speaker = None
-        for i, seg in enumerate(self.segments):
-            sp = seg.get('speaker', 'Speaker0')
-            name = sp_map.get(sp, sp)
-            seg_time = seg.get('time', 0)
-            seg_dur = seg.get('duration', 0)
-            vad = seg.get('vad', {})
-            forced = '[强切]' if vad.get('forced') else ''
-            kw_fixed = '[KW]' if seg.get('ocr_corrected') else ''
-
-            if sp != current_speaker:
-                lines.append(f"")
-                lines.append(f"### {name}")
-                current_speaker = sp
-
-            if self._page_type == 'video':
-                abs_sec = seg_time + self._video_offset
-                time_prefix = f'`<span class="asr-ts" data-sec="{abs_sec:.2f}">[{self._fmt_time(seg_time)}]</span>`'
-            else:
-                time_prefix = f"`[{self._fmt_time(seg_time)}]`"
-            annotations = ' '.join(filter(None, [forced, kw_fixed]))
-            text = seg['text']
-            if self.correction_log:
-                for cw in sorted(self.correction_log, key=len, reverse=True):
-                    if cw in text:
-                        text = text.replace(cw, f'**{cw}**')
-            if annotations:
-                lines.append(f"- {time_prefix} {annotations} {text}  *({annotations})*")
-            else:
-                lines.append(f"- {time_prefix} {text}")
-
-        lines.append("")
-        lines.append("---")
-        lines.append("")
-
-        # ═══ 板块二：手动添加关键词 ═══
-        lines.append("## 二、手动添加关键词")
-        lines.append("")
-        if self.keyword_history:
-            for kw in self.keyword_history:
-                lines.append(f"- `[{kw.get('time', '')}]` {kw.get('keyword', '')}")
-        else:
-            lines.append("*(无手动关键词)*")
-        lines.append("")
-
-        lines.append("---")
-        lines.append("")
-
-        # ═══ 板块三：关键词纠正明细 ═══
-        lines.append("## 三、关键词纠正明细")
-        lines.append("")
-        if self.correction_records:
-            kw_records = [r for r in self.correction_records if len(r) == 2]
-            accent_records = [r for r in self.correction_records if len(r) == 4]
-
-            if kw_records:
-                lines.append("### 🔤 关键词/术语纠正 (拼音相似度)")
-                lines.append("")
-                lines.append("| # | 原始输出 | 纠正为 |")
-                lines.append("|---|----------|--------|")
-                seen = set()
-                idx = 0
-                for orig, kw in kw_records:
-                    pk = (orig, kw)
-                    if pk in seen: continue
-                    seen.add(pk); idx += 1
-                    lines.append(f"| {idx} | `{orig}` | **{kw}** |")
-                lines.append("")
-                lines.append(f"*共 {len(kw_records)} 处纠正，{len(seen)} 个不同词对*")
-                lines.append("")
-
-            if accent_records:
-                lines.append("### 🗣 口音纠正 (方言特征)")
-                lines.append("")
-                lines.append("| # | 原文 | 纠正为 | 特征 |")
-                lines.append("|---|------|--------|------|")
-                seen = set()
-                idx = 0
-                for _, old, new, desc in accent_records:
-                    pk = (old, new, desc)
-                    if pk in seen: continue
-                    seen.add(pk); idx += 1
-                    lines.append(f"| {idx} | `{old}` | **{new}** | {desc} |")
-                lines.append("")
-                lines.append(f"*共 {len(accent_records)} 处纠正，{len(seen)} 个不同词对*")
-                lines.append("")
-
-            total_seen = len(set(
-                (r[1], r[2]) if len(r) == 4 else (r[0], r[1]) for r in self.correction_records
-            ))
-            lines.append(f"*总计 {len(self.correction_records)} 处纠正，{total_seen} 个不同词对*")
-        else:
-            lines.append("*(本次未触发任何关键词纠正)*")
-            lines.append("")
-            lines.append("> 💡 提示：如果面板中已加载了大量关键词但此处无纠正记录，")
-            lines.append("> 说明 ASR 直接正确识别了这些词，无需纠正。这是理想情况！")
-        lines.append("")
-
-        lines.append("---")
-        lines.append("")
-
-        # ═══ 板块四：技术附录 ═══
-        lines.append("## 四、技术附录")
-        lines.append("")
-        lines.append("### VAD 语音活动检测")
-        lines.append("")
-        lines.append("| 参数 | 值 | 说明 |")
-        lines.append("|------|----|------|")
-        lines.append("| 静音断句阈值 | 1.35秒 | 连续静音超过此时间则断句，自适应语速动态调整 |")
-        lines.append("| 强制切分时长 | 3.9秒 | 缓冲区无静音时最大等待时长，切出3.8秒 |")
-        lines.append("| 前后重叠保留 | 1.5秒 | 切分时保留末尾音频到下一段保证上下文连续 |")
-        lines.append("| 能量阈值倍数 | 2.0x | 以帧能量中位数的倍数区分语音/静音 |")
-        lines.append(f"| 最小语音段 | {self.min_speech_duration:.02f}秒 | 低于此时长的语音片段被丢弃 |")
-        lines.append("| 帧长度 | 30ms | 短时傅里叶分析窗口 |")
-        lines.append("| 帧步长 | 10ms | 帧滑动步长 |")
-        lines.append("")
-        lines.append("### 说话人分离")
-        lines.append("")
-        lines.append("| 参数 | 值 | 说明 |")
-        lines.append("|------|----|------|")
-        lines.append("| 声纹方案 | CAM++ (3D-Speaker) | 192维归一化声纹嵌入，200k中文+VoxCeleb英文联合训练 |")
-        lines.append("| 同人阈值(SAME) | ≥0.60 余弦相似度 | 高于此值判定为同一说话人，加权移动平均更新声纹 |")
-        lines.append("| 新人阈值(NEW) | <0.30 余弦相似度 | 低于此值候选为新说话人 |")
-        lines.append("| 灰色地带 | 0.30~0.60 | v2.9：软更新声纹，不浪费数据 |")
-        lines.append("| 确认次数 | 连续3句 | v2.9：需连续3句均低于阈值才创建新角色 |")
-        lines.append("| 新人冷启动 | 3样本均值 | v2.9：保存所有候选embedding，确认后取均值 |")
-        lines.append("| 短音频跳过 | <0.5秒 | v2.9：降低阈值1.5s→0.5s，更多短句参与声纹积累 |")
-        lines.append("| 多句共享 | ✅ | 同一ASR输出的多句子句共享说话人标签 |")
-        lines.append("")
-        lines.append("### 断句规则")
-        lines.append("")
-        lines.append("- **中文断句符**: `。！？；` （不含逗号，逗号为句内停顿）")
-        lines.append("- **英文断句符**: `. ! ? ;`")
-        lines.append("- **VAD优先**: 优先用静音检测做物理断句，物理断句后不再做标点拆分")
-        lines.append("- **多句合并**: 同一音频块内多句共享VAD时间戳和说话人标签")
-        lines.append("")
-        lines.append("### 降噪与纠错")
-        lines.append("")
-        lines.append("| 机制 | 说明 |")
-        lines.append("|------|------|")
-        lines.append("| 拼音纠错 | 内置同音词/近音词映射表 |")
-        lines.append("| 关键词辅助纠错 | 中文≥90%拼音相似(含近音)，英文≥70%相似度才触发替换 |")
-        lines.append("| 口音矫正 | 根据说话人籍贯方言特征自动纠正ASR错字 |")
-        lines.append("| 音乐/噪声过滤 | 能量变异系数<0.25且ASR产出<4字→丢弃，避免音乐/背景音被转录 |")
-        lines.append("| 去重 | 跨句重复文本自动过滤 |")
-        lines.append("")
-        lines.append("---")
-        lines.append("")
-        lines.append(f"*报告由在线实时语音识别系统于 {timestamp} 自动生成*")
-
-        return '\n'.join(lines)
-
-    def _generate_structured_log(self):
-        """生成结构化JSON日志，适合发给AI进行纠错分析"""
-        sp_map = {}
-        for profile in self.speaker_profiles:
-            sp_map[profile['label']] = profile.get('alias', profile['label'])
-
-        segments = []
-        for i, seg in enumerate(self.segments):
-            t = seg.get('time', 0)
-            abs_t = t + self._video_offset
-            segments.append({
-                'seq': i,
-                'time': round(abs_t, 3),
-                'time_str': self._log_fmt_time(abs_t),
-                'asr_time': round(t, 3),
-                'duration': round(seg.get('duration', 0), 3),
-                'speaker': seg.get('speaker', 'Speaker0'),
-                'speaker_name': sp_map.get(seg.get('speaker', ''), seg.get('speaker', 'Speaker0')),
-                'text': seg['text'],
-                'vad_forced': seg.get('vad', {}).get('forced', False),
-                'ocr_corrected': seg.get('ocr_corrected', False),
+    def _fetch_page(self, url):
+        """同步抓取页面 HTML（在 executor 线程中运行）"""
+        try:
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml',
             })
-
-        kw_records = [r for r in self.correction_records if len(r) == 2]
-        accent_records = [r for r in self.correction_records if len(r) == 4]
-
-        return json.dumps(dict(
-            generated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            title='实时语音识别日志',
-            page_type=self._page_type,
-            video_offset_seconds=round(self._video_offset, 1),
-            topics=sorted(list(self._loaded_topics)),
-            model=self.asr_engine.model_name if self.asr_engine else 'unknown',
-            duration_seconds=round(self.total_audio_seconds, 1),
-            total_segments=len(self.segments),
-            speakers=sp_map,
-            keywords_added=list(self.keyword_history),
-            keyword_corrections=[dict(original=r[0], corrected=r[1]) for r in kw_records],
-            accent_corrections=[dict(original=r[1], corrected=r[2], feature=r[3]) for r in accent_records],
-            segments=segments,
-        ), ensure_ascii=False, indent=2)
-
-    @staticmethod
-    def _log_fmt_time(sec):
-        h = int(sec // 3600)
-        m = int((sec % 3600) // 60)
-        s = sec % 60
-        if h > 0:
-            return f"{h:02d}:{m:02d}:{s:05.2f}"
-        return f"{m:02d}:{s:05.2f}"
-
-    def _fmt_time(self, sec):
-        if self._page_type == 'live':
-            m = int(sec // 60)
-            s = sec % 60
-            if m > 0:
-                return f"T0+{m:02d}:{s:05.2f}"
-            return f"T0+{s:05.2f}"
-        abs_sec = sec + self._video_offset
-        return self._log_fmt_time(abs_sec)
-
-    def _text_similarity(self, text1, text2):
-        """计算两段文本的字符/拼音重叠度，判断是否为同一句话被ASR不同转写"""
-        t1 = re.sub(r'[^\u4e00-\u9fff]', '', text1)
-        t2 = re.sub(r'[^\u4e00-\u9fff]', '', text2)
-        if not t1 or not t2:
-            return 0.0
-        if len(t1) < 2 or len(t2) < 2:
-            return 0.0
-        chars1, chars2 = set(t1), set(t2)
-        char_overlap = len(chars1 & chars2) / max(len(chars1), len(chars2))
-        if lazy_pinyin is not None:
-            py1 = lazy_pinyin(t1, style=Style.NORMAL)
-            py2 = lazy_pinyin(t2, style=Style.NORMAL)
-            py_set1, py_set2 = set(py1), set(py2)
-            py_overlap = len(py_set1 & py_set2) / max(len(py_set1), len(py_set2)) if py_set1 and py_set2 else 0
-        else:
-            py_overlap = 0
-        return max(char_overlap, py_overlap)
-
-    def _merge_segments(self):
-        """合并相邻同speaker且间隔极短的片段（VAD误切修复，含拼音相似去重）"""
-        if len(self.segments) < 2:
-            return
-        merged = []
-        for seg in self.segments:
-            if not merged:
-                merged.append(dict(seg))
-                continue
-            prev = merged[-1]
-            if prev['speaker'] == seg['speaker']:
-                seg_time = seg.get('time', 0)
-                prev_time = prev.get('time', 0)
-                prev_dur = prev.get('duration', 0)
-                gap = seg_time - (prev_time + prev_dur)
-                if gap < 1.0:
-                    sim = self._text_similarity(prev['text'], seg['text'])
-                    if sim > 0.5:
-                        prev['text'] = seg['text'] if len(seg['text']) > len(prev['text']) else prev['text']
-                    else:
-                        prev['text'] = prev['text'].rstrip() + ' ' + seg['text']
-                    prev['duration'] = seg_time + seg.get('duration', 0) - prev_time
-                    prev['corrections'] = prev.get('corrections', []) + seg.get('corrections', [])
-                    continue
-            merged.append(dict(seg))
-        self.segments = merged
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                return resp.read().decode('utf-8', errors='ignore')
+        except Exception as e:
+            print(f"[WS] 抓取页面失败: {e}", flush=True)
+            return None
 
     async def generate_and_send_report(self, websocket):
-        self._merge_segments()
-        report = self._generate_comprehensive_report()
-        await self._send_to(websocket, {'type': 'report', 'content': report})
-
-    def _resolve_speaker_name(self, profile, index):
-        label = profile.get('label', f'Speaker{index}')
-        alias = profile.get('alias')
-        if alias:
-            return alias
-        entry = sp_manager.library.lookup_any(label)
-        if entry:
-            name = entry.get('name', entry.get('platform_id', label))
-            self._bind_speaker(label, name)
-            return name
-        if index == 0 and self._page_creator:
-            name = f'主播_{self._page_creator}'
-            self._bind_speaker(label, name)
-            return name
-        return label
-
-    def _load_speaker_bindings(self):
-        """加载声纹-创作者名称绑定"""
-        if self._bindings_path.exists():
-            try:
-                with open(self._bindings_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {}
-
-    def _save_speaker_bindings(self):
-        """持久化声纹-创作者名称绑定"""
-        try:
-            with open(self._bindings_path, 'w', encoding='utf-8') as f:
-                json.dump(self._speaker_bindings, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"[BIND] 保存绑定失败: {e}", flush=True)
-
-    def _bind_speaker(self, label, name):
-        """将speaker的embedding与创作者名称绑定"""
-        if not name or name.startswith('Speaker'):
-            return
-        for profile in self.speaker_profiles:
-            if profile.get('label') == label:
-                self._speaker_bindings[name] = {
-                    'embedding': profile['embedding'].tolist(),
-                    'label': label,
-                    'bound_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                }
-                self._save_speaker_bindings()
-                print(f"[BIND] 声纹绑定: {label} → {name}", flush=True)
-                return
-
-    def _check_bindings(self, embedding):
-        """检查是否有已绑定的声纹匹配当前embedding，相似度>=0.75则恢复"""
-        for name, data in self._speaker_bindings.items():
-            stored_emb = np.array(data['embedding'], dtype=np.float32)
-            stored_emb = stored_emb / (np.linalg.norm(stored_emb) + 1e-8)
-            sim = float(np.dot(stored_emb, embedding))
-            if sim >= 0.75:
-                return name
-        return None
-
-    def _load_saved_voice_profiles(self):
-        """启动时加载历史保存的声纹向量作为初始 speaker_profiles。
-        扫描 dict/voiceprints/ 下所有 metadata.json，加载最近一次会话的声纹。"""
-        import glob as _glob
-        meta_files = sorted(
-            _glob.glob(str(self._voiceprint_dir / '*' / 'metadata.json')),
-            reverse=True
+        merge_segments(self.segments)
+        display_names = self.speaker_manager.get_all_display_names()
+        report = generate_comprehensive_report(
+            self.segments, self.speaker_manager.speaker_profiles,
+            self.keyword_history, self.pinyin_corrector.correction_records,
+            self.pinyin_corrector.correction_log, self.total_audio_seconds,
+            self.asr_engine.model_name, self.pinyin_corrector._loaded_topics,
+            self.speaker_manager._page_type, self.speaker_manager._video_offset,
+            self.speaker_manager._session_active_speakers,
+            display_names=display_names,
+            min_speech_duration=self.min_speech_duration,
+            page_creator=self.speaker_manager._page_creator,
         )
-        if not meta_files:
-            return
-
-        latest_dir = Path(meta_files[0]).parent
-        print(f"[VOICEPRINT] 加载历史声纹: {latest_dir.name}", flush=True)
-
-        loaded_count = 0
-        for npy_path in sorted(latest_dir.glob('*.npy')):
-            name = npy_path.stem
-            try:
-                emb = np.load(str(npy_path))
-                emb = emb / (np.linalg.norm(emb) + 1e-8)
-            except Exception as e:
-                print(f"[VOICEPRINT] 加载失败 {npy_path.name}: {e}", flush=True)
-                continue
-
-            self.speaker_profiles.append({
-                'embedding': emb.copy(),
-                'count': 15.0,
-                'label': f'Speaker{self.last_speaker_id}',
-                'quality': 0.5,
-                'loaded_from': name,
-            })
-            self.last_speaker_id += 1
-            loaded_count += 1
-
-            if name.startswith('主播_'):
-                self._host_speaker_label = f'Speaker{self.last_speaker_id - 1}'
-
-        if loaded_count:
-            print(f"[VOICEPRINT] 加载 {loaded_count} 个历史声纹", flush=True)
-            if self._host_speaker_label:
-                print(f"[VOICEPRINT] 主播标记: {self._host_speaker_label}", flush=True)
-
-    def _save_voice_profiles(self):
-        """保存本次会话积累的声纹向量。仅录音>=30分钟时保存。路径强制校验，仅允许写入 dict/voiceprints/。"""
-        if not str(self._voiceprint_dir.resolve()).startswith(str(DICT_DIR.resolve())):
-            print(f"[SECURITY] 拒绝写入非本地路径: {self._voiceprint_dir}", flush=True)
-            return None
-
-        if self.total_audio_seconds < 1800:
-            if self.speaker_profiles:
-                profiles_with_data = [p for p in self.speaker_profiles if p.get('count', 0) >= 5]
-                if profiles_with_data:
-                    print(f"[VOICEPRINT] 录音时长仅{self.total_audio_seconds:.0f}s，不足30分钟，跳过保存", flush=True)
-            return None
-
-        if not self.speaker_profiles:
-            return None
-
-        session_dir = self._voiceprint_dir / datetime.now().strftime('%Y%m%d_%H%M%S')
-        session_dir.mkdir(exist_ok=True)
-
-        results = []
-
-        for i, profile in enumerate(self.speaker_profiles):
-            count = profile.get('count', 0)
-            if count < 5:
-                continue
-
-            embedding = profile['embedding']
-            label = profile.get('label', f'Speaker{i}')
-            best_name = self._resolve_speaker_name(profile, i)
-
-            npy_path = session_dir / f'{best_name}.npy'
-            np.save(str(npy_path), embedding)
-
-            results.append({
-                'original_label': label,
-                'saved_name': best_name,
-                'samples': int(count),
-                'quality': round(profile.get('quality', 0), 2),
-                'file': str(npy_path.name),
-            })
-
-        if not results:
-            return None
-
-        meta = {
-            'session_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'total_audio_seconds': self.total_audio_seconds,
-            'page_creator': self._page_creator,
-            'page_platform': self._page_platform,
-            'total_speakers': len(self.speaker_profiles),
-            'saved': len(results),
-            'profiles': results,
-        }
-        meta_path = session_dir / 'metadata.json'
-        with open(meta_path, 'w', encoding='utf-8') as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
-
-        print(f"[VOICEPRINT] 保存 {len(results)}/{len(self.speaker_profiles)} 个声纹到 {session_dir.name}", flush=True)
-        for r in results:
-            print(f"  {r['original_label']} → {r['saved_name']} ({r['samples']}样本, quality={r['quality']})", flush=True)
-
-        return results
+        await self._send_to(websocket, {'type': 'report', 'content': report})
 
     async def _send_to(self, websocket, message):
         try:
@@ -2805,9 +1565,9 @@ class RealtimeASRServer:
 
 _global_server = None
 
-def run_server(asr_engine, correction_manager, host='localhost', port=8765):
+def run_server(asr_engine, host='localhost', port=8765):
     global _global_server
-    server = RealtimeASRServer(asr_engine, correction_manager, host, port)
+    server = RealtimeASRServer(asr_engine, host, port)
     _global_server = server
     try:
         asyncio.run(server.start())

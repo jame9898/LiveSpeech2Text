@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-import json
-from pathlib import Path
+from core import load_config, save_config, _DEFAULT_CONFIG as DEFAULT_CONFIG
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -9,76 +8,17 @@ from PySide6.QtWidgets import (
     QSlider, QSpinBox, QDoubleSpinBox, QMessageBox,
 )
 
-DICT_DIR = Path(__file__).parent / "dict"
-CONFIG_FILE = DICT_DIR / "asr_config.json"
-
-DEFAULT_CONFIG = {
-    "current_model": "auto",
-    "device": "auto",
-    "model_settings": {
-        "vad_enabled": True,
-        "vad_model": "fsmn-vad",
-        "punc_enabled": True,
-        "speaker_enabled": True,
-        "lyrics_enabled": True,
-        "keyword_expand_enabled": True,
-        "adaptive_vad": True,
-        "music_detect": True,
-        "vad_force_cut": True,
-        "vad_threshold": 0.85,
-        "force_cut_sec": 3.8,
-        "max_buffer_seconds": 30,
-        "min_speech_duration": 0.08,
-        "threads": 8,
-        "ws_port": 8765,
-        "auto_save_report": False,
-        "transcription_mode": "streaming",
-    }
-}
-
 MODEL_OPTIONS = [
     "auto",
     "qwen3-asr-1.7b", "qwen3-asr-0.6b",
-    "sensevoice",
-    "paraformer",
-    "whisper-tiny", "whisper-base", "whisper-small", "whisper-medium", "whisper-large",
 ]
 MODEL_LABELS = [
     "auto（自动选择最优）",
     "Qwen3-ASR 1.7B（推荐·高精度）",
     "Qwen3-ASR 0.6B（轻量·省显存）",
-    "SenseVoice（阿里达摩院·多语言）",
-    "Paraformer（阿里达摩院·中文专项）",
-    "Whisper tiny（OpenAI·最小）",
-    "Whisper base（OpenAI·基础）",
-    "Whisper small（OpenAI·小）",
-    "Whisper medium（OpenAI·中）",
-    "Whisper large（OpenAI·大）",
 ]
 DEVICE_OPTIONS = ["auto", "cuda", "cpu"]
 DEVICE_LABELS = ["auto（自动检测）", "cuda（NVIDIA GPU）", "cpu（仅CPU）"]
-VAD_MODELS = ["FSMN-VAD", "Silero VAD"]
-VAD_MODEL_KEYS = ["fsmn-vad", "silero-vad"]
-
-
-def load_config():
-    if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {
-        "current_model": "auto",
-        "device": "auto",
-        "model_settings": dict(DEFAULT_CONFIG["model_settings"]),
-    }
-
-
-def save_config(config):
-    DICT_DIR.mkdir(exist_ok=True)
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
 
 
 class SettingsDialog(QDialog):
@@ -136,28 +76,6 @@ class SettingsDialog(QDialog):
         r1.addWidget(self._cmb_model)
         gl1.addLayout(r1)
         layout.addWidget(g1)
-
-        g2 = QGroupBox("辅助模型")
-        gl2 = QVBoxLayout(g2)
-        self._chk_vad = QCheckBox("启用 VAD 语音断句")
-        self._chk_vad.setChecked(self._settings.get("vad_enabled", True))
-        gl2.addWidget(self._chk_vad)
-        r3 = QHBoxLayout()
-        r3.addWidget(QLabel("VAD 模型:"))
-        self._cmb_vad = QComboBox()
-        self._cmb_vad.addItems(VAD_MODELS)
-        vm = self._settings.get("vad_model", "fsmn-vad")
-        self._cmb_vad.setCurrentIndex(0 if vm == "fsmn-vad" else 1)
-        r3.addWidget(self._cmb_vad)
-        r3.addStretch()
-        gl2.addLayout(r3)
-        self._chk_punc = QCheckBox("启用标点模型 CT-Transformer")
-        self._chk_punc.setChecked(self._settings.get("punc_enabled", True))
-        gl2.addWidget(self._chk_punc)
-        self._chk_speaker = QCheckBox("启用声纹识别 CAM++")
-        self._chk_speaker.setChecked(self._settings.get("speaker_enabled", True))
-        gl2.addWidget(self._chk_speaker)
-        layout.addWidget(g2)
         layout.addStretch()
         tabs.addTab(w, "模型")
 
@@ -193,10 +111,10 @@ class SettingsDialog(QDialog):
         gl = QVBoxLayout(g)
 
         r1 = QHBoxLayout()
-        r1.addWidget(QLabel("静音阈值:"))
+        r1.addWidget(QLabel("静音断句阈值（秒）:"))
         self._vad_slider = QSlider(Qt.Horizontal)
         self._vad_slider.setRange(30, 150)
-        val = int(self._settings.get("vad_threshold", 0.85) * 100)
+        val = int(self._settings.get("vad_threshold", 0.8) * 100)
         self._vad_slider.setValue(val)
         r1.addWidget(self._vad_slider)
         self._vad_lbl = QLabel(f"{val / 100:.2f} 秒")
@@ -222,7 +140,7 @@ class SettingsDialog(QDialog):
         self._spn_force_cut.setRange(1.5, 15.0)
         self._spn_force_cut.setSingleStep(0.5)
         self._spn_force_cut.setDecimals(1)
-        self._spn_force_cut.setValue(self._settings.get("force_cut_sec", 3.8))
+        self._spn_force_cut.setValue(self._settings.get("force_cut_sec", 8.0))
         self._spn_force_cut.setSuffix(" 秒")
         r_force.addWidget(self._spn_force_cut)
         r_force.addStretch()
@@ -242,29 +160,9 @@ class SettingsDialog(QDialog):
             lambda v: self._min_speech_lbl.setText(f"0.{v:02d} 秒"))
         gl.addLayout(r3)
 
-        self._chk_adaptive = QCheckBox("自适应VAD（嘈杂环境自动调整）")
-        self._chk_adaptive.setChecked(self._settings.get("adaptive_vad", True))
-        gl.addWidget(self._chk_adaptive)
-
-        self._chk_music = QCheckBox("音乐检测（音乐场景特殊处理）")
-        self._chk_music.setChecked(self._settings.get("music_detect", True))
-        gl.addWidget(self._chk_music)
-
         self._chk_force_cut = QCheckBox("VAD 强制切分（关闭后ASR模型自行判句）")
         self._chk_force_cut.setChecked(self._settings.get("vad_force_cut", True))
         gl.addWidget(self._chk_force_cut)
-
-        r_mode = QHBoxLayout()
-        r_mode.addWidget(QLabel("转录模式"))
-        self._cmb_mode = QComboBox()
-        self._cmb_mode.addItem("整句模式（准确度最高）", "sentence")
-        self._cmb_mode.addItem("流式模式（毫秒级实时输出）", "streaming")
-        cur_mode = self._settings.get("transcription_mode", "streaming")
-        idx = self._cmb_mode.findData(cur_mode)
-        if idx >= 0:
-            self._cmb_mode.setCurrentIndex(idx)
-        r_mode.addWidget(self._cmb_mode)
-        gl.addLayout(r_mode)
 
         layout.addWidget(g)
         layout.addStretch()
@@ -273,16 +171,6 @@ class SettingsDialog(QDialog):
     def _build_advanced_tab(self, tabs):
         w = QWidget()
         layout = QVBoxLayout(w)
-
-        g1 = QGroupBox("功能开关")
-        gl1 = QVBoxLayout(g1)
-        self._chk_lyrics = QCheckBox("歌词匹配（自动匹配）")
-        self._chk_lyrics.setChecked(self._settings.get("lyrics_enabled", True))
-        gl1.addWidget(self._chk_lyrics)
-        self._chk_kw = QCheckBox("关键词扩展（话题标签加载）")
-        self._chk_kw.setChecked(self._settings.get("keyword_expand_enabled", True))
-        gl1.addWidget(self._chk_kw)
-        layout.addWidget(g1)
 
         g2 = QGroupBox("服务器端口")
         gl2 = QVBoxLayout(g2)
@@ -296,12 +184,20 @@ class SettingsDialog(QDialog):
         gl2.addLayout(r1)
         layout.addWidget(g2)
 
-        g3 = QGroupBox("其他")
+        g3 = QGroupBox("模型输出")
         gl3 = QVBoxLayout(g3)
-        self._chk_report = QCheckBox("识别结束后自动保存 HTML 报告")
-        self._chk_report.setChecked(self._settings.get("auto_save_report", False))
-        gl3.addWidget(self._chk_report)
+        r2 = QHBoxLayout()
+        r2.addWidget(QLabel("最大输出Token:"))
+        self._spn_max_tokens = QSpinBox()
+        self._spn_max_tokens.setRange(32, 256)
+        self._spn_max_tokens.setSingleStep(32)
+        self._spn_max_tokens.setValue(self._settings.get("max_new_tokens", 128))
+        self._spn_max_tokens.setToolTip("ASR模型单次最大输出token数，值越大可识别越长句子")
+        r2.addWidget(self._spn_max_tokens)
+        r2.addStretch()
+        gl3.addLayout(r2)
         layout.addWidget(g3)
+
         layout.addStretch()
         tabs.addTab(w, "高级")
 
@@ -310,14 +206,6 @@ class SettingsDialog(QDialog):
             "current_model": MODEL_OPTIONS[self._cmb_model.currentIndex()],
             "device": DEVICE_OPTIONS[self._cmb_device.currentIndex()],
             "model_settings": {
-                "vad_enabled": self._chk_vad.isChecked(),
-                "vad_model": VAD_MODEL_KEYS[self._cmb_vad.currentIndex()],
-                "punc_enabled": self._chk_punc.isChecked(),
-                "speaker_enabled": self._chk_speaker.isChecked(),
-                "lyrics_enabled": self._chk_lyrics.isChecked(),
-                "keyword_expand_enabled": self._chk_kw.isChecked(),
-                "adaptive_vad": self._chk_adaptive.isChecked(),
-                "music_detect": self._chk_music.isChecked(),
                 "vad_force_cut": self._chk_force_cut.isChecked(),
                 "vad_threshold": round(self._vad_slider.value() / 100, 2),
                 "force_cut_sec": round(self._spn_force_cut.value(), 1),
@@ -325,8 +213,7 @@ class SettingsDialog(QDialog):
                 "min_speech_duration": round(self._min_speech_slider.value() / 100, 2),
                 "threads": self._spn_threads.value(),
                 "ws_port": self._spn_ws.value(),
-                "auto_save_report": self._chk_report.isChecked(),
-                "transcription_mode": self._cmb_mode.currentData(),
+                "max_new_tokens": self._spn_max_tokens.value(),
             }
         }
 
@@ -355,6 +242,3 @@ class SettingsDialog(QDialog):
     def needs_restart(self):
         return self._needs_restart
 
-
-# 兼容旧代码的别名
-SettingsDialogTk = SettingsDialog
