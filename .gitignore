@@ -43,3 +43,6 @@ diagnostic.log
 
 # Generated reports
 测试报告/
+
+# Developer reference (local only)
+PROJECT_RULES.md
