@@ -140,9 +140,15 @@ git pull
 ├── requirements.txt       # Python 依赖（CPU）
 ├── requirements-gpu.txt   # Python 依赖（GPU + CUDA）
 ├── start.bat              # 一键启动脚本
+├── push.bat               # 推送脚本
+├── .gitignore
+├── LICENSE
+├── PROJECT_RULES.md       # 开发规范（不上传，见 .gitignore）
 ├── dict/
 │   ├── asr_config.json             # ASR 配置文件（VAD/模型/端口/模式）
 │   ├── topic_keywords.json         # 话题关键词库（自动匹配加载）
+│   ├── correction.json             # 纠正配置
+│   ├── pinyin_correction.json      # 拼音纠正配置
 │   ├── pinyin_corrections/
 │   │   ├── general.json            # 通用拼音纠正词库
 │   │   └── cs2.json                # CS2 场景专属拼音纠正词库

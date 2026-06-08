@@ -1394,38 +1394,31 @@ class RealtimeASRServer:
                     # 斗鱼 betard API
                     api_url = f'https://www.douyu.com/betard/{room_id}'
                     data = await loop.run_in_executor(self.executor, self._fetch_json_api, api_url)
-                    api_name = ''
                     if data:
                         room_info = data.get('room', {}) or data.get('roomInfo', {})
-                        api_name = room_info.get('nickname', '') or room_info.get('owner_name', '')
-                        print(f"[WS] 斗鱼API: room={room_id} → {api_name}", flush=True)
-                # 兜底：从 title 提取（斗鱼格式: "标题_主播名[分区]直播_斗鱼直播"）
-                # 即使 API 有结果也跑一次 HTML，取更完整的名字
-                html_name = ''
-                html = await loop.run_in_executor(self.executor, self._fetch_page, page_url)
-                if html:
-                    title_match = re.search(r'<title>([^<]+)</title>', html, re.IGNORECASE)
-                    if title_match:
-                        t = title_match.group(1).strip()
-                        # 取 _斗鱼直播 或 _正在直播 之前最后一段
-                        m = re.search(r'[_\s]([^_\s]{2,30})_(?:斗鱼|正在)直播', t)
-                        if m:
-                            name = m.group(1).strip()
-                            # 去掉尾部的游戏分区名+直播（如 "CS2直播", "英雄联盟直播"）
-                            name = re.sub(r'(?:CS[:]?GO|CS2|VALORANT|APEX|PUBG|DOTA2?|LOL|CF|[A-Z]{2,6}|[\u4e00-\u9fff]{2,4})直播$', '', name, flags=re.IGNORECASE)
-                            if 2 <= len(name) < 30:
-                                html_name = name
-                        if not html_name:
-                            parts = [p for p in t.split('_') if p and len(p) >= 2 and '斗鱼' not in p and '正在' not in p and p != '直播']
-                            if parts:
-                                last = re.sub(r'(?:CS[:]?GO|CS2|VALORANT|APEX|PUBG|DOTA2?|LOL|CF|[A-Z]{2,6}|[\u4e00-\u9fff]{2,4})直播$', '', parts[-1], flags=re.IGNORECASE)
-                                if 2 <= len(last) < 30:
-                                    html_name = last
-                # 取更长/更完整的名字
-                creator = api_name
-                if html_name and (not creator or len(html_name) > len(creator)):
-                    creator = html_name
-                    print(f"[WS] 斗鱼: 采用HTML标题更长的名字 '{html_name}' 替代API '{api_name}'", flush=True)
+                        creator = room_info.get('nickname', '') or room_info.get('owner_name', '')
+                        print(f"[WS] 斗鱼API: room={room_id} → {creator}", flush=True)
+                # 兜底：API 拿不到名字时才从 HTML title 提取
+                if not creator:
+                    html = await loop.run_in_executor(self.executor, self._fetch_page, page_url)
+                    if html:
+                        title_match = re.search(r'<title>([^<]+)</title>', html, re.IGNORECASE)
+                        if title_match:
+                            t = title_match.group(1).strip()
+                            # 斗鱼格式: "标题_主播名_斗鱼直播" 或 "标题_主播名_正在直播"
+                            m = re.search(r'[_\s]([^_\s]{2,30})_(?:斗鱼|正在)直播', t)
+                            if m:
+                                name = m.group(1).strip()
+                                # 去掉尾部的游戏分区名+直播后缀（如 "CS2直播", "英雄联盟直播"）
+                                name = re.sub(r'(?:CS[:]?GO|CS2|VALORANT|APEX|PUBG|DOTA2?|LOL|CF|[A-Z]{2,6}|[\u4e00-\u9fff]{2,4})直播$', '', name, flags=re.IGNORECASE)
+                                if 2 <= len(name) < 30:
+                                    creator = name
+                            if not creator:
+                                parts = [p for p in t.split('_') if p and len(p) >= 2 and '斗鱼' not in p and '正在' not in p and p != '直播']
+                                if parts:
+                                    last = re.sub(r'(?:CS[:]?GO|CS2|VALORANT|APEX|PUBG|DOTA2?|LOL|CF|[A-Z]{2,6}|[\u4e00-\u9fff]{2,4})直播$', '', parts[-1], flags=re.IGNORECASE)
+                                    if 2 <= len(last) < 30:
+                                        creator = last
 
             # ── 虎牙直播 ──
             if not creator and 'huya.com' in page_url:
