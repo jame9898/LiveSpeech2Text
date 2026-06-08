@@ -43,14 +43,14 @@ pip install -r requirements.txt
 # GPU + CUDA 环境
 pip install -r requirements-gpu.txt
 
-# 4. 下载语音识别模型（根据需要选一个或多个）
+# 4. 下载语音识别模型（根据需要选一个或多个，自动保存到 models/ 目录）
 # Qwen3-ASR 0.6B — 轻量，CPU 也能跑
-python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B')"
+python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', cache_dir='models')"
 # Qwen3-ASR 1.7B — 最高精度，需 GPU
-python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B')"
+python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', cache_dir='models')"
 
 # 5. 可选：下载说话人识别模型
-python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common')"
+python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common', cache_dir='models')"
 
 # 6. 启动
 python app.py

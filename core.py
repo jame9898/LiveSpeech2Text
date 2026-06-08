@@ -33,7 +33,8 @@ CONFIG_FILE = DICT_DIR / "asr_config.json"
 for d in [DICT_DIR, TEMP_DIR, MODELS_DIR]:
     d.mkdir(exist_ok=True)
 
-MODELSCOPE_CACHE = Path.home() / ".cache" / "modelscope" / "hub"
+# modelscope 默认系统缓存路径
+_MODELSCOPE_HUB = Path.home() / ".cache" / "modelscope" / "hub"
 
 _os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
 
@@ -174,12 +175,12 @@ class ASREngine:
             for folder_name, size_label, ms_id, hf_id in model_variants:
                 search_paths = [
                     MODELS_DIR / 'hub' / 'models' / 'Qwen' / folder_name,
-                    MODELSCOPE_CACHE / 'models' / 'Qwen' / folder_name,
+                    _MODELSCOPE_HUB / 'models' / 'Qwen' / folder_name,
                 ]
                 for candidate in list(MODELS_DIR.glob(f'**/{folder_name}')):
                     if candidate.is_dir() and candidate not in search_paths:
                         search_paths.insert(0, candidate)
-                for candidate in list(MODELSCOPE_CACHE.glob(f'**/{folder_name}')):
+                for candidate in list(_MODELSCOPE_HUB.glob(f'**/{folder_name}')):
                     if candidate.is_dir() and candidate not in search_paths:
                         search_paths.insert(0, candidate)
                 for p in search_paths:
