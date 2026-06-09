@@ -1545,15 +1545,15 @@ class RealtimeASRServer:
             if not text:
                 return
 
-            for prev in list(self.sent_texts):
-                if prev == text:
-                    continue
-                if prev in text and len(prev) > len(text) * 0.8:
-                    print(f"    [DEDUP-SENT] 包含已发送: prev='{prev[:20]}' in text='{text[:30]}'", flush=True)
-                    return
-                if text in prev and len(text) > len(prev) * 0.8:
-                    print(f"    [DEDUP-SENT] 替换更短: old='{prev[:20]}' ← new='{text[:30]}'", flush=True)
-                    self.sent_texts.discard(prev)
+            if self.segments:
+                prev = self.segments[-1]['text']
+                if prev != text:
+                    if prev in text and len(prev) > len(text) * 0.85:
+                        print(f"    [DEDUP-SENT] 上句包含: prev='{prev[:20]}' in '{text[:30]}'", flush=True)
+                        return
+                    if text in prev and len(text) > len(prev) * 0.85:
+                        print(f"    [DEDUP-SENT] 替换更短: old='{prev[:20]}' ← new='{text[:30]}'", flush=True)
+                        self.sent_texts.discard(prev)
 
             # 对完整ASR结果运行智能纠错引擎（三步管线），得到最终纠正后文本
             original_text = text
@@ -1597,11 +1597,10 @@ class RealtimeASRServer:
                             vad_info=None, corrections=None, original_text=None,
                             seg_audio_time=None, seg_duration=None):
         """创建一条识别记录并发送到前端"""
-        for prev in list(self.sent_texts):
-            if prev == text:
-                continue
-            if prev in text and len(prev) > len(text) * 0.8:
-                print(f"    [DEDUP-EMIT] 包含已发送: prev='{prev[:20]}' in '{text[:30]}'", flush=True)
+        if self.segments:
+            prev = self.segments[-1]['text']
+            if prev != text and prev in text and len(prev) > len(text) * 0.85:
+                print(f"    [DEDUP-EMIT] 上句包含: prev='{prev[:20]}' in '{text[:30]}'", flush=True)
                 return
 
         # 如果调用方已提供 speaker_label（多句 chunk 共享），直接使用

@@ -140,7 +140,7 @@ class SettingsDialog(QDialog):
         self._spn_force_cut.setRange(1.5, 15.0)
         self._spn_force_cut.setSingleStep(0.5)
         self._spn_force_cut.setDecimals(1)
-        self._spn_force_cut.setValue(self._settings.get("force_cut_sec", 8.0))
+        self._spn_force_cut.setValue(self._settings.get("force_cut_sec", 6.0))
         self._spn_force_cut.setSuffix(" 秒")
         r_force.addWidget(self._spn_force_cut)
         r_force.addStretch()

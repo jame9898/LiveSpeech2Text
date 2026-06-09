@@ -45,7 +45,7 @@ _DEFAULT_CONFIG = {
     "model_settings": {
         "vad_force_cut": True,
         "vad_threshold": 0.8,
-        "force_cut_sec": 8.0,
+        "force_cut_sec": 6.0,
         "max_buffer_seconds": 30,
         "min_speech_duration": 0.08,
         "threads": 8,
