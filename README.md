@@ -29,8 +29,10 @@
 ## 快速开始
 
 ```bash
-# 1. 克隆仓库
-git clone https://ghfast.top/https://github.com/jame9898/LiveSpeech2Text
+# 1. 克隆仓库（GitHub 或 Gitee，二选一）
+git clone https://github.com/jame9898/LiveSpeech2Text
+# 或 Gitee 镜像
+git clone https://gitee.com/linhanduzikai/LiveSpeech2Text
 cd LiveSpeech2Text
 
 # 2. 创建虚拟环境（推荐）
@@ -127,10 +129,12 @@ git pull
 ├── server.py              # WebSocket 服务端（实时推理 + 纠正 + 声纹）
 ├── core.py                # ASR 引擎加载 + 模型管理
 ├── correction_engine.py   # 智能纠错引擎（实体识别/模糊匹配/语法检查/置信度）
+++ End of File
+-├── correction_engine.py   # 三步纠错管线（实体纠正 → 拼音纠正 → 文本纠正）
 ├── settings_dialog.py     # 设置对话框（VAD/模型/端口/模式配置）
 ├── keyword_expander.py    # 关键词分类标签定义
 ├── speaker_manager.py     # 说话人管理（CAM++ 声纹识别 + 说话人标注）
-├── speaker_profile.py     # 话题关键词管理器
+├── topic_manager.py       # 话题关键词管理器
 ├── pinyin_utils.py        # 拼音纠正引擎
 ├── text_utils.py          # 文本处理工具（去重/相似度/英文匹配）
 ├── report_generator.py    # 报告/日志生成
