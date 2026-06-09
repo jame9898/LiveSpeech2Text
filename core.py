@@ -198,6 +198,7 @@ class ASREngine:
                 model_path,
                 dtype=dtype,
                 device_map=device_map,
+                attn_implementation="flash_attention_2",
                 max_new_tokens=max_tokens,
             )
             print("[LOAD] Qwen3-ASR step4: model loaded", flush=True)

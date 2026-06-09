@@ -21,6 +21,9 @@ modelscope>=1.20.0
 # --- Qwen3-ASR 识别引擎 ---
 qwen-asr>=0.0.6
 
+# --- GPU 推理加速（可选，装不上也可降级运行）---
+flash-attn>=2.6.0 --no-build-isolation
+
 # --- GUI 框架 ---
 PySide6>=6.5.0
 

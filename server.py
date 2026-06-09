@@ -995,7 +995,7 @@ class RealtimeASRServer:
 
         # 异步转录控制
         self.transcripts_in_flight = 0
-        self.max_concurrent_transcripts = 3
+        self.max_concurrent_transcripts = 6
         self.last_periodic_transcribe = 0
         self._partial_seq = 0  # 递增序号，用于丢弃过时partial
 
