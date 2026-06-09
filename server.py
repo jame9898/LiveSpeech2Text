@@ -1545,10 +1545,9 @@ class RealtimeASRServer:
             if not text:
                 return
 
-            if text in self.sent_texts:
-                print(f"    [DEDUP-SENT] 完全重复: '{text[:30]}'", flush=True)
-                return
             for prev in list(self.sent_texts):
+                if prev == text:
+                    continue
                 if prev in text and len(prev) > len(text) * 0.8:
                     print(f"    [DEDUP-SENT] 包含已发送: prev='{prev[:20]}' in text='{text[:30]}'", flush=True)
                     return
@@ -1599,6 +1598,8 @@ class RealtimeASRServer:
                             seg_audio_time=None, seg_duration=None):
         """创建一条识别记录并发送到前端"""
         for prev in list(self.sent_texts):
+            if prev == text:
+                continue
             if prev in text and len(prev) > len(text) * 0.8:
                 print(f"    [DEDUP-EMIT] 包含已发送: prev='{prev[:20]}' in '{text[:30]}'", flush=True)
                 return
