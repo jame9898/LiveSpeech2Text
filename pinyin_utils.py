@@ -108,7 +108,7 @@ class PinyinCorrector:
 
     def load_pinyin_corrections(self, topic=None):
         """加载拼音→正确文字 纠错词典（按话题加载对应词典文件）"""
-        base_dir = DICT_DIR / 'pinyin_corrections'
+        base_dir = DICT_DIR / 'corrections'
         base_dir.mkdir(exist_ok=True)
 
         # 话题特定纠错

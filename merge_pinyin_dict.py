@@ -15,7 +15,7 @@ except ImportError:
 
 DICT_DIR = Path(__file__).parent / "dict"
 OUTPUT = DICT_DIR / "pinyin_corrections" / "general.json"
-OUTPUT_CS2 = DICT_DIR / "pinyin_corrections" / "cs2.json"
+OUTPUT_CS2 = DICT_DIR / "corrections" / "cs2.json"
 OUTPUT_DATACOM = DICT_DIR / "pinyin_corrections" / "datacom.json"
 
 
@@ -190,155 +190,11 @@ def main():
 
     # ── 4. text_corrections/cs2.json 已删除，不再读取 ──
 
-    # ── 5. 英文单词的中文读音→正确英文（CS2专用，输出到 cs2.json）──
-    phonetic_map = {
-        # 地图
-        "mi rua ji": "Mirage",
-        "mi ra zhi": "Mirage",
-        "yin fe er nuo": "Inferno",
-        "da si te": "Dust2",
-        "da si te tu": "Dust2",
-        "a nu bi si": "Anubis",
-        "ou fo pa si": "Overpass",
-        "o wo pa si": "Overpass",
-        "niu ke": "Nuke",
-        "an shen te": "Ancient",
-        "an xian te": "Ancient",
-        "fe er ti gou": "Vertigo",
-        "wo ti gou": "Vertigo",
-        "kai shi": "Cache",
-        "te rui yin": "Train",
-        "chui yin": "Train",
-        "ao fei si": "Office",
-        "o fei si": "Office",
-        "yi da li": "Italy",
-        "ke bu er": "Cobblestone",
-        "gu bao": "Cobblestone",
-        # 武器
-        "de gou": "deagle",
-        "a wu pi": "AWP",
-        "ao pu": "AWP",
-        "a ke": "AK47",
-        "a ka": "AK47",
-        "ai mu si": "M4",
-        "pi er wu ling": "P250",
-        "pi er ling": "P2000",
-        "you ai si pi": "USP",
-        "ge luo ke": "Glock",
-        "fu ai fu se wen": "Fiveseven",
-        "wu qi": "57",
-        "te ke jiu": "Tec9",
-        "ai mu pi jiu": "MP9",
-        "ma ke shi": "MAC10",
-        "si jia er": "SG553",
-        "ao ge": "AUG",
-        "si kua te": "Scout",
-        "e de": "HE",
-        "shan guang": "Flash",
-        "yan wu": "Smoke",
-        "ran shao": "Molotov",
-        "yin bao": "C4",
-        "fa ma si": "FAMAS",
-        "ga li er": "Galil",
-        "jia li er": "Galil",
-        "ai mu pi qi": "MP7",
-        "an pi": "UMP",
-        "pi jiu ling": "P90",
-        "xiao bo luo": "P90",
-        "nuo wa": "Nova",
-        "pen zi": "Nova",
-        "ai ke si ai mu": "XM1014",
-        "lian pen": "XM1014",
-        "mai ke qi": "MAG-7",
-        "jing pen": "MAG-7",
-        "zuo si": "Zeus",
-        "dian ji qiang": "Zeus",
-        "shuang qiang": "Dual Berettas",
-        "shuang chi bei lei ta": "Dual Berettas",
-        "xi zi": "CZ75",
-        "nei ge fu": "Negev",
-        "da bo luo": "M249",
-        "er si jiu": "M249",
-        # 战队
-        "fei zi": "FaZe",
-        "na wei": "NAVI",
-        "wei ta li ti": "Vitality",
-        "fu rui ya": "FURIA",
-        "ji er": "G2",
-        "si pi rui te": "Spirit",
-        "tian lu": "TYLOO",
-        "mao zi": "MOUZ",
-        "hei ruo yi ke": "HEROIC",
-        "lin en wei shen": "Lynn Vision",
-        "a si te la li si": "Astralis",
-        "li kui de": "Liquid",
-        "fu lai kui si te": "FlyQuest",
-        "bi ge": "BIG",
-        "en si": "ENCE",
-        "fu er ken si": "Team Falcons",
-        "ke lao de nai en": "Cloud9",
-        "xi jiu": "Cloud9",
-        "wei pi": "Virtus.pro",
-        "yi te na er fai er": "Eternal Fire",
-        "yi ai fu": "Eternal Fire",
-        "kang pu lei ke si ti": "Complexity",
-        "kang pu": "Complexity",
-        # 选手
-        "sen pu": "s1mple",
-        "xi pu er": "s1mple",
-        "mou nai xi": "m0NESY",
-        "ni kou": "NiKo",
-        "kai rui geng": "karrigan",
-        "zhi wu": "ZywOo",
-        "dong ke": "donk",
-        "luo pu zi": "ropz",
-        "han wang": "寒王",
-        "jian ge": "监哥",
-        "zuo ni ke": "zonic",
-        "di wai si": "dev1ce",
-        "di fa yi si": "dev1ce",
-        "fro zen": "frozen",
-        "fu luo ren": "frozen",
-        "tui si te": "twistzz",
-        "tui si ci": "twistzz",
-        "bu luo ki": "broky",
-        "rui en": "rain",
-        "bu lei mu": "blameF",
-        "bu lei mu ai fu": "blameF",
-        # 战术/术语
-        "pi ke": "peek",
-        "rui pi ke": "repeek",
-        "pe ke": "peek",
-        "yi kou": "ECO",
-        "ban qi": "半起",
-        "qiang qi": "强起",
-        "hun qi": "混起",
-        "rui ting": "rating",
-        "kao er": "Call",
-        "fei ke": "fake",
-        "jia pu": "jump",
-        "si te lei fu": "strafe",
-        "kang te si te lei fu": "counter-strafe",
-        "pu lei fu ai er": "prefire",
-        "ke la qi": "clutch",
-        "kang te": "counter",
-        "kang te wei": "counter-strike",
-        "xian ti qiang": "先提枪",
-        "ren shan tong chu": "人闪同出",
-        "cang yan shan": "藏烟闪",
-        "ping shan": "平闪",
-        "diu men shan": "丢门闪",
-        "cai huo": "踩火",
-        "bu qiang": "步枪",
-        "nian yu": "鲶鱼",
-    }
-    for pinyin_key, correct_text in phonetic_map.items():
-        add_entry(pinyin_key, correct_text, "from_entities", target=cs2_entries)
 
     # ── 输出 general.json（仅通用拼音）──
     sorted_items = sorted(all_entries.items(), key=lambda x: len(x[0].split()), reverse=True)
     output = {
-        "__rule__": "【规则】通用拼音→正确文字。仅跨话题通用条目。CS2专用条目在 cs2.json，网络术语在 datacom.json。由 merge_pinyin_dict.py 自动生成。",
+        "__rule__": "【规则】通用拼音→正确文字。仅跨话题通用条目。领域专用条目在 dict/corrections/ 下。由 merge_pinyin_dict.py 自动生成。",
         "__total__": len(sorted_items),
     }
     for k, v in sorted_items:
@@ -351,7 +207,7 @@ def main():
     # ── 输出 cs2.json（CS2话题专用拼音）──
     cs2_sorted = sorted(cs2_entries.items(), key=lambda x: len(x[0].split()), reverse=True)
     cs2_output = {
-        "__rule__": "【规则】CS2话题拼音→正确文字。多音节优先匹配。由 merge_pinyin_dict.py 自动生成。",
+        "__rule__": "【规则】CS2 统一纠正词典。选手/战队/地图/武器/战术全部合一。由 merge_pinyin_dict.py 自动生成。",
         "__total__": len(cs2_sorted),
     }
     for k, v in cs2_sorted:
