@@ -53,7 +53,7 @@ let reconnectTimer = null, reconnectAttempts = 0;
 let segCount = 0, lastWelcomeTime = 0;
 let keywords = [], keywordStore = {};
 let speakerColors = {}, matchedSpeakers = new Set();
-let autoAddedSpeakers = new Set(), autoLoadedTopics = new Set();
+let autoAddedSpeakers = new Set();
 let savedW = 420, savedH = 680;
 let heartbeatTimer = null, pingTimer = null;
 let _panelInjected = false, _eventsBound = false;
@@ -161,7 +161,7 @@ function _hasInteractiveVideo() {
     return false;
 }
 
-var detectCreator, detectTags, detectTitle;
+var detectCreator, detectTitle;
 { // inject platform-specific detection functions
     detectCreator = function() {
         const u = location.href;
@@ -271,19 +271,6 @@ var detectCreator, detectTags, detectTitle;
             return null;
         }
         return null;
-    };
-    detectTags = function() {
-        const tags = [], u = location.href;
-        if (!u.includes('bilibili.com/video/')) return tags;
-        const sels = ['.video-tag','.tag-link','[class*="video-tag"]','[class*="tag-area"] a'];
-        const skip = ['关注','粉丝','投稿','视频','专栏','直播','展开','收起','更多'];
-        for (const sel of sels) {
-            document.querySelectorAll(sel).forEach(el => {
-                const t = el.textContent.trim();
-                if (t&&t.length>=1&&t.length<20&&!tags.includes(t)&&!skip.some(w=>t.includes(w))) tags.push(t);
-            });
-        }
-        return tags;
     };
     detectTitle = function() {
         if (!location.href.includes('bilibili.com/video/')) return '';
@@ -830,7 +817,7 @@ function updKws(kws, ks) {
 
 function clearUI() {
     segCount = 0; keywords = []; speakerColors = {}; matchedSpeakers = new Set();
-    autoAddedSpeakers = new Set(); autoLoadedTopics = new Set(); keywordStore = {};
+    autoAddedSpeakers = new Set(); keywordStore = {};
     const el = $('asr3-txt');
     if (el) el.innerHTML = '<div style="text-align:center;color:#484f58;padding-top:40px"><p style="font-size:28px">🗑</p><p>已清除</p></div>';
     $('asr3-tm').textContent = '0.0秒'; $('asr3-cnt').textContent = '0条 | 0字'; $('asr3-kws').innerHTML = '';
@@ -885,11 +872,6 @@ async function startRec(mode) {
                     send({type:'keyword_add',keyword:cr,category:'speaker'});
                     toast('🎤 自动识别创作者: '+cr,'ok',4000);
                 }
-            }
-            const tags = detectTags();
-            if (tags.length>0) {
-                const nt = tags.filter(t=>!autoLoadedTopics.has(t));
-                if (nt.length>0) { nt.forEach(t=>autoLoadedTopics.add(t)); send({type:'topic_keywords_load',tags:nt}); }
             }
             const title = detectTitle();
             if (title&&title.length>=4) send({type:'video_title',title:title});

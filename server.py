@@ -866,7 +866,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from core import MODELS_DIR, DICT_DIR, silence_noisy_loggers
 from keyword_expander import CATEGORIES, CATEGORY_ICONS
-from speaker_profile import TOPIC_MANAGER
+from topic_manager import TOPIC_MANAGER
 from speaker_manager import SpeakerManager
 from text_utils import (
     extract_title_keywords,
@@ -1598,10 +1598,6 @@ class RealtimeASRServer:
                             vad_info=None, corrections=None, original_text=None,
                             seg_audio_time=None, seg_duration=None):
         """创建一条识别记录并发送到前端"""
-        if not text or text in self.sent_texts:
-            if text:
-                print(f"    [DEDUP-EMIT] 已发送过: '{text[:30]}'", flush=True)
-            return
         for prev in list(self.sent_texts):
             if prev in text and len(prev) > len(text) * 0.8:
                 print(f"    [DEDUP-EMIT] 包含已发送: prev='{prev[:20]}' in '{text[:30]}'", flush=True)
@@ -1615,7 +1611,7 @@ class RealtimeASRServer:
             speaker_label = self.speaker_manager._last_speaker_label
         # 极短文本片段（<5个中文字）：大概率是VAD强制切分产生的尾部碎片
         # 声纹嵌入在这么短的有效语音上几乎就是噪声，直接继承上一个说话人
-        elif text and len(re.findall(r'[\u4e00-\u9fff]', text)) < 5:
+        elif text and len(re.findall(r'[\u4e00-\u9fff]', text)) < 3:
             speaker_label = self.speaker_manager._last_speaker_label
             print(f"    [SPEAKER] 短文本片段({len(re.findall(r'[\u4e00-\u9fff]', text))}字) "
                   f"继承说话人: {speaker_label}", flush=True)

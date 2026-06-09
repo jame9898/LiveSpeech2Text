@@ -103,14 +103,14 @@ class SpeakerManager:
         SAME_THRESHOLD = 0.60
         NEW_THRESHOLD = 0.30
         training_minutes = self.total_audio_seconds / 60.0
-        if training_minutes < 5.0:
-            SAME_THRESHOLD = 0.50
-            NEW_THRESHOLD = 0.20
+        if training_minutes < 2.0:
+            SAME_THRESHOLD = 0.55
+            NEW_THRESHOLD = 0.25
         elif training_minutes < 30.0:
-            ratio = (training_minutes - 5.0) / 25.0
-            SAME_THRESHOLD = 0.50 + ratio * 0.10
-            NEW_THRESHOLD = 0.20 + ratio * 0.10
-        REQUIRED_CONFIRMATIONS = 3
+            ratio = (training_minutes - 2.0) / 28.0
+            SAME_THRESHOLD = 0.55 + ratio * 0.05
+            NEW_THRESHOLD = 0.25 + ratio * 0.05
+        REQUIRED_CONFIRMATIONS = 2
 
         best_score = -1.0
         best_idx = -1
@@ -174,13 +174,13 @@ class SpeakerManager:
         self._pending_new = None
 
     def _check_voiceprint_quality(self):
-        """5分钟后输出快速识别报告，30分钟后输出完整质量评估"""
-        # 5分钟快速识别：自动标记声纹质量达标的 speaker
-        if self.total_audio_seconds >= 300 and not self._quick_recognized:
+        """2分钟后输出快速识别报告，30分钟后输出完整质量评估"""
+        # 2分钟快速识别：自动标记声纹质量达标的 speaker
+        if self.total_audio_seconds >= 120 and not self._quick_recognized:
             self._quick_recognized = True
             self._auto_name_quality_speakers()
             print(f"\n{'='*50}", flush=True)
-            print(f"[VOICEPRINT] 5分钟快速识别 (累计 {self.total_audio_seconds:.0f}s)", flush=True)
+            print(f"[VOICEPRINT] 2分钟快速识别 (累计 {self.total_audio_seconds:.0f}s)", flush=True)
             print(f"{'='*50}", flush=True)
             for i, profile in enumerate(self.speaker_profiles):
                 count = profile.get('count', 0)
@@ -213,7 +213,7 @@ class SpeakerManager:
         print(f"{'='*50}\n", flush=True)
 
     def _auto_name_quality_speakers(self):
-        """5分钟时自动为声纹质量达标的 speaker 命名。"""
+        """2分钟时自动为声纹质量达标的 speaker 命名。"""
         for i, profile in enumerate(self.speaker_profiles):
             label = profile.get('label', f'Speaker{i}')
             quality = profile.get('quality', 0)
