@@ -997,7 +997,7 @@ class RealtimeASRServer:
         self.transcripts_in_flight = 0
         self.max_concurrent_transcripts = 3
         self.last_periodic_transcribe = 0
-        self._partial_in_flight = False  # 防止CPU模式下partial堆积
+        self._partial_seq = 0  # 递增序号，用于丢弃过时partial
 
         # 连接稳定性
         self.last_activity = time.time()
@@ -1432,10 +1432,9 @@ class RealtimeASRServer:
 
     async def _do_streaming_partial(self, audio_array):
         """流式模式：快速partial推理，结果发送到前端"""
-        # 防止CPU模式下前一个partial尚未完成时堆积新请求
-        if self._partial_in_flight:
-            return
-        self._partial_in_flight = True
+        # 使用递增序号替代互斥锁，丢弃过时结果而非阻塞新请求（GPU环境下锁反而导致漏更）
+        self._partial_seq += 1
+        my_seq = self._partial_seq
         try:
             rms = np.sqrt(np.mean(np.asarray(audio_array, dtype=np.float32) ** 2))
             # 降低阈值：从0.005→0.002，避免过滤轻声细语
@@ -1474,6 +1473,8 @@ class RealtimeASRServer:
             self._stream_last_corrected = corrected
 
             self._stream_seg_id += 1
+            if my_seq != self._partial_seq:
+                return  # 更新、更准的partial已发出，丢弃本过期结果
             await self.send({
                 'type': 'partial',
                 'text': corrected,
@@ -1484,7 +1485,7 @@ class RealtimeASRServer:
             import traceback
             traceback.print_exc()
         finally:
-            self._partial_in_flight = False
+            pass  # 不再需要解锁，序号机制自动丢弃过时结果
 
     async def transcribe_buffer(self, audio_data, vad_info=None):
         """提交音频片段到转录队列。
