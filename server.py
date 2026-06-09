@@ -1452,11 +1452,17 @@ class RealtimeASRServer:
                 self.executor, self.asr_engine.transcribe_array, audio_array, 16000)
 
             if not full_text or not full_text.strip():
+                # ASR 返回空：不清空上次识别的文本，避免斜体和字幕闪白
+                dur = len(audio_array) / 16000
+                if dur >= 0.5 and self._stream_full_text:
+                    print(f"    [PARTIAL] 空识别 ({dur:.1f}s)，保留上次文本 '{self._stream_full_text[:20]}'", flush=True)
                 return
-
             full_text = full_text.strip()
 
             if full_text == self._stream_full_text:
+                if full_text:
+                    return  # 确实没有变化
+                # 两者都为空：不重置，保留上次识别结果，避免斜体/字幕闪白
                 return
 
             self._stream_full_text = full_text
@@ -1528,6 +1534,9 @@ class RealtimeASRServer:
             text = await future
 
             if not text or not text.strip():
+                dur = len(audio_data) / 16000
+                if dur >= 0.3:
+                    print(f"    [TRANSCRIBE] 空识别 ({dur:.1f}s 音频) — ASR 未能识别，已丢弃此段", flush=True)
                 return
 
             text = text.strip()
