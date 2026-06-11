@@ -139,6 +139,79 @@ def dedup_chars(text):
     return deduped
 
 
+def dedup_phrase_repeats(text, char_threshold=6, phrase_threshold=4, max_pattern_len=15):
+    """移除ASR模型产生的短语级重复幻觉（借鉴 Qwen3-ASR-Toolkit 的 post_text_process）。
+    分两步：
+      1) 单字连续重复 ≥ char_threshold 次 → 保留 1 个
+      2) 短语（1~max_pattern_len字）连续重复 ≥ phrase_threshold 次 → 保留 1 个
+
+    示例: "好的好的好的好的" → "好的"
+          "啊啊啊啊啊啊" → "啊"
+    """
+    if not text or len(text) < 4:
+        return text
+
+    # 第一步：单字连续重复
+    def _fix_char_repeats(s, thresh):
+        res = []
+        i = 0
+        n = len(s)
+        while i < n:
+            count = 1
+            while i + count < n and s[i + count] == s[i]:
+                count += 1
+            if count >= thresh:
+                res.append(s[i])
+                i += count
+            else:
+                res.append(s[i:i + count])
+                i += count
+        return ''.join(res)
+
+    # 第二步：短语模式重复
+    def _fix_pattern_repeats(s, thresh, max_len):
+        n = len(s)
+        min_repeat_chars = thresh * 2
+        if n < min_repeat_chars:
+            return s
+        i = 0
+        result = []
+        while i <= n - min_repeat_chars:
+            found = False
+            for k in range(1, max_len + 1):
+                if i + k * thresh > n:
+                    break
+                pattern = s[i:i + k]
+                valid = True
+                for rep in range(1, thresh):
+                    start_idx = i + rep * k
+                    if s[start_idx:start_idx + k] != pattern:
+                        valid = False
+                        break
+                if valid:
+                    result.append(pattern)
+                    result.append(_fix_pattern_repeats(s[i + thresh * k:], thresh, max_len))
+                    i = n
+                    found = True
+                    break
+            if found:
+                break
+            else:
+                result.append(s[i])
+                i += 1
+        if not found:
+            result.append(s[i:])
+        return ''.join(result)
+
+    text = _fix_char_repeats(text, char_threshold)
+    result = _fix_pattern_repeats(text, phrase_threshold, max_pattern_len)
+
+    if result != text:
+        print(f"    [PHRASE-DEDUP] '{text[:50]}' → '{result[:50]}'", flush=True)
+
+    return result
+
+
 def log_fmt_time(sec):
     h = int(sec // 3600)
     m = int((sec % 3600) // 60)

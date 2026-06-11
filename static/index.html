@@ -38,7 +38,6 @@ h1 { font-size: 20px; margin-bottom: 6px; }
 .kw-box { min-height: 22px; max-height: 60px; overflow-y: auto; font-size: 11px; line-height: 1.8; display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 10px; }
 .kw-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; border: 1px solid rgba(9,105,218,.15); }
 .kw-tag.speaker { background: rgba(63,185,80,.1); color: #1a7f37; border-color: rgba(63,185,80,.25); }
-.kw-tag.topic { background: rgba(210,153,29,.1); color: #9a6700; border-color: rgba(210,153,29,.25); }
 .kw-tag.other { background: rgba(9,105,218,.08); color: #0969da; border-color: rgba(9,105,218,.2); }
 .kw-tag.matched { border-style: solid; opacity: 1; }
 .kw-tag.unmatched { border-style: dashed; opacity: 0.55; }
@@ -96,7 +95,6 @@ h1 { font-size: 20px; margin-bottom: 6px; }
 <div class="kw-line">
     <select id="kwCat">
         <option value="speaker">主讲人</option>
-        <option value="topic">话题</option>
         <option value="other">关键词</option>
     </select>
     <input id="kwInput" placeholder="输入词或短语，回车添加...">
@@ -290,9 +288,6 @@ function handleMsg(d) {
         case 'keywords_updated':
             if (d.keyword_store) keywordStore = d.keyword_store;
             if (d.keywords) updateKeywords(d.keywords);
-            if (d.topic_auto_loaded && d.topic_auto_loaded.count > 0) {
-                // 话题自动加载，静默处理
-            }
             break;
         case 'report': showReport(d.content); break;
         case 'save_report': download(d.content, d.filename||'asr_report.md', 'text/markdown;charset=utf-8'); break;
@@ -434,9 +429,9 @@ function updateKeywords(kws) {
     var html = '';
     if (keywordStore && Object.keys(keywordStore).length > 0) {
         var shown = {};
-        var catOrder = ['speaker', 'topic', 'other'];
-        var catIcons = {speaker: '👤 ', topic: '📖 ', other: ''};
-        var catClass = {speaker: 'speaker', topic: 'topic', other: 'other'};
+        var catOrder = ['speaker', 'other'];
+        var catIcons = {speaker: '👤 ', other: ''};
+        var catClass = {speaker: 'speaker', other: 'other'};
         for (var ci = 0; ci < catOrder.length; ci++) {
             var cat = catOrder[ci];
             var words = keywordStore[cat];
@@ -454,8 +449,6 @@ function updateKeywords(kws) {
                 var titleAttr = '';
                 if (cat === 'speaker') {
                     titleAttr = matchedSpeakers[w] ? ' title="画像库已匹配"' : ' title="未匹配画像库"';
-                } else if (cat === 'topic') {
-                    titleAttr = ' title="话题"';
                 }
                 html += '<span class="kw-tag ' + cls + extraClass + '"' + titleAttr + '>' + icon + eHtml(w) + '</span>';
             }

@@ -12,7 +12,7 @@ class VADProcessor:
     MUSIC_ENERGY_EPSILON = 1e-8
 
     def __init__(self, vad_silence_threshold=0.85, vad_force_cut=True, vad_force_cut_sec=6.0,
-                 min_speech_duration=0.08,
+                 min_speech_duration=0.12,
                  max_buffer_seconds=30):
         self.vad_silence_threshold = vad_silence_threshold
         self.vad_force_cut = vad_force_cut
@@ -32,8 +32,8 @@ class VADProcessor:
     def cut(self, audio_data, sr):
         """
         自适应VAD：根据说话语速动态调整静音断句阈值
-        - 说话快（间隙短）→ 阈值小（1秒），快速断句
-        - 说话慢（间隙长）→ 阈值大（2-4秒），耐心等待不打断
+        - 说话快（间隙短）→ 阈值小（0.5s），快速断句
+        - 说话慢（间隙长）→ 阈值大（1.3s），耐心等待不打断
         返回 (语音段, 剩余缓冲区, VAD信息字典)
         - 语音段: numpy array 或 None（无完整语音段）
         - 剩余缓冲区: numpy array 或 None（无需更新时为 None）
@@ -43,7 +43,8 @@ class VADProcessor:
         hop_len = int(sr * 0.01)
         n_frames = (len(audio_data) - frame_len) // hop_len + 1
 
-        vad_info = {'silence': 1.3, 'forced': False, 'overlap': 1.3, 'chunk_dur': 0}
+        vad_info = {'silence': self.vad_silence_threshold, 'adaptive_coeff': 1.0,
+                    'forced': False, 'overlap': 1.3, 'chunk_dur': 0}
 
         min_dur_frames = int(self.min_speech_duration / 0.03)
         if n_frames < min_dur_frames:
@@ -59,7 +60,6 @@ class VADProcessor:
         is_speech = energies > threshold
 
         # === 流式模式：使用配置的静音阈值和强制切分参数 ===
-        min_silence_frames = int(self.vad_silence_threshold / 0.01)
         fc = self.vad_force_cut_sec
         force_cut_sec = fc + 0.5
         force_cut_size = fc
@@ -79,6 +79,25 @@ class VADProcessor:
                 if len(self.speech_gaps) > 20:
                     self.speech_gaps.pop(0)
 
+        # === 自适应静音阈值：根据说话间隙动态调整 ===
+        # 基础阈值 = vad_silence_threshold（默认 0.85s）
+        # 快速说话（间隙小）→ 降低阈值，快速断句
+        # 慢速说话（间隙大）→ 提高阈值，耐心等待
+        if len(self.speech_gaps) >= 5:
+            median_gap = np.median(self.speech_gaps)
+            # 自适应系数：间隙 < 0.5s → 0.6x; 间隙 > 1.5s → 1.5x
+            self.adaptive_threshold = np.clip(median_gap / 0.8, 0.6, 1.5)
+        else:
+            self.adaptive_threshold = 1.0  # 样本不足时使用基础阈值
+
+        adaptive_silence = self.vad_silence_threshold * self.adaptive_threshold
+        # 限制自适应范围：0.4s ~ 1.5s，防止极端值
+        adaptive_silence = max(0.4, min(adaptive_silence, 1.5))
+        min_silence_frames = int(adaptive_silence / 0.01)
+
+        vad_info['silence'] = round(adaptive_silence, 2)
+        vad_info['adaptive_coeff'] = round(self.adaptive_threshold, 2)
+
         min_speech_frames = max(1, int(self.min_speech_duration / 0.01))
 
         # === 找到完整语音段（末尾有足够静音）===
@@ -88,8 +107,8 @@ class VADProcessor:
             first_speech_frame = np.where(is_speech)[0][0]
             speech_duration = (last_speech_frame - first_speech_frame + 1) * 0.01
 
-            # 连续说话快速切分（提高静音阈值：0.5s→0.8s，减少误切）
-            quick_cut_dur = 1.5
+            # 连续说话快速切分（提高语速/时长阈值，减少误切）
+            quick_cut_dur = 2.5
             quick_cut_silence = int(0.8 / 0.01)
             if self.vad_force_cut and speech_duration > quick_cut_dur and silence_after >= quick_cut_silence:
                 cut_point = (last_speech_frame + 1) * hop_len

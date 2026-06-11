@@ -1,17 +1,29 @@
-# === GPU 环境（PyTorch CUDA 12.6）===
---extra-index-url https://download.pytorch.org/whl/cu126
+# ============================================================
+# 在线实时语音识别系统 — Python 依赖（CPU 版）
+# ============================================================
+# 适用于无 GPU 或仅 CPU 推理环境
+# Python 3.10 ~ 3.12
+#
+# 安装方式:
+#   pip install -r requirements.txt
+#
+# ============================================================
 
-# --- 深度学习引擎 ---
+# --- 深度学习引擎（CPU 版）---
 torch>=2.6.0
 torchaudio>=2.6.0
 
-# --- ASR 模型 ---
+# --- ASR 模型识别引擎 ---
 qwen-asr>=0.0.6
+
+# --- 模型下载与管理 ---
 modelscope>=1.20.0
+
+# --- transformers 生态（qwen-asr 依赖）---
 transformers>=4.40.0
 accelerate>=1.0.0
 
-# --- GUI ---
+# --- GUI 框架 ---
 PySide6>=6.5.0
 
 # --- 实时通信 ---
@@ -21,12 +33,14 @@ websockets>=12.0
 soundfile>=0.12.0
 librosa>=0.10.0
 
-# --- 拼音 ---
+# --- 拼音转换 ---
 pypinyin>=0.50.0
 
 # --- 科学计算 ---
 numpy>=1.24.0
 scipy>=1.10.0
 
-# --- 以下由 qwen-asr 自动安装，无需手动指定 ---
-# flask, gradio, nagisa, pytz, qwen-omni-utils, sox, soynlp
+# ============================================================
+# 以下由 qwen-asr 自动安装，无需手动指定：
+#   flask, gradio, nagisa, pytz, qwen-omni-utils, sox, soynlp
+# ============================================================

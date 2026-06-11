@@ -4,10 +4,6 @@
 VAD断句 + KW关键词纠错 + 说话人分离 (CAM++)
 """
 
-from pathlib import Path
-
-STATUS_PAGE = Path(__file__).parent / "static" / "index.html"
-
 import asyncio
 import websockets
 from websockets.http11 import Response, Headers
@@ -17,23 +13,22 @@ import numpy as np
 import time
 import logging
 import re
-import urllib.request
 from pathlib import Path
 from datetime import datetime
+
+STATUS_PAGE = Path(__file__).parent / "static" / "index.html"
 from concurrent.futures import ThreadPoolExecutor
 from core import MODELS_DIR, DICT_DIR, silence_noisy_loggers
 from pinyin_utils import PinyinCorrector, CATEGORIES, CATEGORY_ICONS
-from topic_manager import TOPIC_MANAGER
 from creator_detector import CreatorDetector
 from speaker_manager import SpeakerManager
 from text_utils import (
     extract_title_keywords,
-    dedup_overlap, dedup_chars,
+    dedup_overlap, dedup_chars, dedup_phrase_repeats,
     normalize_letter_adjacent_numbers,
 )
-from correction_engine import CorrectionEngine
 from vad_processor import VADProcessor
-from report_generator import generate_comprehensive_report, generate_structured_log, merge_segments, merge_short_trailing
+from report_generator import generate_comprehensive_report, generate_structured_log, merge_short_trailing, merge_semantic_continuation
 
 logging.getLogger('websockets.server').setLevel(logging.CRITICAL)
 logging.getLogger('websockets').setLevel(logging.CRITICAL)
@@ -69,7 +64,6 @@ class RealtimeASRServer:
 
         # 智能纠错引擎（实体识别、模糊匹配、语法检查、置信度评分）
         self.creator_detector = CreatorDetector()
-        self.correction_engine = CorrectionEngine()
 
         # 说话人分离 (CAM++ 中英文通用声纹模型)
         print("[SPEAKER] Loading CAM++ speaker verification model...", flush=True)
@@ -135,7 +129,7 @@ class RealtimeASRServer:
 
         self.vad_force_cut = self.asr_engine._config.get("model_settings", {}).get("vad_force_cut", True)
         self.vad_force_cut_sec = self.asr_engine._config.get("model_settings", {}).get("force_cut_sec", 6.0)
-        self.min_speech_duration = self.asr_engine._config.get("model_settings", {}).get("min_speech_duration", 0.08)
+        self.min_speech_duration = self.asr_engine._config.get("model_settings", {}).get("min_speech_duration", 0.12)
 
         # 避免重复发送已识别的文本（上限防止长会话O(n²)退化）
         self.sent_texts = set()
@@ -151,7 +145,6 @@ class RealtimeASRServer:
 
         self.keyword_history = []
 
-        self.last_periodic_transcribe = 0
         self._partial_seq = 0  # 递增序号，用于标识partial请求
         self._partial_sent_seq = 0  # 已发送的最大序号（空结果不更新）
 
@@ -164,7 +157,13 @@ class RealtimeASRServer:
         self._stream_last_partial = ""
         self._stream_partial_time = 0
         self._stream_partial_interval = 0.25
-        self._partial_in_flight = False  # 同时最多1个ASR partial在跑，防止executor队列堆积
+        self._partial_in_flight = False
+
+        # 分片有序提交（解决并发 _finalize_segment 乱序问题）
+        self._seg_emit_lock = asyncio.Lock()
+        self._next_seg_seq = 0           # 分片提交序号（单调递增）
+        self._pending_emit_seq = 0        # 下一个待提交的序号
+        self._pending_segments = {}       # {seq: (corrected, corrections, original, audio, vad_info, seg_time, seg_dur)}
 
         self.vad_processor = VADProcessor(
             vad_silence_threshold=self.vad_silence_threshold,
@@ -272,8 +271,6 @@ class RealtimeASRServer:
                     print(f"[WS] stop: 刷新极短尾音 {len(remaining_buf)/16000:.2f}s", flush=True)
                     await self._finalize_segment(remaining_buf, {'voice_start': 0, 'voice_end': len(remaining_buf)/16000, 'seg_type': 'flush'})
                 self._audio_buf = np.array([], dtype=np.float32)
-                merge_short_trailing(self.segments)
-                merge_segments(self.segments)
                 await self._send_to(websocket, {
                     'type': 'status', 'status': 'stopped',
                     'message': 'Stopped', 'full_text': self.full_text.strip(),
@@ -327,20 +324,6 @@ class RealtimeASRServer:
                 if not msg.get('creator') and page_url:
                     asyncio.ensure_future(self._auto_detect_creator(page_url, websocket))
 
-            elif msg_type == 'load_vocab':
-                tags = [msg.get('name', '')]
-                if tags and tags[0]:
-                    added = await self._load_topic_keywords(tags)
-                    if added:
-                        await self._send_keywords_updated(websocket,
-                            extra={'topic_loaded': added})
-                    else:
-                        await self._send_to(websocket, {
-                            'type': 'vocab_loaded',
-                            'name': tags[0],
-                            'count': 0,
-                        })
-
             elif msg_type == 'new_speaker':
                 name = msg.get('name', f'发言人{self.speaker_manager.last_speaker_id}')
                 for profile in self.speaker_manager.speaker_profiles:
@@ -371,22 +354,6 @@ class RealtimeASRServer:
 
                     if cat == 'speaker':
                         self.speaker_manager.add_active_speaker(keyword)
-
-                    if cat == 'topic':
-                        topic_added = await self._load_topic_keywords([keyword])
-                        if topic_added:
-                            print(f"[WS] 🏷 自动匹配话题 '{keyword}' → 加载{topic_added}个专用词", flush=True)
-                            await self._send_keywords_updated(websocket,
-                                extra={'topic_auto_loaded': {'name': keyword, 'count': topic_added}})
-
-            elif msg_type == 'topic_keywords_load':
-                tags = msg.get('tags', [])
-                if tags:
-                    added = await self._load_topic_keywords(tags)
-                    if added:
-                        print(f"[WS] 🏷 话题匹配: {tags[:5]} → 加载{added}个关键词(后台纠正，不显示在面板)", flush=True)
-                        await self._send_keywords_updated(websocket,
-                            extra={'topic_loaded': len(tags)})
 
             elif msg_type == 'video_title':
                 title = msg.get('title', '').strip()
@@ -427,9 +394,9 @@ class RealtimeASRServer:
                 display_names = self._prepare_report_data()
                 report = generate_comprehensive_report(
                     self.segments, self.speaker_manager.speaker_profiles,
-                    self.keyword_history, self.pinyin_corrector.correction_records,
+                    self.keyword_history,
                     self.total_audio_seconds,
-                    self.asr_engine.model_name, self.pinyin_corrector._loaded_topics,
+                    self.asr_engine.model_name,
                     self.speaker_manager.page_type, self.speaker_manager.video_offset,
                     display_names=display_names,
                     page_creator=self.speaker_manager.page_creator,
@@ -441,12 +408,10 @@ class RealtimeASRServer:
                 display_names = self._prepare_report_data()
                 log = generate_structured_log(
                     self.segments, self.speaker_manager.speaker_profiles,
-                    self.keyword_history, self.pinyin_corrector.correction_records,
+                    self.keyword_history,
                     self.total_audio_seconds,
                     self.asr_engine.model_name if self.asr_engine else 'unknown',
-                    self.pinyin_corrector._loaded_topics,
                     self.speaker_manager.page_type, self.speaker_manager.video_offset,
-                    self.speaker_manager.session_active_speakers,
                     display_names=display_names,
                     page_creator=self.speaker_manager.page_creator,
                 )
@@ -484,8 +449,6 @@ class RealtimeASRServer:
         self.last_segment_wall_time = 0
         self.last_segment_end_audio_time = 0
 
-        self.last_periodic_transcribe = 0
-
         # 流式模式状态
         self._partial_seq = 0
         self._partial_sent_seq = 0
@@ -495,27 +458,12 @@ class RealtimeASRServer:
 
         # 子模块会话重置
         self.pinyin_corrector.reset_session()
-        self.correction_engine.reset_session()
         self.speaker_manager.reset_session()
         self.vad_processor.reset()
 
         # 说话人档案（仅在 clear 时清空）
         if reset_speakers:
             self.speaker_manager.reset_speaker_profiles()
-
-    async def _load_topic_keywords(self, tags):
-        """加载话题关键词（不再加载话题特定的拼音/文本/实体纠错词典）"""
-        topic_kws, matched_topics = TOPIC_MANAGER.match_and_load(tags)
-        added = 0
-        for kw in topic_kws:
-            kw = kw.strip()
-            if kw and len(kw) >= 2 and kw not in self.pinyin_corrector.kw_set:
-                self.pinyin_corrector.kw_set.add(kw)
-                added += 1
-        # 不再加载话题特定的拼音纠正、文本纠正、实体知识库
-        # 仅通过 PHONETIC_MERGE（平翘舌、前后鼻音、n/l、h/f、r/l）进行拼音相似度匹配
-        self.pinyin_corrector.sync_protected_from_keywords()
-        return added
 
     async def _send_keywords_updated(self, websocket, extra=None):
         """发送 keywords_updated 消息，附加可选 extra 字段"""
@@ -588,10 +536,16 @@ class RealtimeASRServer:
             traceback.print_exc()
 
     async def _send_streaming_partial(self, audio_array):
-        """实时字幕条：快速ASR → 发送partial到前端。
-        不跑纠错引擎（省时间），纯文本对比去重。
+        """实时字幕条：快速ASR → 去重/格式化 → 发送partial到前端。
+
+        字幕条是唯一的文本生产管线，右侧 speaker 面板不再跑独立 ASR，
+        而是直接使用字幕条的当前文本（见 _finalize_segment）。
+
         _partial_sent_seq 仅在有文本成功发送时更新，避免空结果误杀旧partial。
         _partial_in_flight 确保同一时间最多1个ASR partial在跑，防止executor队列堆积。
+
+        防反复修正：如果新文本比旧文本短且旧文本以新文本结尾（3s窗口滑动导致），
+        不更新字幕条，保持已显示的较长文本，避免"今天天气不错"→"天气不错"→"不错"的抖动。
         """
         self._partial_in_flight = True
         self._partial_seq += 1
@@ -611,8 +565,29 @@ class RealtimeASRServer:
 
             raw_text = raw_text.strip()
 
-            # 与上次发送的文本相同 → 跳过（避免无意义重复刷新）
+            # 同 _finalize_segment 管线：段间去重 + 字符去重 + 短语去重 + 格式化
+            if self.segments:
+                prev = self.segments[-1]['text']
+                raw_text = dedup_overlap(prev, raw_text)
+                if not raw_text:
+                    return
+            raw_text = dedup_chars(raw_text)
+            raw_text = dedup_phrase_repeats(raw_text)
+            if not raw_text:
+                return
+            raw_text = normalize_letter_adjacent_numbers(raw_text)
+            if not raw_text or not raw_text.strip():
+                return
+
+            # 与上次发送的文本相同 → 跳过
             if raw_text == self._stream_last_partial:
+                return
+
+            # 防反复修正：新文本比旧文本短且旧文本以新文本结尾
+            # 说明是3s滑动窗口导致的截断（如"今天天气不错"→"天气不错"），保持长文本
+            if (self._stream_last_partial
+                    and len(raw_text) < len(self._stream_last_partial)
+                    and self._stream_last_partial.endswith(raw_text)):
                 return
 
             # 有更新的 partial 已发送 → 本 partial 过时
@@ -634,81 +609,117 @@ class RealtimeASRServer:
             self._partial_in_flight = False
 
     async def _finalize_segment(self, audio_seg, vad_info):
-        """统一ASR管线：一次 transcribe_array → 同时输出 partial(字幕条) + transcription(右边记录)。
-        与 _send_streaming_partial 共用同一套 ASR 管线，不再跑两套识别。
+        """段边界处理：VAD 检测到说话结束 → 字幕条对完整段做最终 ASR → 直接复制到 speaker 面板。
+
+        字幕条是唯一的文本生产管线：
+        - 说话中：字幕条用 3s 滑动窗口做实时预览（快速反馈）
+        - VAD 切段时：字幕条对完整音频段做最终 ASR，修正后的文本就是最终版本
+        - speaker 面板直接复制字幕条的最终文本，不做第二次 ASR
+
+        使用分片序号 + 有序队列，确保 transcription 按 VAD 检测顺序发送。
         """
+        seg_seq = self._next_seg_seq
+        self._next_seg_seq += 1
+        seg_audio_time = self.total_audio_seconds
+        seg_duration = len(audio_seg) / 16000
+
+        seg_data = None
+
         try:
+            # 字幕条管线：对完整音频段做最终 ASR（替代 3s 窗口预览，确保不漏字）
             loop = asyncio.get_running_loop()
-            text = await loop.run_in_executor(
+            raw_text = await loop.run_in_executor(
                 self.executor, self.asr_engine.transcribe_array, audio_seg, 16000)
 
-            if not text or not text.strip():
+            if not raw_text or not raw_text.strip():
                 dur = len(audio_seg) / 16000
                 if dur >= 0.3:
-                    print(f"    [SEG] 空识别 ({dur:.1f}s) — 已丢弃", flush=True)
+                    print(f"    [SEG] ASR 无文本 ({dur:.1f}s) — 已跳过", flush=True)
                 return
 
-            text = text.strip()
+            text = raw_text.strip()
 
-            # 去重：与上一个 segment 的重叠部分
+            # 字幕条标准后处理管线：字符去重 + 短语去重 + 格式化
+            text = dedup_chars(text)
+            text = dedup_phrase_repeats(text)
+            if not text:
+                return
+            text = normalize_letter_adjacent_numbers(text)
+            if not text or not text.strip():
+                return
+
+            # 段间去重：与上一个 segment 的重叠部分
             if self.segments:
                 prev = self.segments[-1]['text']
                 text = dedup_overlap(prev, text)
-            text = dedup_chars(text)
             if not text:
                 return
 
-            # 句子级别去重
-            if self.segments:
-                prev = self.segments[-1]['text']
-                if prev != text and prev in text and len(prev) > len(text) * 0.85:
-                    return
-
-            # 纠错引擎
-            original_text = text
-            corrected, corrections = self.correction_engine.correct(
-                text, pinyin_corrector=self.pinyin_corrector)
-            corrected = normalize_letter_adjacent_numbers(corrected)
-            if not corrected or not corrected.strip():
+            # 句子级别去重：与上一段完全相同 → 跳过
+            if self.segments and self.segments[-1]['text'] == text:
                 return
 
-            # 同步字幕条：用纠正后文本覆盖实时 raw 文本，确保与右边记录一致
-            self._stream_last_partial = corrected
+            # 全局精确去重：近期已发送过完全相同的文本 → 跳过
+            if text in self.sent_texts:
+                print(f"    [DEDUP] 重复文本已跳过: {text[:40]}", flush=True)
+                return
+
+            # 关键词拼音纠正（输出前最后一步）：关键词→拼音→匹配文本→替换
+            # 例如：关键词"寅子"，ASR输出"银子" → 拼音都是 yin+zi → 替换为"寅子"
+            text, kw_corrections = self.pinyin_corrector.correct_with_keywords(text)
+            kw_applied = len(kw_corrections) > 0
+            if kw_applied:
+                for orig, corr in kw_corrections:
+                    print(f"    [KW] 关键词纠正: {orig} → {corr}", flush=True)
+
+            # 更新字幕条为最终文本（字幕条从预览模式切换到最终版本）
+            self._stream_last_partial = text
             await self.send({
                 'type': 'partial',
-                'text': corrected,
+                'text': text,
             })
 
-            # 发 segment 到右边记录
-            seg_audio_time = self.total_audio_seconds
-            seg_duration = len(audio_seg) / 16000
-            await self._emit_segment(audio_seg, corrected, True, vad_info=vad_info,
-                                      corrections=corrections, original_text=original_text,
-                                      seg_audio_time=seg_audio_time, seg_duration=seg_duration)
-
-            status = f"[WS] [{self.transcription_count}] [SEG]"
-            print(f"{status} {corrected[:60]}...", flush=True)
+            seg_data = (text, kw_corrections, raw_text.strip(),
+                        audio_seg, vad_info, seg_audio_time, seg_duration, kw_applied)
 
         except Exception as e:
             print(f"[WS] Segment error: {e}", flush=True)
             import traceback
             traceback.print_exc()
+        finally:
+            async with self._seg_emit_lock:
+                self._pending_segments[seg_seq] = seg_data
+
+                while self._pending_emit_seq in self._pending_segments:
+                    data = self._pending_segments.pop(self._pending_emit_seq)
+
+                    if data is not None:
+                        (corr, corrs, orig, audio, vi, seg_time, seg_dur, kw_applied) = data
+
+                        # 阻止并发 raw partial 覆盖
+                        self._partial_sent_seq = self._partial_seq
+                        # 清空字幕条缓存，让字幕条从新段重新开始显示
+                        self._stream_last_partial = ""
+
+                        await self._emit_segment(audio, corr, kw_applied, vad_info=vi,
+                                                  corrections=corrs, original_text=orig,
+                                                  seg_audio_time=seg_time, seg_duration=seg_dur)
+
+                        status = f"[WS] [{self.transcription_count}] [SEG]"
+                        print(f"{status} {corr[:60]}...", flush=True)
+
+                    self._pending_emit_seq += 1
 
     async def _emit_segment(self, audio_data, text, kw_applied=False, speaker_label=None,
                             vad_info=None, corrections=None, original_text=None,
                             seg_audio_time=None, seg_duration=None):
         """创建一条识别记录并发送到前端"""
-        if self.segments:
-            prev = self.segments[-1]['text']
-            if prev != text and prev in text and len(prev) > len(text) * 0.85:
-                print(f"    [DEDUP-EMIT] 上句包含: prev='{prev[:20]}' in '{text[:30]}'", flush=True)
-                return
 
         # 如果调用方已提供 speaker_label（多句 chunk 共享），直接使用
         if speaker_label is not None:
             pass
-        # 短音频不跑 VoiceEncoder（单字如"我""嗯"嵌入是噪声），直接用上一个说话人
-        elif len(audio_data) < int(16000 * 0.5):
+        # 短音频不跑声纹（<0.8s 的片段嵌入向量不稳定），直接用上一个说话人
+        elif len(audio_data) < int(16000 * 0.8):
             speaker_label = self.speaker_manager.last_speaker_label
         # 极短文本片段：中文<3字 且 非中文<5字母 → VAD强制切分尾部碎片，继承说话人
         # 英文/俄语等纯字母文本（如 "Hello" 或 "Привет"）满足中文字数=0，但仍有有效语音内容
@@ -721,8 +732,14 @@ class RealtimeASRServer:
                 print(f"    [SPEAKER] 短文本片段({cn_chars}字+{non_cn_chars}字母) "
                       f"继承说话人: {speaker_label}", flush=True)
             else:
-                speaker_label = await self.speaker_manager.detect_speaker(audio_data)
-                self.speaker_manager.last_speaker_label = speaker_label
+                # 声纹检测前做能量预检：极低能量片段可能只有噪声，跳过以避免污染声纹库
+                rms = np.sqrt(np.mean(np.asarray(audio_data, dtype=np.float32) ** 2))
+                if rms < 0.003:
+                    speaker_label = self.speaker_manager.last_speaker_label
+                    print(f"    [SPEAKER] 低能量片段(RMS={rms:.4f})继承说话人: {speaker_label}", flush=True)
+                else:
+                    speaker_label = await self.speaker_manager.detect_speaker(audio_data)
+                    self.speaker_manager.last_speaker_label = speaker_label
         else:
             speaker_label = await self.speaker_manager.detect_speaker(audio_data)
             self.speaker_manager.last_speaker_label = speaker_label
@@ -830,17 +847,18 @@ class RealtimeASRServer:
             print(f"[WS] 自动识别创作者失败: {e}", flush=True)
 
     def _prepare_report_data(self):
-        """准备报告所需的公共数据（修复短尾句 + 获取显示名称）"""
+        """准备报告所需的公共数据（修复短尾句 + 语义合并 + 获取显示名称）"""
         merge_short_trailing(self.segments)
+        merge_semantic_continuation(self.segments)
         return self.speaker_manager.get_all_display_names()
 
     async def generate_and_send_report(self, websocket):
         display_names = self._prepare_report_data()
         report = generate_comprehensive_report(
             self.segments, self.speaker_manager.speaker_profiles,
-            self.keyword_history, self.pinyin_corrector.correction_records,
+            self.keyword_history,
             self.total_audio_seconds,
-            self.asr_engine.model_name, self.pinyin_corrector._loaded_topics,
+            self.asr_engine.model_name,
             self.speaker_manager.page_type, self.speaker_manager.video_offset,
             display_names=display_names,
             page_creator=self.speaker_manager.page_creator,

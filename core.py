@@ -48,7 +48,7 @@ _DEFAULT_CONFIG = {
         "vad_threshold": 0.8,
         "force_cut_sec": 6.0,
         "max_buffer_seconds": 30,
-        "min_speech_duration": 0.08,
+        "min_speech_duration": 0.12,
         "threads": 4,
         "ws_port": 8765,
         "max_new_tokens": 128,
@@ -133,6 +133,7 @@ class ASREngine:
         """尝试加载指定模型"""
         try:
             method = getattr(self, method_name)
+            print(f"[LOAD] Trying {display_name}...", flush=True)
             return method(**kwargs)
         except Exception as e:
             print(f"[WARN] {display_name} 加载失败: {e}")

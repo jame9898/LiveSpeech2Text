@@ -1,20 +1,32 @@
+# ========================
 # Python
+# ========================
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
 *.egg-info/
+*.egg
 dist/
 build/
+eggs/
+*.whl
 
-# AI Models (downloaded at runtime, too large for git)
+# ========================
+# AI Models (运行时下载，体积过大)
+# ========================
 models/
 
-# Runtime temp files
+# ========================
+# 运行时临时文件
+# ========================
 temp/
 *.log
 *.wav
 
-# ⚠️ 敏感生物信息安全 — 以下目录/文件包含声纹数据(embedding/profile)，严禁上传至任何远程仓库
+# ========================
+# 敏感生物信息安全
+# 声纹数据(embedding/profile)，严禁上传至任何远程仓库
+# ========================
 dict/voiceprints/
 *.npy
 *.bin
@@ -22,28 +34,51 @@ dict/voiceprints/
 dict/speaker_profiles.json
 dict/voice_profile_library.json
 
-# IDE
+# ========================
+# 环境与密钥
+# ========================
+.env
+*.env
+venv/
+.venv/
+env/
+
+# ========================
+# IDE / 编辑器
+# ========================
 .vscode/
 .idea/
 .trae/
+*.swp
+*.swo
 
-# OS
+# ========================
+# 操作系统
+# ========================
 .DS_Store
 Thumbs.db
+Desktop.ini
+ehthumbs.db
 
-# Environment
-.env
-venv/
-.venv/
-
-# Debug artifacts
+# ========================
+# 调试产物
+# ========================
 .dbg/
 crash.log
 diagnostic.log
 
-# Generated reports
+# ========================
+# 生成报告（本地保留）
+# ========================
 测试报告/
 
-# Developer reference (local only)
+# ========================
+# 开发者本地参考（不入库）
+# ========================
 PROJECT_RULES.md
 ROADMAP.md
+
+# ========================
+# 本地脚本（不入库）
+# ========================
+push.bat

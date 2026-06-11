@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-拼音纠错工具模块
-拼音字典纠正 / 文本相似度比对
+拼音工具模块
+关键词管理 / 文本相似度比对
 """
 
 import re
-import json
 
 try:
     from pypinyin import lazy_pinyin, Style
@@ -13,20 +12,16 @@ except ImportError:
     lazy_pinyin = None
     Style = None
 
-from core import DICT_DIR
-
 
 # ---- 关键词分类常量 ----
 
 CATEGORIES = {
     'speaker': '主讲人',
-    'topic': '话题',
     'other': '关键词',
 }
 
 CATEGORY_ICONS = {
     'speaker': '👤',
-    'topic': '🏷',
     'other': '📌',
 }
 
@@ -34,167 +29,100 @@ CATEGORY_ICONS = {
 class PinyinCorrector:
 
     def __init__(self, keyword_store=None):
-        self._loaded_topics = set()
-        self.pinyin_corrections = {}
-        self.load_pinyin_corrections()
-        # Initialize kw_set from keyword_store if provided
+        self.kw_set = set()
+        # 缓存：关键词 → 拼音列表，避免每次纠正都重新转换
+        self._kw_pinyin_cache = {}
         if keyword_store:
-            self.kw_set = set()
             for cat_kws in keyword_store.values():
                 if isinstance(cat_kws, (set, list)):
                     self.kw_set.update(cat_kws)
-        else:
-            self.kw_set = set()
-        self.protected_phrases = set()
-        self.correction_log = set()
-        self.correction_records = []
 
     def reset_session(self):
-        """重置会话状态：清空话题纠正、kw_set、日志等，重新加载基础词典"""
-        self._loaded_topics.clear()
-        self.pinyin_corrections.clear()
-        self._sorted_pinyin_entries = None
-        self.load_pinyin_corrections()
+        """重置会话状态：清空关键词集合和拼音缓存"""
         self.kw_set.clear()
-        self.protected_phrases.clear()
-        self.correction_log.clear()
-        self.correction_records.clear()
-        print(f"[PINYIN] 会话重置，已重新加载拼音纠错词典: {len(self.pinyin_corrections)}条", flush=True)
+        self._kw_pinyin_cache.clear()
 
-    @staticmethod
-    def _load_dict_file(path, label=""):
-        """加载JSON词典文件的通用辅助方法，返回过滤后的条目字典"""
-        if not path.exists():
+    def _get_kw_pinyin(self, keyword):
+        """获取关键词的拼音列表（带缓存）"""
+        if keyword in self._kw_pinyin_cache:
+            return self._kw_pinyin_cache[keyword]
+        if lazy_pinyin is None:
             return None
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            entries = {k: v for k, v in data.items() if not k.startswith('__')}
-            return entries
-        except FileNotFoundError:
-            return None
-        except (json.JSONDecodeError, OSError) as e:
-            print(f"[{label}] 加载词典失败 {path.name}: {e}", flush=True)
-            return None
+        py = lazy_pinyin(keyword, style=Style.NORMAL)
+        self._kw_pinyin_cache[keyword] = py
+        return py
 
-    def load_pinyin_corrections(self, topic=None):
-        """加载拼音→正确文字 纠错词典（按话题加载对应词典文件）"""
-        self._sorted_pinyin_entries = None  # 字典变更后清除缓存
-        base_dir = DICT_DIR / 'corrections'
-        base_dir.mkdir(exist_ok=True)
+    def correct_with_keywords(self, text):
+        """用关键词的拼音匹配纠正文本中的同音错误。
 
-        # 话题特定纠错
-        if topic:
-            topic_lower = topic.lower().strip()
-            if topic_lower in self._loaded_topics:
-                return self.pinyin_corrections
-            topic_path = base_dir / f'{topic_lower}.json'
-            entries = self._load_dict_file(topic_path, "PINYIN")
-            if entries is not None:
-                count = len(entries)
-                self.pinyin_corrections.update(entries)
-                if count:
-                    print(f"[PINYIN] 补充话题拼音纠正: {topic} ({topic_path.name}, +{count}条)", flush=True)
-                self._loaded_topics.add(topic_lower)
+        逻辑：关键词→拼音，文本→逐字拼音，找到拼音匹配的位置→替换为关键词。
+        例如：关键词"寅子"，ASR输出"银子" → 拼音都是 yin+zi → 替换为"寅子"。
 
-        # 通用拼音纠正（旧路径 pinyin_corrections/general.json，兼容未迁移的通用词典）
-        if '__general__' not in self._loaded_topics:
-            general_path = DICT_DIR / 'pinyin_corrections' / 'general.json'
-            if general_path.exists():
-                entries = self._load_dict_file(general_path, "PINYIN")
-                if entries is not None:
-                    count = len(entries)
-                    self.pinyin_corrections.update(entries)
-                    if count:
-                        print(f"[PINYIN] 加载通用拼音纠正: general.json (+{count}条)", flush=True)
-            self._loaded_topics.add('__general__')
-
-        return self.pinyin_corrections
-
-    def sync_protected_from_keywords(self):
-        """将已加载的 KW 关键词同步为受保护短语，防止纠正引擎修改已正确的关键词"""
-        for kw in self.kw_set:
-            if len(kw) >= 2:
-                self.protected_phrases.add(kw)
-
-    def apply_pinyin_dict_correction(self, text):
-        if not self.pinyin_corrections or not text:
+        Returns:
+            (corrected_text, corrections_list)
+            corrections_list: [(original, corrected), ...]
+        """
+        if not self.kw_set or not text or lazy_pinyin is None:
             return text, []
 
-        # 缓存排序后的字典条目，避免每次调用都重新排序
-        if not hasattr(self, '_sorted_pinyin_entries') or self._sorted_pinyin_entries is None:
-            self._sorted_pinyin_entries = sorted(
-                ((k, v) for k, v in self.pinyin_corrections.items() if not k.startswith('__')),
-                key=lambda x: len(x[0].split()), reverse=True)
-        sorted_entries = self._sorted_pinyin_entries
-
-        use_tone = any(
-            any(ch.isdigit() for ch in k) for k, v in sorted_entries
-        )
-
-        chars = list(text)
-        py_list = []
-        if lazy_pinyin is not None:
-            py_style = Style.TONE3 if use_tone else Style.NORMAL
-            for ch in chars:
-                try:
-                    py = lazy_pinyin(ch, style=py_style)
-                    py_list.append(py[0].lower() if py else ch.lower())
-                except (ValueError, TypeError, KeyError):
-                    py_list.append(ch.lower())
-        else:
-            py_list = [ch.lower() for ch in chars]
         corrections = []
-        result = []
-        i = 0
-        while i < len(chars):
-            replaced = False
-            for py_pattern, correct_text in sorted_entries:
-                syllables = py_pattern.lower().split()
-                n = len(syllables)
-                if i + n > len(chars):
-                    continue
+
+        # 提取文本中的中文字符及其位置和拼音
+        # 只处理中文字符，跳过标点、英文等
+        char_info = []  # [(index_in_text, char, pinyin), ...]
+        for i, ch in enumerate(text):
+            if '\u4e00' <= ch <= '\u9fff':
+                py = lazy_pinyin(ch, style=Style.NORMAL)[0]
+                char_info.append((i, ch, py))
+
+        if not char_info:
+            return text, []
+
+        # 对每个关键词，在文本中查找拼音匹配
+        for keyword in self.kw_set:
+            kw_py = self._get_kw_pinyin(keyword)
+            if not kw_py or len(kw_py) < 2:
+                continue
+
+            kw_len = len(kw_py)
+
+            # 滑动窗口匹配拼音序列
+            for start in range(len(char_info) - kw_len + 1):
+                # 检查拼音是否匹配
                 match = True
-                for j in range(n):
-                    key_syl = syllables[j]
-                    text_syl = py_list[i + j]
-                    if any(c.isdigit() for c in key_syl):
-                        if key_syl != text_syl:
-                            match = False
-                            break
-                    else:
-                        # 单音节无调key不允许通过剥离声调来匹配：
-                        # 例如 "hen"(无调) 不应匹配 "hen3"(很)，否则常见字会被误纠
-                        if n == 1:
-                            match = False
-                            break
-                        text_clean = ''.join(c for c in text_syl if not c.isdigit())
-                        if key_syl != text_clean:
-                            match = False
-                            break
+                for j in range(kw_len):
+                    if char_info[start + j][2] != kw_py[j]:
+                        match = False
+                        break
+
                 if not match:
                     continue
-                sub = ''.join(chars[i:i + n])
-                is_protected = sub in self.kw_set or sub in self.protected_phrases
-                if sub == correct_text:
-                    # 已经是正确文本，无需纠正
-                    result.append(sub)
-                elif is_protected:
-                    # 受保护的正确固定搭配，保留原样
-                    result.append(sub)
-                else:
-                    corrections.append((sub, correct_text))
-                    result.append(correct_text)
-                i += n
-                replaced = True
+
+                # 拼音匹配成功，检查原文是否已经是正确关键词
+                original = ''.join(char_info[start + k][1] for k in range(kw_len))
+                if original == keyword:
+                    continue  # 已经正确，不需要纠正
+
+                # 执行替换
+                idx_start = char_info[start][0]
+                idx_end = char_info[start + kw_len - 1][0]
+                text = text[:idx_start] + keyword + text[idx_end + 1:]
+                corrections.append((original, keyword))
+
+                # 重建 char_info（文本长度可能变化）
+                char_info = []
+                for i, ch in enumerate(text):
+                    if '\u4e00' <= ch <= '\u9fff':
+                        py = lazy_pinyin(ch, style=Style.NORMAL)[0]
+                        char_info.append((i, ch, py))
+
+                if not char_info:
+                    break
+
+                # 从头重新匹配（因为文本已变化）
                 break
-            if not replaced:
-                result.append(chars[i])
-                i += 1
-        corrected = ''.join(result)
-        if corrections:
-            print(f"    [PINYIN-DICT] {len(corrections)}处拼音纠正: {corrections[:5]}", flush=True)
-        return corrected, corrections
+
+        return text, corrections
 
 
 def text_similarity(text1, text2):

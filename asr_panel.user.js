@@ -218,8 +218,16 @@ var detectCreator, detectTitle;
             return null;
         }
         if (u.includes('douyu.com/')&&!u.includes('douyu.com/directory')) {
+            // 斗鱼主播名：优先从 anchorName 类名的 H3 标签提取（F12 可见，最可靠）
+            // 实际类名格式: anchorName__6NXv9（小写 a 开头，带 hash 后缀）
+            const anchorH3 = document.querySelector('h3[class*="anchorName"]');
+            if (anchorH3) {
+                const t = anchorH3.textContent.trim();
+                if (t.length >= 2 && t.length < 30) return t;
+            }
+            // 备用：其他常见选择器
             const sels = [
-                '[class*="Title-anchorName"]','[class*="AnchorName"]','[class*="anchor-name"]',
+                '[class*="anchorName"]','[class*="AnchorName"]','[class*="anchor-name"]',
                 '[class*="host-name"]','[class*="room-owner"]','[class*="anchor-info"] [class*="name"]',
                 '.Title-titleName','.title-name','[class*="host-info"]','[class*="room-title"]'
             ];
@@ -397,7 +405,6 @@ p.innerHTML = `<div id="asr-v3">
         <div style="display:flex;gap:4px">
             <select id="asr3-cat" class="asr3-sel" style="max-width:72px">
                 <option value="speaker">主讲人</option>
-                <option value="topic">话题</option>
                 <option value="other">关键词</option></select>
             <input id="asr3-inp" class="asr3-inp" placeholder="输入词或短语..." style="flex:1">
             <button id="asr3-add" style="padding:3px 8px;border:0;border-radius:5px;background:#58a6ff;color:#fff;cursor:pointer;font-size:11px;white-space:nowrap">+ 添加</button></div>
@@ -658,7 +665,6 @@ function onMsg(data) {
         case 'keywords_updated':
             if (data.keyword_store) keywordStore = data.keyword_store;
             updKws(data.keywords, data.keyword_store);
-            if (data.topic_auto_loaded&&data.topic_auto_loaded.count>0) {}
             break;
         case 'report': showReport(data.content); break;
         case 'save_report': downloadReport(data.content, data.filename); break;
@@ -781,10 +787,10 @@ function updKws(kws, ks) {
     const box = $('asr3-kws');
     if (!box) return;
     if (ks && Object.keys(ks).length > 0) {
-        const cc = {speaker:'#3fb950', topic:'#d2991d', other:'#58a6ff'};
+        const cc = {speaker:'#3fb950', other:'#58a6ff'};
         let h = '';
         const shown = new Set();
-        for (let cat of ['speaker','topic','other']) {
+        for (let cat of ['speaker','other']) {
             const words = ks[cat]; if (!words||!words.length) continue;
             for (let w of words) {
                 if (shown.has(w)) continue; shown.add(w);
@@ -794,9 +800,6 @@ function updKws(kws, ks) {
                     icon='\u{1f464} ';
                     if (matchedSpeakers.has(w)) extra=' title="\u753b\u50cf\u5e93\u5df2\u5339\u914d"';
                     else extra=' title="\u672a\u5339\u914d\u753b\u50cf\u5e93" style="opacity:0.55"';
-                } else if (cat==='topic') {
-                    icon='\u{1f4d6} ';
-                    extra=' title="\u8bdd\u9898" style="border-style:solid"';
                 }
                 h += '<span class="asr3-kw" style="border-color:'+(cc[cat]||'#888')+'"'+extra+'>'+icon+esc+'</span>';
             }

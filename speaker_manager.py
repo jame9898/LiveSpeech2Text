@@ -9,6 +9,47 @@ import time
 from pathlib import Path
 
 
+def _pre_denoise_audio(audio_data, sr=16000):
+    """音频预降噪：在 CAM++ 提取声纹 embedding 前进行基础降噪处理。
+    使用高通滤波（去除低频环境噪声）+ 简易谱减法，提升混音场景下的说话人区分度。
+    返回降噪后的音频数组（与输入相同长度和采样率）。
+    """
+    if len(audio_data) < sr * 0.1:  # 短于0.1s不处理
+        return audio_data
+
+    audio = np.asarray(audio_data, dtype=np.float32).copy()
+
+    # 1. 高通滤波：去除 80Hz 以下低频噪声（空调、风扇、电流声等）
+    try:
+        from scipy import signal
+        sos = signal.butter(4, 80, btype='highpass', fs=sr, output='sos')
+        audio = signal.sosfiltfilt(sos, audio)
+    except (ImportError, Exception):
+        # scipy 不可用或无 signal 模块时，回退到简易时域高通
+        alpha = 0.97
+        audio_hp = np.zeros_like(audio)
+        audio_hp[0] = audio[0]
+        for i in range(1, len(audio)):
+            audio_hp[i] = alpha * audio_hp[i - 1] + alpha * (audio[i] - audio[i - 1])
+        audio = audio_hp
+
+    # 2. 简易谱减法：估算噪声基底并衰减
+    # 取前 200ms 作为噪声参考（假设开头是静音/噪声段）
+    noise_samples = min(int(sr * 0.2), len(audio) // 4)
+    if noise_samples > 0:
+        noise_floor = np.mean(np.abs(audio[:noise_samples])) * 2.0
+        # 软阈值：低于噪声基底的部分衰减而非硬截断
+        mask = np.abs(audio) < noise_floor
+        audio[mask] *= 0.3  # 衰减到 30%，保留微弱语音信号
+
+    # 3. 归一化到 [-1, 1] 范围，避免削波
+    peak = np.max(np.abs(audio))
+    if peak > 1.0:
+        audio = audio / peak
+
+    return audio.astype(np.float32)
+
+
 
 
 class SpeakerManager:
@@ -105,6 +146,7 @@ class SpeakerManager:
         self.last_speaker_id = 0
         self._pending_new = None
         self._last_speaker_label = 'Speaker0'
+        self._host_speaker_label = None
         self._session_active_speakers = set()
         self._quick_recognized = False
         self._quality_reported = False
@@ -125,9 +167,9 @@ class SpeakerManager:
 
         v3.0 改进：精细化动态阈值 + 非线性软更新
         - 灰色地带(0.30-0.60)：非线性软更新声纹，相似度越高权重越大
-        - 新人冷启动：2次确认 + 保存所有原始embedding，确认后取均值
+        - 新人即时确认：首次检测即创建标签，无需累积确认
         - 短句降至0.5s也跑声纹
-        - 5段动态阈值：前2分钟极宽松→2-5分钟→5-15分钟→15-30分钟→30分钟后标准
+        - 统一标准阈值，实时区分不同说话人
         """
         import asyncio
 
@@ -147,7 +189,9 @@ class SpeakerManager:
         temp_path = self._temp_dir / f'sp_{timestamp}.wav'
         result = None
         try:
-            sf.write(str(temp_path), audio_data.astype(np.float32), 16000)
+            # 音频预降噪：提升 CAM++ 在混音场景下的说话人区分度
+            audio_denoised = _pre_denoise_audio(audio_data, sr=16000)
+            sf.write(str(temp_path), audio_denoised.astype(np.float32), 16000)
 
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
@@ -177,36 +221,14 @@ class SpeakerManager:
                 'label': 'Speaker0',
                 'quality': 1.0,
             })
-            print(f"[SPEAKER] 创建 Speaker0 (count=1)", flush=True)
+            self._host_speaker_label = 'Speaker0'  # 首个说话人自动设为主播
+            print(f"[SPEAKER] 创建 Speaker0 (count=1) [HOST]", flush=True)
             return 'Speaker0'
 
-        # ===== 精细化动态阈值（5段阶梯） =====
-        # 越久区分越准：前2分钟极宽松→逐步收紧→30分钟后标准
-        training_minutes = self.total_audio_seconds / 60.0
-        if training_minutes < 2.0:
-            # 阶段1: 极宽松，快速建立初始声纹
-            SAME_THRESHOLD = 0.50
-            NEW_THRESHOLD = 0.20
-        elif training_minutes < 5.0:
-            # 阶段2: 稍收紧
-            ratio = (training_minutes - 2.0) / 3.0
-            SAME_THRESHOLD = 0.50 + ratio * 0.03
-            NEW_THRESHOLD = 0.20 + ratio * 0.03
-        elif training_minutes < 15.0:
-            # 阶段3: 中等
-            ratio = (training_minutes - 5.0) / 10.0
-            SAME_THRESHOLD = 0.53 + ratio * 0.03
-            NEW_THRESHOLD = 0.23 + ratio * 0.03
-        elif training_minutes < 30.0:
-            # 阶段4: 接近标准
-            ratio = (training_minutes - 15.0) / 15.0
-            SAME_THRESHOLD = 0.56 + ratio * 0.04
-            NEW_THRESHOLD = 0.26 + ratio * 0.04
-        else:
-            # 阶段5: 标准阈值，稳定区分
-            SAME_THRESHOLD = 0.60
-            NEW_THRESHOLD = 0.30
-        REQUIRED_CONFIRMATIONS = 2
+        # ===== 统一标准阈值（实时区分，无宽限期） =====
+        SAME_THRESHOLD = 0.66
+        NEW_THRESHOLD = 0.36
+        REQUIRED_CONFIRMATIONS = 1  # 即时确认，首次检测即分配新标签
 
         best_score = -1.0
         best_idx = -1
