@@ -1,28 +1,29 @@
 # ============================================================
-# 在线实时语音识别系统 v1.0 — Python 依赖（GPU 版）
+# 在线实时语音识别系统 — Python 依赖（GPU 版）
 # ============================================================
-# 适用于 NVIDIA 显卡 + CUDA 12.4 环境
-# Python 3.10 ~ 3.12 (推荐 3.12)
+# 适用于 NVIDIA 显卡 + CUDA 12.6 环境
+# Python 3.12
 #
 # 安装方式:
 #   pip install -r requirements-gpu.txt
 #
 # ============================================================
 
---extra-index-url https://download.pytorch.org/whl/cu124
+--extra-index-url https://download.pytorch.org/whl/cu126
 
-# --- 深度学习引擎（GPU 版，CUDA 12.4）---
+# --- 深度学习引擎（GPU 版，CUDA 12.6）---
 torch>=2.6.0
 torchaudio>=2.6.0
+
+# --- ASR 模型识别引擎 ---
+qwen-asr>=0.0.6
 
 # --- 模型下载与管理 ---
 modelscope>=1.20.0
 
-# --- Qwen3-ASR 识别引擎 ---
-qwen-asr>=0.0.6
-
-# --- GPU 推理加速（可选，装不上也可降级运行）---
-flash-attn>=2.6.0 --no-build-isolation
+# --- transformers 生态（qwen-asr 依赖）---
+transformers>=4.40.0
+accelerate>=1.0.0
 
 # --- GUI 框架 ---
 PySide6>=6.5.0
@@ -32,17 +33,16 @@ websockets>=12.0
 
 # --- 音频处理 ---
 soundfile>=0.12.0
-
-# --- 拼音转换（纠正词匹配用）---
-pypinyin>=0.50.0
-
-# --- 科学计算（语音处理基础）---
-numpy>=1.24.0
-scipy>=1.10.0
 librosa>=0.10.0
 
+# --- 拼音转换 ---
+pypinyin>=0.50.0
+
+# --- 科学计算 ---
+numpy>=1.24.0
+scipy>=1.10.0
+
 # ============================================================
-# 自动依赖（pip 会自动安装，通常无需手动指定）
+# 以下由 qwen-asr 自动安装，无需手动指定：
+#   flask, gradio, nagisa, pytz, qwen-omni-utils, sox, soynlp
 # ============================================================
-# transformers  (qwen-asr 依赖)
-# accelerate    (qwen-asr 依赖)

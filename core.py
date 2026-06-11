@@ -21,6 +21,7 @@ silence_noisy_loggers()
 import torch
 import json
 import time
+import copy
 from pathlib import Path
 
 import os as _os
@@ -48,7 +49,7 @@ _DEFAULT_CONFIG = {
         "force_cut_sec": 6.0,
         "max_buffer_seconds": 30,
         "min_speech_duration": 0.08,
-        "threads": 8,
+        "threads": 4,
         "ws_port": 8765,
         "max_new_tokens": 128,
     }
@@ -98,7 +99,6 @@ def resolve_device(config=None):
 
 def get_default_config():
     """返回默认配置的深拷贝（供外部模块使用）"""
-    import copy
     return copy.deepcopy(_DEFAULT_CONFIG)
 
 
@@ -122,10 +122,10 @@ class ASREngine:
         elif preferred in ('qwen3-asr',):
             return self._try_load('_load_qwen3_asr', 'Qwen3-ASR')
         else:
-            # auto: try 1.7B first, then 0.6B
-            if self._try_load('_load_qwen3_asr', 'Qwen3-ASR', size='1.7B'):
-                return True
+            # auto: try 0.6B first (faster), then 1.7B
             if self._try_load('_load_qwen3_asr', 'Qwen3-ASR', size='0.6B'):
+                return True
+            if self._try_load('_load_qwen3_asr', 'Qwen3-ASR', size='1.7B'):
                 return True
             return False
 
@@ -198,7 +198,6 @@ class ASREngine:
                 model_path,
                 dtype=dtype,
                 device_map=device_map,
-                attn_implementation="flash_attention_2",
                 max_new_tokens=max_tokens,
             )
             print("[LOAD] Qwen3-ASR step4: model loaded", flush=True)
@@ -226,13 +225,12 @@ class ASREngine:
         return result
 
     def transcribe_array(self, audio_array, sr=16000):
-        """流式快速转录：直接接受numpy数组，跳过文件IO，用更少token加速"""
+        """流式快速转录：接受numpy数组，直接传给模型（避免临时WAV文件IO）"""
         start = time.time()
 
         if self.model is None:
             raise RuntimeError("ASR model not loaded")
 
-        import soundfile as sf
         import numpy as np
 
         audio_data = np.asarray(audio_array, dtype=np.float32)
@@ -243,18 +241,12 @@ class ASREngine:
             import librosa
             audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=16000)
 
-        import tempfile, os
-        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        tmp.close()
-        try:
-            sf.write(tmp.name, audio_data, 16000)
-            results = self.model.transcribe(
-                audio=tmp.name,
-                language=None,
-            )
-            result = results[0].text.strip()
-        finally:
-            os.unlink(tmp.name)
+        # 直接传 (ndarray, sr) 元组给 qwen-asr，跳过临时文件
+        results = self.model.transcribe(
+            audio=(audio_data, 16000),
+            language=None,
+        )
+        result = results[0].text.strip()
 
         elapsed = time.time() - start
         print(f"[OK] Streaming transcription done ({len(result)} chars, {elapsed:.1f}s)")

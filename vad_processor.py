@@ -9,10 +9,9 @@ import numpy as np
 
 class VADProcessor:
 
-    MUSIC_ZCR_THRESHOLD = 0.25
-    MUSIC_ENERGY_EPSILON = 1e-6
+    MUSIC_ENERGY_EPSILON = 1e-8
 
-    def __init__(self, vad_silence_threshold=0.85, vad_force_cut=True, vad_force_cut_sec=3.8,
+    def __init__(self, vad_silence_threshold=0.85, vad_force_cut=True, vad_force_cut_sec=6.0,
                  min_speech_duration=0.08,
                  max_buffer_seconds=30):
         self.vad_silence_threshold = vad_silence_threshold
@@ -150,25 +149,3 @@ class VADProcessor:
             return speech_segment, remaining, vad_info
 
         return None, None, vad_info
-
-    def is_music_like(self, audio_data):
-        """检测音频是否更像音乐/噪声而非语音。
-        语音有交替的高低能量（字间停顿），音乐/噪声能量更连续均匀。
-        返回 True 表示疑似音乐/噪声。"""
-        frame_len = int(16000 * 0.03)
-        hop_len = int(16000 * 0.01)
-        n_frames = max(1, (len(audio_data) - frame_len) // hop_len + 1)
-        n_frames = min(n_frames, 100)
-
-        energies = []
-        for i in range(n_frames):
-            start = i * hop_len
-            frame = audio_data[start:start + frame_len]
-            energies.append(np.sqrt(np.mean(frame ** 2) + 1e-12))
-
-        energies = np.array(energies)
-        if np.mean(energies) < self.MUSIC_ENERGY_EPSILON:
-            return True
-
-        cv = np.std(energies) / np.mean(energies)
-        return cv < 0.18

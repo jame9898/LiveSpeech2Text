@@ -41,6 +41,78 @@ class SpeakerManager:
 
         self.total_audio_seconds = 0
 
+    # ===== 公共属性（替代直接访问私有属性） =====
+
+    @property
+    def page_creator(self):
+        return self._page_creator
+
+    @property
+    def page_platform(self):
+        return self._page_platform
+
+    @property
+    def page_type(self):
+        return self._page_type
+
+    @property
+    def video_offset(self):
+        return self._video_offset
+
+    @property
+    def last_speaker_label(self):
+        return self._last_speaker_label
+
+    @last_speaker_label.setter
+    def last_speaker_label(self, value):
+        self._last_speaker_label = value
+
+    @property
+    def host_speaker_label(self):
+        return self._host_speaker_label
+
+    @property
+    def session_active_speakers(self):
+        return self._session_active_speakers
+
+    # ===== 公共方法 =====
+
+    def set_page_info(self, creator=None, platform=None, page_type=None, video_offset=None):
+        """设置页面信息（创作者、平台、类型、视频偏移）"""
+        if creator is not None:
+            self._page_creator = creator
+        if platform is not None:
+            self._page_platform = platform
+        if page_type is not None:
+            self._page_type = page_type
+        if video_offset is not None:
+            self._video_offset = video_offset
+
+    def add_active_speaker(self, name):
+        """添加活跃说话人"""
+        self._session_active_speakers.add(name)
+
+    def rename_speaker(self, speaker_id, new_label):
+        """重命名说话人"""
+        self._speaker_display_names[speaker_id] = new_label
+        for profile in self.speaker_profiles:
+            if profile.get('label') == speaker_id:
+                profile['alias'] = new_label
+                break
+
+    def reset_session(self):
+        """重置会话状态（start 和 clear 共享）"""
+        self.last_speaker_id = 0
+        self._pending_new = None
+        self._last_speaker_label = 'Speaker0'
+        self._session_active_speakers = set()
+        self._quick_recognized = False
+        self._quality_reported = False
+
+    def reset_speaker_profiles(self):
+        """清空所有说话人档案（clear 时调用）"""
+        self.speaker_profiles = []
+
     # ===== 声纹识别 =====
 
     async def detect_speaker(self, audio_data):
@@ -51,10 +123,11 @@ class SpeakerManager:
         同一个人：余弦相似度 ≈ 0.60–0.95
         不同人：  余弦相似度 ≈ 0.05–0.30
 
-        v2.9 改进：越用越灵敏
-        - 灰色地带(0.30-0.60)：软更新声纹，不再浪费数据
-        - 新人冷启动：3次确认 + 保存所有原始embedding，确认后取均值
+        v3.0 改进：精细化动态阈值 + 非线性软更新
+        - 灰色地带(0.30-0.60)：非线性软更新声纹，相似度越高权重越大
+        - 新人冷启动：2次确认 + 保存所有原始embedding，确认后取均值
         - 短句降至0.5s也跑声纹
+        - 5段动态阈值：前2分钟极宽松→2-5分钟→5-15分钟→15-30分钟→30分钟后标准
         """
         import asyncio
 
@@ -72,18 +145,25 @@ class SpeakerManager:
 
         timestamp = int(time.time() * 1000000)
         temp_path = self._temp_dir / f'sp_{timestamp}.wav'
+        result = None
         try:
             sf.write(str(temp_path), audio_data.astype(np.float32), 16000)
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
                 self.executor,
                 lambda: self.sv_pipeline([str(temp_path), str(temp_path)], output_emb=True))
         finally:
-            if temp_path.exists():
-                temp_path.unlink()
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except OSError:
+                pass
 
         try:
+            if result is None:
+                print(f"[SPEAKER] 声纹提取失败: result is None", flush=True)
+                return self._last_speaker_label
             embedding = np.array(result['embs'][0])
         except (KeyError, IndexError, TypeError) as e:
             print(f"[SPEAKER] 声纹提取失败: {e}, result keys={list(result.keys()) if isinstance(result, dict) else type(result)}", flush=True)
@@ -100,16 +180,32 @@ class SpeakerManager:
             print(f"[SPEAKER] 创建 Speaker0 (count=1)", flush=True)
             return 'Speaker0'
 
-        SAME_THRESHOLD = 0.60
-        NEW_THRESHOLD = 0.30
+        # ===== 精细化动态阈值（5段阶梯） =====
+        # 越久区分越准：前2分钟极宽松→逐步收紧→30分钟后标准
         training_minutes = self.total_audio_seconds / 60.0
         if training_minutes < 2.0:
-            SAME_THRESHOLD = 0.55
-            NEW_THRESHOLD = 0.25
+            # 阶段1: 极宽松，快速建立初始声纹
+            SAME_THRESHOLD = 0.50
+            NEW_THRESHOLD = 0.20
+        elif training_minutes < 5.0:
+            # 阶段2: 稍收紧
+            ratio = (training_minutes - 2.0) / 3.0
+            SAME_THRESHOLD = 0.50 + ratio * 0.03
+            NEW_THRESHOLD = 0.20 + ratio * 0.03
+        elif training_minutes < 15.0:
+            # 阶段3: 中等
+            ratio = (training_minutes - 5.0) / 10.0
+            SAME_THRESHOLD = 0.53 + ratio * 0.03
+            NEW_THRESHOLD = 0.23 + ratio * 0.03
         elif training_minutes < 30.0:
-            ratio = (training_minutes - 2.0) / 28.0
-            SAME_THRESHOLD = 0.55 + ratio * 0.05
-            NEW_THRESHOLD = 0.25 + ratio * 0.05
+            # 阶段4: 接近标准
+            ratio = (training_minutes - 15.0) / 15.0
+            SAME_THRESHOLD = 0.56 + ratio * 0.04
+            NEW_THRESHOLD = 0.26 + ratio * 0.04
+        else:
+            # 阶段5: 标准阈值，稳定区分
+            SAME_THRESHOLD = 0.60
+            NEW_THRESHOLD = 0.30
         REQUIRED_CONFIRMATIONS = 2
 
         best_score = -1.0
@@ -158,10 +254,15 @@ class SpeakerManager:
                     print(f"[SPEAKER] 候选新人({self._pending_new['count']}/{REQUIRED_CONFIRMATIONS}) score={best_score:.3f}", flush=True)
             return self.speaker_profiles[best_idx]['label']
 
-        # 灰色地带 (0.30 ~ 0.60)：软更新，不浪费数据
-        # 相似度越高，更新权重越大
-        weight = (best_score - NEW_THRESHOLD) / (SAME_THRESHOLD - NEW_THRESHOLD)
-        weight = weight * 0.5  # 最大0.5的权重，防止污染
+        # 灰色地带 (NEW_THRESHOLD ~ SAME_THRESHOLD)：非线性软更新
+        # 三段渐进：低相似度微量试探 → 中相似度线性爬升 → 高相似度加速收敛
+        normalized = (best_score - NEW_THRESHOLD) / (SAME_THRESHOLD - NEW_THRESHOLD)
+        if normalized < 0.30:
+            weight = normalized * 0.20          # 试探性微量更新
+        elif normalized < 0.65:
+            weight = 0.06 + (normalized - 0.30) * 0.50  # 线性爬升
+        else:
+            weight = 0.235 + (normalized - 0.65) * 0.65  # 加速收敛
         profile = self.speaker_profiles[best_idx]
         total_weight = profile['count'] + weight
         profile['embedding'] = (profile['embedding'] * profile['count'] + embedding * weight) / total_weight

@@ -96,7 +96,7 @@ class SettingsDialog(QDialog):
         r2.addWidget(QLabel("线程数:"))
         self._spn_threads = QSpinBox()
         self._spn_threads.setRange(1, 16)
-        self._spn_threads.setValue(self._settings.get("threads", 8))
+        self._spn_threads.setValue(self._settings.get("threads", 4))
         r2.addWidget(self._spn_threads)
         r2.addStretch()
         gl.addLayout(r2)

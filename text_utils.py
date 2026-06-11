@@ -5,8 +5,6 @@
 
 import re
 
-from pinyin_utils import lazy_pinyin, Style
-
 # ---- 常量 ----
 
 CN_NUM_MAP = {'零': '0', '一': '1', '二': '2', '三': '3', '四': '4',
@@ -76,61 +74,6 @@ def normalize_letter_adjacent_numbers(text):
             elif after.isalpha() and after.isascii():
                 chars[i] = CN_NUM_MAP[ch]
     return ''.join(chars)
-
-
-def levenshtein(s1, s2):
-    """Levenshtein编辑距离"""
-    if len(s1) < len(s2):
-        return levenshtein(s2, s1)
-    if len(s2) == 0:
-        return len(s1)
-    prev = list(range(len(s2) + 1))
-    for i, c1 in enumerate(s1):
-        curr = [i + 1]
-        for j, c2 in enumerate(s2):
-            cost = 0 if c1 == c2 else 1
-            curr.append(min(curr[-1] + 1, prev[j + 1] + 1, prev[j] + cost))
-        prev = curr
-    return prev[-1]
-
-
-def match_english_kw(text, keyword):
-    """英文/数字关键词后备匹配：标准化+子串+编辑距离"""
-    def _norm(s):
-        s = s.lower()
-        s = s.replace('0', 'o').replace('1', 'i').replace('3', 'e').replace('4', 'a')
-        return s
-
-    kw_norm = _norm(keyword)
-    if len(kw_norm) < 1:
-        return None
-    tokens = re.findall(r'[a-zA-Z0-9]+', text)
-    best_score = 0
-    best_token = None
-
-    for token in tokens:
-        tok_norm = _norm(token)
-        if len(tok_norm) < 1:
-            continue
-
-        # 子串包含
-        if kw_norm in tok_norm or tok_norm in kw_norm:
-            score = min(len(kw_norm), len(tok_norm)) / max(len(kw_norm), len(tok_norm))
-            if score > best_score:
-                best_score = score
-                best_token = token
-
-        # 编辑距离（容错ASR音译错误）
-        if abs(len(tok_norm) - len(kw_norm)) <= 3:
-            dist = levenshtein(tok_norm, kw_norm)
-            sim = 1 - dist / max(len(tok_norm), len(kw_norm))
-            if sim > best_score:
-                best_score = sim
-                best_token = token
-
-    if best_token and best_score >= 0.70:
-        return (best_token, best_score)
-    return None
 
 
 def dedup_overlap(prev_text, new_text):
@@ -203,34 +146,3 @@ def log_fmt_time(sec):
     if h > 0:
         return f"{h:02d}:{m:02d}:{s:05.2f}"
     return f"{m:02d}:{s:05.2f}"
-
-
-def fmt_time(sec, page_type, video_offset):
-    if page_type == 'live':
-        m = int(sec // 60)
-        s = sec % 60
-        if m > 0:
-            return f"T0+{m:02d}:{s:05.2f}"
-        return f"T0+{s:05.2f}"
-    abs_sec = sec + video_offset
-    return log_fmt_time(abs_sec)
-
-
-def text_similarity(text1, text2):
-    """计算两段文本的字符/拼音重叠度，判断是否为同一句话被ASR不同转写"""
-    t1 = re.sub(r'[^\u4e00-\u9fff]', '', text1)
-    t2 = re.sub(r'[^\u4e00-\u9fff]', '', text2)
-    if not t1 or not t2:
-        return 0.0
-    if len(t1) < 2 or len(t2) < 2:
-        return 0.0
-    chars1, chars2 = set(t1), set(t2)
-    char_overlap = len(chars1 & chars2) / max(len(chars1), len(chars2))
-    if lazy_pinyin is not None:
-        py1 = lazy_pinyin(t1, style=Style.NORMAL)
-        py2 = lazy_pinyin(t2, style=Style.NORMAL)
-        py_set1, py_set2 = set(py1), set(py2)
-        py_overlap = len(py_set1 & py_set2) / max(len(py_set1), len(py_set2)) if py_set1 and py_set2 else 0
-    else:
-        py_overlap = 0
-    return max(char_overlap, py_overlap)

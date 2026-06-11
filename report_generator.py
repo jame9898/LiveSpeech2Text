@@ -6,7 +6,8 @@
 import json
 from datetime import datetime
 
-from text_utils import log_fmt_time, text_similarity
+from text_utils import log_fmt_time
+from pinyin_utils import text_similarity
 
 
 def _build_segment_data(segments, display_names, video_offset):
@@ -39,12 +40,10 @@ def _build_segment_data(segments, display_names, video_offset):
 
 
 def generate_comprehensive_report(segments, speaker_profiles, keyword_history,
-                                   correction_records, correction_log,
+                                   correction_records,
                                    total_audio_seconds, asr_model_name,
                                    loaded_topics, page_type, video_offset,
-                                   session_active_speakers,
                                    display_names=None,
-                                   min_speech_duration=0.5,
                                    page_creator=None,
                                    session_start_time=None):
     """生成三板块结构化报告：对话正文 + 手动关键词 + 纠正明细"""
@@ -77,99 +76,6 @@ def generate_comprehensive_report(segments, speaker_profiles, keyword_history,
     lines.append(f"")
     lines.append("---")
     lines.append("")
-
-    # ═══ 语音密度时间线 ═══
-    seg_data, _ = _build_segment_data(segments, display_names, video_offset)
-
-    if seg_data and total_audio_seconds > 0:
-        lines.append("## 语音密度时间线")
-        lines.append("")
-        lines.append("*每个区块代表一个时间段，█ 越多表示该时段语音字符数越多*")
-        lines.append("")
-
-        # 按说话人分组统计
-        speaker_chars = {}
-        for sd in seg_data:
-            sp = sd['speaker_name']
-            speaker_chars.setdefault(sp, 0)
-            speaker_chars[sp] += len(sd['text'])
-
-        # 确定时间分片大小：总时长<5min→15s, <30min→30s, <2h→1min, else→2min
-        if total_audio_seconds < 300:
-            bucket_sec = 15
-        elif total_audio_seconds < 1800:
-            bucket_sec = 30
-        elif total_audio_seconds < 7200:
-            bucket_sec = 60
-        else:
-            bucket_sec = 120
-
-        # 统计每个时间片的字符数（按说话人）
-        buckets = {}  # bucket_idx -> {speaker: char_count}
-        for sd in seg_data:
-            idx = int(sd['time'] // bucket_sec)
-            buckets.setdefault(idx, {})
-            sp = sd['speaker_name']
-            buckets[idx].setdefault(sp, 0)
-            buckets[idx][sp] += len(sd['text'])
-
-        max_bucket = int(total_audio_seconds // bucket_sec)
-        max_chars = max(
-            (sum(sp_vals.values()) for sp_vals in buckets.values()),
-            default=1
-        )
-        bar_width = 30
-
-        # 按说话人分配符号
-        speaker_list = sorted(speaker_chars.keys(), key=lambda s: speaker_chars[s], reverse=True)
-        bar_chars = ['█', '▓', '▒', '░']
-        speaker_bar = {sp: bar_chars[i % len(bar_chars)] for i, sp in enumerate(speaker_list)}
-
-        for idx in range(max_bucket + 1):
-            t_start = idx * bucket_sec
-            t_end = min(t_start + bucket_sec, total_audio_seconds)
-            if page_type == 'live' and session_start_time:
-                # 直播：显示实际时钟时间
-                from datetime import timedelta
-                abs_start = session_start_time + timedelta(seconds=t_start)
-                abs_end = session_start_time + timedelta(seconds=t_end)
-                label = f"{abs_start.strftime('%H:%M:%S')}-{abs_end.strftime('%H:%M:%S')}"
-            elif page_type == 'live':
-                # 直播但无启动时间，降级为相对时间
-                h_s, m_s, s_s = int(t_start // 3600), int((t_start % 3600) // 60), int(t_start % 60)
-                h_e, m_e, s_e = int(t_end // 3600), int((t_end % 3600) // 60), int(t_end % 60)
-                label = f"{h_s:02d}:{m_s:02d}:{s_s:02d}-{h_e:02d}:{m_e:02d}:{s_e:02d}"
-            else:
-                # 视频：显示 T0+ 偏移时间
-                m_s, s_s = int(t_start // 60), int(t_start % 60)
-                m_e, s_e = int(t_end // 60), int(t_end % 60)
-                label = f"T0+{m_s:02d}:{s_s:02d}-T0+{m_e:02d}:{s_e:02d}"
-
-            sp_vals = buckets.get(idx, {})
-            total = sum(sp_vals.values())
-            bar_len = int(total / max_chars * bar_width) if max_chars > 0 else 0
-
-            # 按说话人比例分配柱状图
-            bar = ''
-            if total > 0 and bar_len > 0:
-                for sp in speaker_list:
-                    sp_len = round(sp_vals.get(sp, 0) / total * bar_len)
-                    bar += speaker_bar[sp] * sp_len
-
-            lines.append(f"`{label}` {bar} {total}")
-
-        lines.append("")
-
-        # 图例
-        if len(speaker_list) > 1:
-            legend_parts = []
-            for sp in speaker_list:
-                legend_parts.append(f"{speaker_bar[sp]} {sp}({speaker_chars[sp]}字)")
-            lines.append(f"图例: {' | '.join(legend_parts)}")
-
-        lines.append("")
-        lines.append("---")
-        lines.append("")
 
     # ═══ 板块一：对话正文 ═══
     lines.append("## 一、对话正文")
@@ -338,5 +244,75 @@ def merge_segments(segments):
                 prev['kw_corrected'] = prev.get('kw_corrected', False) or seg.get('kw_corrected', False)
                 continue
         merged.append(dict(seg))
+    segments.clear()
+    segments.extend(merged)
+
+
+def merge_short_trailing(segments):
+    """合并被VAD强行切分的短片段：
+    - VAD强制切分标记（当前段或前一段） + 同一说话人 + 间隔<1s → 合并
+    - 当前段≤12字 + 同一说话人 + 间隔<1s + 单侧有句末标点 → 合并
+    - 保留独立时间戳，只合并确认为误切的片段
+    """
+    if len(segments) < 2:
+        return
+    segments.sort(key=lambda s: s.get('time', 0))
+    PUNCT_END = set('。？！!?')
+    MAX_SHORT_LEN = 12
+
+    merged = []
+    for seg in segments:
+        if not merged:
+            merged.append(dict(seg))
+            continue
+        prev = merged[-1]
+        text = seg.get('text', '').strip()
+        prev_text = prev.get('text', '').strip()
+
+        if not text or not prev_text:
+            merged.append(dict(seg))
+            continue
+
+        # 检查时间间隔
+        seg_time = seg.get('time', 0)
+        prev_time = prev.get('time', 0)
+        prev_dur = prev.get('duration', 0)
+        gap = seg_time - (prev_time + prev_dur)
+        if gap >= 1.0:
+            merged.append(dict(seg))
+            continue
+
+        # 条件0：间隔≈0（VAD硬切分，两段连续语音被强制拆开）
+        if prev.get('speaker') == seg.get('speaker') and gap < 0.15:
+            prev['text'] = prev_text.rstrip() + ' ' + text.lstrip()
+            prev['duration'] = seg_time + seg.get('duration', 0) - prev_time
+            prev['corrections'] = prev.get('corrections', []) + seg.get('corrections', [])
+            prev['kw_corrected'] = prev.get('kw_corrected', False) or seg.get('kw_corrected', False)
+            continue
+
+        # 条件1：VAD强制切分标记 + 同一说话人 → 无论长度和标点都合并
+        # 注意：VAD forced标记在前一段（强制截断的段），当前段是其剩余部分
+        cur_forced = seg.get('vad', {}).get('forced', False) or False
+        prev_forced = prev.get('vad', {}).get('forced', False) or False
+        if prev.get('speaker') == seg.get('speaker') and (cur_forced or prev_forced):
+            prev['text'] = prev_text.rstrip() + ' ' + text.lstrip()
+            prev['duration'] = seg_time + seg.get('duration', 0) - prev_time
+            prev['corrections'] = prev.get('corrections', []) + seg.get('corrections', [])
+            prev['kw_corrected'] = prev.get('kw_corrected', False) or seg.get('kw_corrected', False)
+            continue
+
+        # 条件2：当前段短 + 单侧有句末标点（标点不对称说明是误切）
+        if prev.get('speaker') == seg.get('speaker') and len(text) <= MAX_SHORT_LEN:
+            text_end_has = text[-1] in PUNCT_END
+            prev_end_has = prev_text[-1] in PUNCT_END
+            if text_end_has != prev_end_has:
+                prev['text'] = prev_text.rstrip() + ' ' + text.lstrip()
+                prev['duration'] = seg_time + seg.get('duration', 0) - prev_time
+                prev['corrections'] = prev.get('corrections', []) + seg.get('corrections', [])
+                prev['kw_corrected'] = prev.get('kw_corrected', False) or seg.get('kw_corrected', False)
+                continue
+
+        merged.append(dict(seg))
+
     segments.clear()
     segments.extend(merged)

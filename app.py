@@ -7,6 +7,8 @@ from core import load_config
 
 import importlib.util
 
+SERVER_THREAD = None
+
 def check_deps():
     missing = []
     for mod in ["torch", "torchaudio", "qwen_asr", "PySide6"]:
@@ -219,17 +221,28 @@ def start_server_backend(config, log_cb):
                 st = config.get("model_settings", {})
                 port = st.get("ws_port", 8765)
 
-                import subprocess as _sp, platform as _plat
+                import subprocess as _sp, platform as _plat, os as _os
                 if _plat.system() == 'Windows':
+                    my_pid = str(_os.getpid())
                     try:
                         r = _sp.run(['netstat', '-ano'], capture_output=True, text=True)
                         for line in r.stdout.split('\n'):
                             if f':{port}' in line and 'LISTENING' in line:
                                 parts = line.strip().split()
                                 pid = parts[-1]
-                                _sp.run(['taskkill', '/F', '/PID', pid],
-                                        capture_output=True)
-                                log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u5df2\u91ca\u653e\u7aef\u53e3 {port} (\u65e7\u8fdb\u7a0b PID={pid})\n")
+                                if pid == my_pid:
+                                    log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u7aef\u53e3 {port} \u5c1a\u672a\u91ca\u653e\uff0c\u7b49\u5f85\u4e2d...\n")
+                                    # 等旧服务退出后再重试，最长等5秒
+                                    for _ in range(10):
+                                        import time as _t
+                                        _t.sleep(0.5)
+                                        r2 = _sp.run(['netstat', '-ano'], capture_output=True, text=True)
+                                        if not any(f':{port}' in l and 'LISTENING' in l for l in r2.stdout.split('\n')):
+                                            break
+                                else:
+                                    _sp.run(['taskkill', '/F', '/PID', pid],
+                                            capture_output=True)
+                                    log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u5df2\u91ca\u653e\u7aef\u53e3 {port} (\u65e7\u8fdb\u7a0b PID={pid})\n")
                                 break
                     except Exception:
                         pass
@@ -249,24 +262,34 @@ def start_server_backend(config, log_cb):
         SERVER_THREAD = threading.Thread(target=_run, daemon=True)
         SERVER_THREAD.start()
 
-        if not _model_ready.wait(timeout=120):
-            if _model_error[0]:
-                log_cb(f"[ERROR] \u670d\u52a1\u542f\u52a8\u5931\u8d25: {_model_error[0]}\n")
-            else:
-                log_cb("[ERROR] \u6a21\u578b\u52a0\u8f7d\u8d85\u65f6 (120s)\n")
-            return False
-        return True
+        # Return event and error holder for non-blocking polling
+        return _model_ready, _model_error
     except Exception as e:
         import traceback
         log_cb(f"[ERROR] {e}\n{traceback.format_exc()}\n")
-        return False
+        return None, [str(e)]
 
 
 def stop_server_backend(log_cb):
+    global SERVER_THREAD
     from server import _global_server
     if _global_server is not None:
         _global_server.is_running = False
+        # 关闭线程池，释放资源
+        if hasattr(_global_server, 'executor'):
+            _global_server.executor.shutdown(wait=False)
+        # 触发 shutdown_event 让服务端退出
+        if hasattr(_global_server, '_shutdown_event'):
+            _global_server._shutdown_event.set()
     log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u6b63\u5728\u505c\u6b62\u670d\u52a1...\n")
+    # 等待服务端线程真正退出（最多5秒）
+    if SERVER_THREAD is not None and SERVER_THREAD.is_alive():
+        SERVER_THREAD.join(timeout=5.0)
+        if SERVER_THREAD.is_alive():
+            log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] [WARN] \u670d\u52a1\u7ebf\u7a0b\u672a\u5728 5s \u5185\u9000\u51fa\n")
+        else:
+            log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u670d\u52a1\u5df2\u505c\u6b62\n")
+    SERVER_THREAD = None
 
 
 class MainWindow(QMainWindow):
@@ -494,12 +517,41 @@ class MainWindow(QMainWindow):
         self._emit_log(f"\n{'=' * 50}\n")
         self._emit_log(f"  \u542f\u52a8\u670d\u52a1 {ts}\n")
         self._emit_log(f"{'=' * 50}\n")
-        ok = start_server_backend(cfg, self._emit_log)
-        if ok:
+        ready_event, error_holder = start_server_backend(cfg, self._emit_log)
+        if ready_event is None:
+            self._emit_log("[ERROR] \u670d\u52a1\u542f\u52a8\u5931\u8d25\n")
+            return
+
+        # Disable start button immediately to prevent double-click
+        self._btn_start.setEnabled(False)
+        self._slbl.setText("\u542f\u52a8\u4e2d...")
+        self._slbl.setStyleSheet(f"font-size:15px;font-weight:bold;color:{LIGHT['yellow']}")
+        self._dot.setStyleSheet(f"background:{LIGHT['yellow']}")
+
+        self._wait_start_time = __import__("time").time()
+        self._ready_event = ready_event
+        self._error_holder = error_holder
+        self._wait_timer = QTimer()
+        self._wait_timer.setInterval(500)
+        self._wait_timer.timeout.connect(self._poll_server_ready)
+        self._wait_timer.start()
+
+    def _poll_server_ready(self):
+        if self._ready_event.is_set():
+            self._wait_timer.stop()
             self._running = True
             self._update_ui_state()
-        else:
-            self._emit_log("[ERROR] \u670d\u52a1\u542f\u52a8\u5931\u8d25\n")
+            self._emit_log("[OK] \u670d\u52a1\u5df2\u5c31\u7eea\n")
+        elif self._error_holder[0] is not None:
+            self._wait_timer.stop()
+            self._emit_log(f"[ERROR] \u670d\u52a1\u542f\u52a8\u5931\u8d25: {self._error_holder[0]}\n")
+            self._running = False
+            self._update_ui_state()
+        elif __import__("time").time() - self._wait_start_time > 120:
+            self._wait_timer.stop()
+            self._emit_log("[ERROR] \u6a21\u578b\u52a0\u8f7d\u8d85\u65f6 (120s)\n")
+            self._running = False
+            self._update_ui_state()
 
     def _stop_server(self):
         if not self._running:
@@ -507,6 +559,7 @@ class MainWindow(QMainWindow):
         stop_server_backend(self._emit_log)
         self._running = False
         self._update_ui_state()
+
 
     def _update_ui_state(self):
         if self._running:

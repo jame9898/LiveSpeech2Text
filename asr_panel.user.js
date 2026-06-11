@@ -715,14 +715,6 @@ function addSeg(text, speaker, ocrFixed, ocrCount, segTime, segDur, gapAudio, co
         div.appendChild(ts);
     }
 
-    if (gapAudio !== undefined && gapAudio > 1.5 && segCount > 1) {
-        const gb = document.createElement('span');
-        gb.style.cssText = 'font-size:10px;color:#f85149;margin-right:4px;font-weight:700';
-        gb.textContent = '⚠漏'+gapAudio.toFixed(1)+'s';
-        gb.title = '距上段音频间隔 '+gapAudio.toFixed(1)+'秒';
-        div.appendChild(gb);
-    }
-
     if (speaker) {
         const lbl = document.createElement('span');
         lbl.className = 'asr3-sp-label';

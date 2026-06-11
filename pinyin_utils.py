@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 拼音纠错工具模块
-拼音相似度计算 / KW关键词纠错 / 拼音字典纠正
+拼音字典纠正 / 文本相似度比对
 """
 
 import re
@@ -16,25 +16,27 @@ except ImportError:
 from core import DICT_DIR
 
 
+# ---- 关键词分类常量 ----
+
+CATEGORIES = {
+    'speaker': '主讲人',
+    'topic': '话题',
+    'other': '关键词',
+}
+
+CATEGORY_ICONS = {
+    'speaker': '👤',
+    'topic': '🏷',
+    'other': '📌',
+}
+
+
 class PinyinCorrector:
-
-    KW_MIN_LEN = 2
-    KW_SIMILARITY_THRESHOLD = 0.90
-
-    PHONETIC_MERGE = {
-        ('z','zh'),('zh','z'),('c','ch'),('ch','c'),('s','sh'),('sh','s'),
-        ('n','l'),('l','n'),('h','f'),('f','h'),('r','l'),('l','r'),
-        ('an','ang'),('ang','an'),('en','eng'),('eng','en'),
-        ('in','ing'),('ing','in'),
-    }
 
     def __init__(self, keyword_store=None):
         self._loaded_topics = set()
-        self._loaded_text_topics = set()
         self.pinyin_corrections = {}
-        self.text_corrections = {}
         self.load_pinyin_corrections()
-        self.load_text_corrections()
         # Initialize kw_set from keyword_store if provided
         if keyword_store:
             self.kw_set = set()
@@ -50,45 +52,14 @@ class PinyinCorrector:
     def reset_session(self):
         """重置会话状态：清空话题纠正、kw_set、日志等，重新加载基础词典"""
         self._loaded_topics.clear()
-        self._loaded_text_topics.clear()
         self.pinyin_corrections.clear()
-        self.text_corrections.clear()
+        self._sorted_pinyin_entries = None
         self.load_pinyin_corrections()
-        self.load_text_corrections()
         self.kw_set.clear()
         self.protected_phrases.clear()
         self.correction_log.clear()
         self.correction_records.clear()
         print(f"[PINYIN] 会话重置，已重新加载拼音纠错词典: {len(self.pinyin_corrections)}条", flush=True)
-
-    @staticmethod
-    def split_pinyin(py):
-        initials = ['zh','ch','sh','b','p','m','f','d','t','n','l',
-                    'g','k','h','j','q','x','r','z','c','s','y','w']
-        py_clean = py.rstrip('12345')
-        for init in initials:
-            if py_clean.startswith(init):
-                return init, py_clean[len(init):]
-        return '', py_clean
-
-    def pinyin_similar(self, py1, py2):
-        if py1 == py2:
-            return True
-        i1, f1 = self.split_pinyin(py1)
-        i2, f2 = self.split_pinyin(py2)
-        if (i1, i2) in self.PHONETIC_MERGE:
-            return True
-        if (f1, f2) in self.PHONETIC_MERGE:
-            return True
-        return False
-
-    def get_pinyin_list(self, text):
-        try:
-            if lazy_pinyin is None:
-                return list(text)
-            return lazy_pinyin(text, style=Style.TONE3)
-        except (ValueError, TypeError, KeyError):
-            return list(text)
 
     @staticmethod
     def _load_dict_file(path, label=""):
@@ -108,6 +79,7 @@ class PinyinCorrector:
 
     def load_pinyin_corrections(self, topic=None):
         """加载拼音→正确文字 纠错词典（按话题加载对应词典文件）"""
+        self._sorted_pinyin_entries = None  # 字典变更后清除缓存
         base_dir = DICT_DIR / 'corrections'
         base_dir.mkdir(exist_ok=True)
 
@@ -125,17 +97,17 @@ class PinyinCorrector:
                     print(f"[PINYIN] 补充话题拼音纠正: {topic} ({topic_path.name}, +{count}条)", flush=True)
                 self._loaded_topics.add(topic_lower)
 
-        # 网络/通信话题：加载 datacom.json（不在 general.json 中）
-        if topic and topic_lower in ('datacom', 'network', '网络', '路由', '通信', '华', '思科', 'tech'):
-            datacom_path = base_dir / 'datacom.json'
-            if 'datacom' not in self._loaded_topics:
-                entries = self._load_dict_file(datacom_path, "PINYIN")
+        # 通用拼音纠正（旧路径 pinyin_corrections/general.json，兼容未迁移的通用词典）
+        if '__general__' not in self._loaded_topics:
+            general_path = DICT_DIR / 'pinyin_corrections' / 'general.json'
+            if general_path.exists():
+                entries = self._load_dict_file(general_path, "PINYIN")
                 if entries is not None:
                     count = len(entries)
                     self.pinyin_corrections.update(entries)
                     if count:
-                        print(f"[PINYIN] 加载网络术语拼音纠正: datacom.json (+{count}条)", flush=True)
-                    self._loaded_topics.add('datacom')
+                        print(f"[PINYIN] 加载通用拼音纠正: general.json (+{count}条)", flush=True)
+            self._loaded_topics.add('__general__')
 
         return self.pinyin_corrections
 
@@ -148,9 +120,13 @@ class PinyinCorrector:
     def apply_pinyin_dict_correction(self, text):
         if not self.pinyin_corrections or not text:
             return text, []
-        sorted_entries = sorted(
-            ((k, v) for k, v in self.pinyin_corrections.items() if not k.startswith('__')),
-            key=lambda x: len(x[0].split()), reverse=True)
+
+        # 缓存排序后的字典条目，避免每次调用都重新排序
+        if not hasattr(self, '_sorted_pinyin_entries') or self._sorted_pinyin_entries is None:
+            self._sorted_pinyin_entries = sorted(
+                ((k, v) for k, v in self.pinyin_corrections.items() if not k.startswith('__')),
+                key=lambda x: len(x[0].split()), reverse=True)
+        sorted_entries = self._sorted_pinyin_entries
 
         use_tone = any(
             any(ch.isdigit() for ch in k) for k, v in sorted_entries
@@ -220,48 +196,22 @@ class PinyinCorrector:
             print(f"    [PINYIN-DICT] {len(corrections)}处拼音纠正: {corrections[:5]}", flush=True)
         return corrected, corrections
 
-    def load_text_corrections(self, topic=None):
-        """加载英文/数字文本直接替换纠错字典（辅助补丁，主纠错已用拼音完成）"""
-        base_dir = DICT_DIR / 'text_corrections'
-        base_dir.mkdir(exist_ok=True)
-        general_path = base_dir / 'general.json'
-        entries = self._load_dict_file(general_path, "TEXT")
-        if entries is not None:
-            self.text_corrections.update(entries)
-        if topic:
-            topic_lower = topic.lower().strip()
-            if topic_lower in self._loaded_text_topics:
-                return self.text_corrections
-            topic_path = base_dir / f'{topic_lower}.json'
-            entries = self._load_dict_file(topic_path, "TEXT")
-            if entries is not None:
-                self.text_corrections.update(entries)
-                if entries:
-                    print(f"[TEXT] 加载话题文本纠正: {topic} ({topic_path.name}, +{len(entries)}条)", flush=True)
-                self._loaded_text_topics.add(topic_lower)
-        return self.text_corrections
 
-    def apply_text_correction(self, text):
-        """对英文/数字token做直接文本替换（大小写不敏感，整词匹配）"""
-        if not self.text_corrections or not text:
-            return text, []
-
-        sorted_entries = sorted(
-            ((k, v) for k, v in self.text_corrections.items() if not k.startswith('__')),
-            key=lambda x: len(x[0]), reverse=True)
-
-        corrections = []
-        result = text
-
-        for pattern, replacement in sorted_entries:
-            if pattern == replacement:
-                continue
-            regex = re.compile(r'(?<![a-zA-Z0-9])' + re.escape(pattern) + r'(?![a-zA-Z0-9])', re.IGNORECASE)
-            new_result, count = regex.subn(replacement, result)
-            if count > 0:
-                corrections.append((pattern, replacement))
-                result = new_result
-
-        if corrections:
-            print(f"    [TEXT] {len(corrections)}处文本纠正: {corrections[:5]}", flush=True)
-        return result, corrections
+def text_similarity(text1, text2):
+    """计算两段文本的字符/拼音重叠度，判断是否为同一句话被ASR不同转写"""
+    t1 = re.sub(r'[^\u4e00-\u9fff]', '', text1)
+    t2 = re.sub(r'[^\u4e00-\u9fff]', '', text2)
+    if not t1 or not t2:
+        return 0.0
+    if len(t1) < 2 or len(t2) < 2:
+        return 0.0
+    chars1, chars2 = set(t1), set(t2)
+    char_overlap = len(chars1 & chars2) / max(len(chars1), len(chars2))
+    if lazy_pinyin is not None:
+        py1 = lazy_pinyin(t1, style=Style.NORMAL)
+        py2 = lazy_pinyin(t2, style=Style.NORMAL)
+        py_set1, py_set2 = set(py1), set(py2)
+        py_overlap = len(py_set1 & py_set2) / max(len(py_set1), len(py_set2)) if py_set1 and py_set2 else 0
+    else:
+        py_overlap = 0
+    return max(char_overlap, py_overlap)
