@@ -12,7 +12,6 @@
 // @match        *://*.egame.qq.com/*
 // @grant        GM_addStyle
 // @grant        GM_getValue
-// @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      localhost
 // @connect      127.0.0.1
@@ -64,6 +63,7 @@ let _pendingSegs = [];
 // WebSocket via Web Worker (bypasses CSP)
 const _WS_WORKER_CODE = 'const U=["ws://localhost:8765","ws://127.0.0.1:8765"];let s=null,a=0,t=null;function c(i){if(i>=U.length){p("s",{ok:0,msg:"无法连接"});a++;t=setTimeout(function(){c(0)},Math.min(2000*Math.pow(1.5,a),30000));return}try{s=new WebSocket(U[i]);s.binaryType="arraybuffer";s.onopen=function(){p("s",{ok:1});a=0;if(t){clearTimeout(t);t=null}};s.onmessage=function(e){p("m",e.data)};s.onclose=function(e){p("s",{ok:0,msg:"断开 ("+(e.code||"?")+")"});s=null;a++;t=setTimeout(function(){c(0)},Math.min(2000*Math.pow(1.5,a),30000))};s.onerror=function(){p("s",{ok:0,msg:"无法连接"});if(s){s.close();s=null}}}catch(e){p("s",{ok:0,msg:"无法连接"});a++;t=setTimeout(function(){c(0)},Math.min(2000*Math.pow(1.5,a),30000))}}function p(y,d){try{self.postMessage({t:y,d:d})}catch(e){}}self.onmessage=function(e){var m=e.data;if(m.t==="c"){c(0)}else if(m.t==="s"){if(s&&s.readyState===1){try{s.send(m.d)}catch(e){}}}else if(m.t==="x"){if(t){clearTimeout(t);t=null}a=0;if(s){try{s.close()}catch(e){}s=null}}};';
 let _wsWorker = null, _wsReady = false;
+
 function _wsInit() {
     if (_wsWorker) return;
     try {
@@ -110,12 +110,18 @@ function _wsClose() {
     _wsReady = false;
 }
 
+function _hostMatch(domain) {
+    try { return location.hostname === domain || location.hostname.endsWith('.' + domain); }
+    catch(e) { return false; }
+}
+
 function isVideoPage() {
     const u = location.href;
+    const host = location.hostname;
 
-    if (u.includes('bilibili.com')) {
+    if (_hostMatch('bilibili.com')) {
         if (u.includes('/video/') || u.includes('bangumi/play')) return _hasInteractiveVideo();
-        if (u.includes('live.bilibili.com')) {
+        if (_hostMatch('live.bilibili.com')) {
             // B站直播房间页：URL含数字ID或blanc/数字ID时返回true
             // 首页(live.bilibili.com/) 和 目录页(/p/eden/area等) 不显示插件
             if (/live\.bilibili\.com\/(\d+|blanc\/\d+|blackboard\/)/.test(u)) return true;
@@ -124,7 +130,7 @@ function isVideoPage() {
         return false;
     }
 
-    if (u.includes('douyu.com')) {
+    if (_hostMatch('douyu.com')) {
         if (u.includes('/directory') || u.includes('/topic') || u.includes('/myFollow')) return false;
         // 房间页：www.douyu.com/房间号
         if (/douyu\.com\/(\d+)/.test(u)) return true;
@@ -132,21 +138,21 @@ function isVideoPage() {
         return false;
     }
 
-    if (u.includes('youtube.com')) {
+    if (_hostMatch('youtube.com')) {
         if (u.includes('/watch') || u.includes('/shorts/') || u.includes('/live/')) return _hasInteractiveVideo();
         return false;
     }
 
-    if (u.includes('huya.com')) {
+    if (_hostMatch('huya.com')) {
         if (u.includes('/topic') || u.includes('/user') || u.includes('/myFollow') || u.includes('/directory')) return false;
         const m = u.match(/huya\.com\/([^/?#]+)/);
         if (m && m[1]) return true;
         return false;
     }
 
-    if (u.includes('douyin.com') || u.includes('v.douyin.com')) return _hasInteractiveVideo();
+    if (_hostMatch('douyin.com') || host === 'v.douyin.com') return _hasInteractiveVideo();
 
-    if (u.includes('cc.163.com/') || u.includes('egame.qq.com/')) return _hasInteractiveVideo();
+    if (_hostMatch('cc.163.com') || _hostMatch('egame.qq.com')) return _hasInteractiveVideo();
 
     return false;
 }
@@ -623,7 +629,8 @@ function onMsg(data) {
     switch(data.type) {
         case 'welcome':
             if (Date.now()-lastWelcomeTime>5000) $('asr3-st').textContent = '模型: '+(data.model||'?')+' | 就绪';
-            lastWelcomeTime = Date.now(); break;
+            lastWelcomeTime = Date.now();
+            break;
         case 'status':
             const st = $('asr3-st');
             if (data.status==='recording') { st.style.background='rgba(248,81,73,.08)'; st.style.color='#f85149'; st.textContent='🔴 识别中...'; }
@@ -757,7 +764,11 @@ function addSeg(text, speaker, ocrFixed, ocrCount, segTime, segDur, gapAudio, co
 function showReport(txt) {
     const el = $('asr3-txt');
     if (!el) return;
-    el.innerHTML = '<div style="color:#c9d1d9;padding:4px 0;line-height:1.8;white-space:pre-wrap">'+txt+'</div>';
+    el.innerHTML = '';
+    const div = document.createElement('div');
+    div.style.cssText = 'color:#c9d1d9;padding:4px 0;line-height:1.8;white-space:pre-wrap';
+    div.textContent = txt;
+    el.appendChild(div);
 }
 
 function downloadReport(content, filename) {

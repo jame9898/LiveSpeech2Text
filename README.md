@@ -1,6 +1,6 @@
 # LiveSpeech2Text — 在线实时语音识别
 
-基于 **Qwen3-ASR** 的中文实时语音识别工具。浏览器采集音频（Chrome 标签页或全屏共享），经 WebSocket 送到本地服务端做 VAD 断句、ASR 识别、说话人分离，识别结果（通过**伪流式**传输）回传前端展示。带 PySide6 桌面管理面板和 Tampermonkey 油猴插件。
+基于 **Qwen3-ASR-hf**（HuggingFace Transformers 原生版）的中文实时语音识别工具。浏览器采集音频（Chrome 标签页或全屏共享），经 WebSocket 送到本地服务端做 VAD 断句、ASR 识别、说话人分离，识别结果（通过**伪流式**传输）回传前端展示。带 PySide6 桌面管理面板和 Tampermonkey 油猴插件。
 
 ---
 
@@ -31,22 +31,27 @@ cd LiveSpeech2Text
 python -m venv venv
 venv\Scripts\activate
 
-# 3. 安装依赖
+# 3. 安装依赖（必须用 venv 的 pip）
+# 注意：本版依赖源码版 transformers（Qwen3-ASR 的 qwen3_asr 架构
+# 尚未进入正式 release）。requirements 已配置为 git 安装，
+# 若 git clone 失败，见文末「常见问题」的离线安装方法。
 pip install -r requirements.txt          # CPU 环境
 # 或
 pip install -r requirements-gpu.txt      # GPU + CUDA 环境
 
-# 4. 下载模型（根据需求选一个，自动保存到 models/）
-# Qwen3-ASR 0.6B — 轻量，CPU 能跑
-python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', cache_dir='models')"
-# Qwen3-ASR 1.7B — 精度更高，需 GPU 和更多内存
-python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', cache_dir='models')"
+# 4. 下载模型（HF 原生版，根据需求选一个）
+# 已内置 HF_ENDPOINT=hf-mirror 镜像加速，首次运行会自动下载到 HF 缓存。
+# 手动预下载（需在 venv 下执行）：
+# Qwen3-ASR 0.6B-hf — 轻量，CPU 能跑
+venv\Scripts\python.exe -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B-hf')"
+# Qwen3-ASR 1.7B-hf — 精度更高，需 GPU 和更多内存
+venv\Scripts\python.exe -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B-hf')"
 
 # 5.（可选）下载说话人识别模型 CAM++，约 27MB
-python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common', cache_dir='models')"
+venv\Scripts\python.exe -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common', cache_dir='models')"
 
-# 6. 启动桌面面板
-python app.py
+# 6. 启动桌面面板（用 venv 的 python；或直接双击 start.bat）
+venv\Scripts\python.exe app.py
 ```
 
 更新已有本地仓库：
@@ -90,12 +95,11 @@ git pull
 
 ## 可用模型
 
-| 模型 | 大小 | 用途 | 下载命令（ModelScope ID） |
+| 模型 | 大小 | 用途 | 下载命令（HuggingFace ID） |
 |---|---|---|---|
-| Qwen3-ASR 0.6B | ~2.0 GB | 语音识别，CPU 能跑 | `Qwen/Qwen3-ASR-0.6B` |
-| Qwen3-ASR 1.7B | ~4.4 GB | 语音识别，精度最高，建议 GPU | `Qwen/Qwen3-ASR-1.7B` |
+| Qwen3-ASR 0.6B-hf | ~2.0 GB | 语音识别，CPU 能跑 | `Qwen/Qwen3-ASR-0.6B-hf` |
+| Qwen3-ASR 1.7B-hf | ~4.4 GB | 语音识别，精度最高，建议 GPU | `Qwen/Qwen3-ASR-1.7B-hf` |
 | CAM++ | ~27 MB | 说话人声纹识别 | `iic/speech_campplus_sv_zh-cn_16k-common` |
-| FSMN-VAD | ~4 MB | 语音活动检测（自动随 modelscope 加载） | `iic/speech_fsmn_vad_zh-cn-16k-common-pytorch` |
 
 ---
 
@@ -114,7 +118,7 @@ git pull
 ├── app.py                 # PySide6 桌面 GUI（启动/停止/设置/日志/系统托盘）
 ├── server.py              # WebSocket 服务端（音频接收/VAD调度/转录/关键词纠正/报告/网页渲染）
 ├── core.py                # ASR 引擎和模型加载（Qwen3-ASR）
-├── vad_processor.py       # 自适应 VAD 语音活动检测（静音断句/强制切分/音乐噪声检测）
+├── vad_processor.py       # 自适应能量阈值 VAD（语速感知静音断句/强制切分/三级兜底）
 ├── speaker_manager.py     # CAM++ 说话人管理（声纹检测/冷启动三级确认/灰色软更新/质量评估）
 ├── pinyin_utils.py        # 关键词管理 + 文本相似度比对
 ├── creator_detector.py    # 创作者识别器（从 B站/斗鱼 URL 提取 UP 主/主播名）
@@ -139,13 +143,29 @@ git pull
 ## 常见问题
 
 **模型加载失败**
-检查 `models/` 目录下是否有对应的模型文件夹。没有则按上面「快速开始」中的命令下载。
+检查以下位置是否有对应的 `-hf` 模型文件夹：
+- 项目内 `models/Qwen3-ASR-1.7B-hf/`（需含 `config.json`、`model.safetensors` 等）
+- HF 缓存 `~/.cache/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B-hf/`
+没有则按上面「快速开始」中的命令下载。注意：浏览器下载的文件若被加了 `_` 后缀
+（如 `config.json_`），需重命名去掉后缀，否则加载会报错。
 
 **CPU 模式识别慢**
-如有 NVIDIA GPU，改用 1.7B + CUDA 可大幅提速。
+如有 NVIDIA GPU，在「设置」里设备选 cuda，并选用 Qwen3-ASR 1.7B-hf 可大幅提速。
 
 **说话人一直显示 Speaker0**
 需积累一定量的语音样本后才会开始区分不同说话人。此外，少于 3 个中文字的短句会自动继承前一句的说话人标签。
+
+**transformers 源码版 git 安装失败（国内 git clone 超时）**
+改用 zip 包离线安装：
+```powershell
+# 下载 main 分支 zip
+python -c "import urllib.request; urllib.request.urlretrieve('https://codeload.github.com/huggingface/transformers/zip/refs/heads/main','transformers-main.zip')"
+# 解压后本地安装
+Expand-Archive transformers-main.zip
+venv\Scripts\pip install .\transformers-main\transformers-main
+# 清理
+Remove-Item transformers-main.zip, transformers-main -Recurse
+```
 
 ---
 
@@ -159,6 +179,7 @@ Remove-Item -Recurse -Force "C:\path\to\LiveSpeech2Text"
 
 # 删除 ModelScope 自动缓存的模型（可选）
 Remove-Item -Recurse -Force "$env:USERPROFILE\.cache\modelscope"
+Remove-Item -Recurse -Force "$env:USERPROFILE\.cache\huggingface"  # HF 版 ASR 模型缓存
 ```
 
 Tampermonkey 插件：在浏览器 Tampermonkey 管理面板中删除 `LiveSpeech2Text V1.0` 脚本。

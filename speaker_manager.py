@@ -3,6 +3,7 @@
 说话人管理器 — 声纹识别、说话人命名
 封装 CAM++ 说话人分离相关的所有状态和方法
 """
+import asyncio
 import numpy as np
 import soundfile as sf
 import time
@@ -59,6 +60,9 @@ class SpeakerManager:
                  dict_dir=None, temp_dir=None):
         self.sv_pipeline = sv_pipeline
         self.executor = executor
+
+        # 保护 speaker_profiles / _pending_new / last_speaker_label 等共享状态
+        self._lock = None
 
         self.speaker_profiles = []
         self.last_speaker_id = 0
@@ -157,6 +161,16 @@ class SpeakerManager:
 
     # ===== 声纹识别 =====
 
+    def _ensure_lock(self):
+        """延迟初始化 asyncio.Lock，避免在不可运行事件循环的线程中创建"""
+        if self._lock is None:
+            try:
+                asyncio.get_running_loop()
+                self._lock = asyncio.Lock()
+            except RuntimeError:
+                pass
+        return self._lock
+
     async def detect_speaker(self, audio_data):
         """
         说话人识别 — 使用 CAM++ 声纹嵌入 (达摩院 3D-Speaker)
@@ -166,13 +180,11 @@ class SpeakerManager:
         不同人：  余弦相似度 ≈ 0.05–0.30
 
         v3.0 改进：精细化动态阈值 + 非线性软更新
-        - 灰色地带(0.30-0.60)：非线性软更新声纹，相似度越高权重越大
+        - 灰色地带(0.36-0.66)：非线性软更新声纹，相似度越高权重越大
         - 新人即时确认：首次检测即创建标签，无需累积确认
         - 短句降至0.5s也跑声纹
         - 统一标准阈值，实时区分不同说话人
         """
-        import asyncio
-
         MIN_DURATION = int(16000 * 0.5)
         if len(audio_data) < MIN_DURATION:
             audio_data = np.pad(audio_data, (0, MIN_DURATION - len(audio_data)))
@@ -214,6 +226,14 @@ class SpeakerManager:
             return self._last_speaker_label
         embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
 
+        lock = self._ensure_lock()
+        if lock is None:
+            return await self._detect_speaker_sync(embedding)
+        async with lock:
+            return await self._detect_speaker_sync(embedding)
+
+    async def _detect_speaker_sync(self, embedding):
+        """在锁保护下执行说话人识别（所有共享状态修改在此完成）"""
         if not self.speaker_profiles:
             self.speaker_profiles.append({
                 'embedding': embedding.copy(),
@@ -222,6 +242,7 @@ class SpeakerManager:
                 'quality': 1.0,
             })
             self._host_speaker_label = 'Speaker0'  # 首个说话人自动设为主播
+            self._last_speaker_label = 'Speaker0'
             print(f"[SPEAKER] 创建 Speaker0 (count=1) [HOST]", flush=True)
             return 'Speaker0'
 
@@ -247,6 +268,7 @@ class SpeakerManager:
             profile['quality'] = min(1.0, profile['count'] / 30.0)
             if profile['count'] % 20 == 0:
                 print(f"[SPEAKER] {profile['label']} 声纹成熟度: {profile['count']}样本 (quality={profile['quality']:.2f})", flush=True)
+            self._last_speaker_label = profile['label']
             self._check_voiceprint_quality()
             return profile['label']
 
@@ -270,6 +292,7 @@ class SpeakerManager:
                         'quality': 0.1,
                     })
                     self._pending_new = None
+                    self._last_speaker_label = label
                     print(f"[SPEAKER] 新角色确认: {label} (来自{len(emb_list)}个样本均值)", flush=True)
                     return label
                 else:
@@ -291,6 +314,7 @@ class SpeakerManager:
         profile['count'] += weight
         print(f"[SPEAKER] 灰色软更新 {profile['label']} score={best_score:.3f} weight={weight:.2f} count={profile['count']:.1f}", flush=True)
         self._reset_pending_speaker()
+        self._last_speaker_label = profile['label']
         return profile['label']
 
     def _reset_pending_speaker(self):

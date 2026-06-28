@@ -1,19 +1,21 @@
 @echo off
 cd /d "%~dp0"
 
-where python >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [ERROR] Python 3.10+ not found in PATH
-    echo Please install Python 3.10+ first: https://www.python.org/downloads/
+REM HF 版必须使用项目内 venv 的 Python（含源码版 transformers，支持 qwen3_asr 架构）
+set "PY=%~dp0venv\Scripts\python.exe"
+set "PYW=%~dp0venv\Scripts\pythonw.exe"
+
+if not exist "%PY%" (
+    echo [ERROR] venv not found: %PY%
+    echo Please create venv first:  python -m venv venv
+    echo Then install deps:         venv\Scripts\pip install -r requirements-gpu.txt
     pause
     exit /b 1
 )
 
-for /f "delims=" %%i in ('python -c "import sys,os;print(os.path.dirname(sys.executable))"') do set "PYDIR=%%i"
-
-if not exist "%PYDIR%\pythonw.exe" (
+if not exist "%PYW%" (
     echo [WARN] pythonw.exe not found, using python.exe instead
-    start "" python app.py
+    start "" "%PY%" app.py
 ) else (
-    start "" "%PYDIR%\pythonw.exe" app.py
+    start "" "%PYW%" app.py
 )

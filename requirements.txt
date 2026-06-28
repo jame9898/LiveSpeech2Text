@@ -1,8 +1,11 @@
 # ============================================================
-# 在线实时语音识别系统 — Python 依赖（CPU 版）
+# 在线实时语音识别系统 — Python 依赖（CPU 版，HF 原生版）
 # ============================================================
 # 适用于无 GPU 或仅 CPU 推理环境
 # Python 3.10 ~ 3.12
+#
+# 本版本使用 Qwen3-ASR-*-hf（HuggingFace Transformers 原生），
+# 不再依赖 qwen-asr SDK。
 #
 # 安装方式:
 #   pip install -r requirements.txt
@@ -13,14 +16,29 @@
 torch>=2.6.0
 torchaudio>=2.6.0
 
-# --- ASR 模型识别引擎 ---
-qwen-asr>=0.0.6
+# --- ASR 模型识别引擎（HF 原生版，无需 qwen-asr SDK）---
+# Qwen3-ASR-*-hf 由 transformers 原生加载
 
 # --- 模型下载与管理 ---
-modelscope>=1.20.0
+modelscope>=1.20.0          # 仍用于 CAM++ 说话人模型下载
+# modelscope pipeline 隐式依赖（speaker_verification 需要，[framework] 核心子集）
+addict>=2.4.0
+attrs>=23.0.0
+datasets>=4.0.0
+einops>=0.7.0
+Pillow>=10.0.0
+simplejson>=3.19.0
+sortedcontainers>=2.4.0
+huggingface_hub>=0.25.0     # HF 版 ASR 模型下载
 
-# --- transformers 生态（qwen-asr 依赖）---
-transformers>=4.40.0
+# --- transformers 生态 ---
+# transformers 源码版：Qwen3-ASR-*-hf 的 qwen3_asr 架构尚未进入正式 release
+# 见 https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf （"install from source"）
+# 国内 git clone 易失败，推荐先下载 zip 再本地安装：
+#   pip install git+https://github.com/huggingface/transformers
+# 或下载 https://codeload.github.com/huggingface/transformers/zip/refs/heads/main 解压后
+#   pip install ./transformers-main
+transformers @ git+https://github.com/huggingface/transformers
 accelerate>=1.0.0
 
 # --- GUI 框架 ---
@@ -41,6 +59,10 @@ numpy>=1.24.0
 scipy>=1.10.0
 
 # ============================================================
-# 以下由 qwen-asr 自动安装，无需手动指定：
-#   flask, gradio, nagisa, pytz, qwen-omni-utils, sox, soynlp
+# 说明：
+#   - HF 版不再安装 qwen-asr，因此 flask / gradio / qwen-omni-utils /
+#     sox 等不再被自动引入（本项目未直接使用它们）。
+#   - VAD 使用内置自适应能量阈值实现（vad_processor.py），无外部依赖。
+#   - 若后续需要强制对齐(Forced Alignment)功能，再按需安装：
+#       pip install nagisa soynlp
 # ============================================================

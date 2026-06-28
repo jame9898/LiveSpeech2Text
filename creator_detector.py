@@ -5,8 +5,87 @@
 import re
 import json
 import time
+import ipaddress
 import html as html_mod
 import urllib.request
+from urllib.parse import urlparse
+
+# 允许的域名白名单，防止 SSRF 攻击
+_ALLOWED_DOMAINS = {
+    'bilibili.com', 'www.bilibili.com', 'api.bilibili.com', 'live.bilibili.com',
+    'douyu.com', 'www.douyu.com', 'open.douyucdn.cn',
+    'huya.com', 'www.huya.com',
+    'youtube.com', 'www.youtube.com',
+}
+# 内网/私有/链路本地/回环地址段（IPv4 + IPv6）
+_INTERNAL_NETWORKS = [
+    ipaddress.ip_network('10.0.0.0/8'),
+    ipaddress.ip_network('172.16.0.0/12'),
+    ipaddress.ip_network('192.168.0.0/16'),
+    ipaddress.ip_network('127.0.0.0/8'),
+    ipaddress.ip_network('169.254.0.0/16'),
+    ipaddress.ip_network('0.0.0.0/8'),
+    ipaddress.ip_network('100.64.0.0/10'),  # 运营商级 NAT
+    ipaddress.ip_network('::1/128'),
+    ipaddress.ip_network('fe80::/10'),
+    ipaddress.ip_network('fc00::/7'),
+    ipaddress.ip_network('::ffff:0:0/96'),  # IPv4 映射
+]
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """禁止 urllib 自动跟随 302/301 重定向，避免白名单域名跳到内网"""
+    def http_error_302(self, req, fp, code, msg, headers):
+        raise urllib.error.HTTPError(req.get_full_url(), code, msg, headers, fp)
+    http_error_301 = http_error_303 = http_error_307 = http_error_302
+
+
+def _is_internal_ip(addr):
+    """检查 IP 地址是否在禁止访问的内网段内"""
+    for net in _INTERNAL_NETWORKS:
+        if addr in net:
+            return True
+    return False
+
+
+def _is_safe_url(url):
+    """检查 URL 是否安全：仅允许 http/https，域名在白名单内，解析 IP 非内网"""
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+        # 仅允许 http / https
+        if parsed.scheme not in ('http', 'https'):
+            return False
+        # 域名白名单：精确匹配或二级域在白名单中
+        host = hostname.lower()
+        if host not in _ALLOWED_DOMAINS:
+            # 检查二级域是否在白名单，例如 api.bilibili.com
+            parts = host.split('.')
+            if len(parts) < 2 or ('.'.join(parts[-2:]) not in _ALLOWED_DOMAINS):
+                return False
+        # 解析域名到 IP，检查所有解析结果是否均为公网地址
+        import socket
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except socket.gaierror:
+            return False
+        seen = set()
+        for info in infos:
+            ip_str = info[4][0]
+            if ip_str in seen:
+                continue
+            seen.add(ip_str)
+            try:
+                addr = ipaddress.ip_address(ip_str)
+            except ValueError:
+                return False
+            if _is_internal_ip(addr):
+                return False
+        return bool(seen)
+    except Exception:
+        return False
 
 
 class CreatorDetector:
@@ -221,7 +300,7 @@ class CreatorDetector:
                             return p
                     return parts[0]
 
-        # 策略3：从 og:title 等 meta 标签提取
+        # 策略D：从 og:title 等 meta 标签提取
         og = re.search(
             r'<meta\s+property="og:title"\s+content="([^"]+)"',
             html, re.IGNORECASE)
@@ -238,7 +317,15 @@ class CreatorDetector:
         return None
 
     @staticmethod
+    def _build_safe_opener():
+        """构建禁止重定向的 urllib opener"""
+        return urllib.request.build_opener(_NoRedirectHandler())
+
+    @staticmethod
     def _fetch_json(url, retries=2, timeout=8):
+        if not _is_safe_url(url):
+            print(f"[CREATOR] SSRF blocked: {url[:80]}", flush=True)
+            return None
         last_err = None
         for attempt in range(retries + 1):
             try:
@@ -246,7 +333,8 @@ class CreatorDetector:
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                     'Referer': 'https://www.bilibili.com/',
                 })
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                opener = CreatorDetector._build_safe_opener()
+                with opener.open(req, timeout=timeout) as resp:
                     return json.loads(resp.read().decode('utf-8', errors='ignore'))
             except Exception as e:
                 last_err = e
@@ -259,6 +347,9 @@ class CreatorDetector:
 
     @staticmethod
     def _fetch_page(url, retries=1, timeout=8):
+        if not _is_safe_url(url):
+            print(f"[CREATOR] SSRF blocked: {url[:80]}", flush=True)
+            return None
         last_err = None
         for attempt in range(retries + 1):
             try:
@@ -266,7 +357,8 @@ class CreatorDetector:
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                     'Accept': 'text/html,application/xhtml+xml',
                 })
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                opener = CreatorDetector._build_safe_opener()
+                with opener.open(req, timeout=timeout) as resp:
                     return resp.read().decode('utf-8', errors='ignore')
             except Exception as e:
                 last_err = e

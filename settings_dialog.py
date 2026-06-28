@@ -14,8 +14,8 @@ MODEL_OPTIONS = [
 ]
 MODEL_LABELS = [
     "auto（自动选择最优）",
-    "Qwen3-ASR 1.7B（推荐·高精度）",
-    "Qwen3-ASR 0.6B（轻量·省显存）",
+    "Qwen3-ASR 1.7B-hf（推荐·高精度）",
+    "Qwen3-ASR 0.6B-hf（轻量·省显存）",
 ]
 DEVICE_OPTIONS = ["auto", "cuda", "cpu"]
 DEVICE_LABELS = ["auto（自动检测）", "cuda（NVIDIA GPU）", "cpu（仅CPU）"]
@@ -113,8 +113,8 @@ class SettingsDialog(QDialog):
         r1 = QHBoxLayout()
         r1.addWidget(QLabel("静音断句阈值（秒）:"))
         self._vad_slider = QSlider(Qt.Horizontal)
-        self._vad_slider.setRange(30, 150)
-        val = int(self._settings.get("vad_threshold", 0.8) * 100)
+        self._vad_slider.setRange(30, 200)
+        val = int(self._settings.get("vad_threshold", 1.0) * 100)
         self._vad_slider.setValue(val)
         r1.addWidget(self._vad_slider)
         self._vad_lbl = QLabel(f"{val / 100:.2f} 秒")
@@ -189,9 +189,9 @@ class SettingsDialog(QDialog):
         r2 = QHBoxLayout()
         r2.addWidget(QLabel("最大输出Token:"))
         self._spn_max_tokens = QSpinBox()
-        self._spn_max_tokens.setRange(32, 256)
+        self._spn_max_tokens.setRange(32, 512)
         self._spn_max_tokens.setSingleStep(32)
-        self._spn_max_tokens.setValue(self._settings.get("max_new_tokens", 128))
+        self._spn_max_tokens.setValue(self._settings.get("max_new_tokens", 256))
         self._spn_max_tokens.setToolTip("ASR模型单次最大输出token数，值越大可识别越长句子")
         r2.addWidget(self._spn_max_tokens)
         r2.addStretch()

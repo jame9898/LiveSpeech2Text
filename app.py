@@ -11,7 +11,7 @@ SERVER_THREAD = None
 
 def check_deps():
     missing = []
-    for mod in ["torch", "torchaudio", "qwen_asr", "PySide6"]:
+    for mod in ["torch", "torchaudio", "transformers", "PySide6"]:
         if importlib.util.find_spec(mod) is None:
             missing.append(mod)
     return missing
@@ -231,8 +231,7 @@ def start_server_backend(config, log_cb):
                                 parts = line.strip().split()
                                 pid = parts[-1]
                                 if pid == my_pid:
-                                    log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u7aef\u53e3 {port} \u5c1a\u672a\u91ca\u653e\uff0c\u7b49\u5f85\u4e2d...\n")
-                                    # 等旧服务退出后再重试，最长等5秒
+                                    log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 端口 {port} 尚未释放，等待中...\n")
                                     for _ in range(10):
                                         import time as _t
                                         _t.sleep(0.5)
@@ -240,9 +239,22 @@ def start_server_backend(config, log_cb):
                                         if not any(f':{port}' in l and 'LISTENING' in l for l in r2.stdout.split('\n')):
                                             break
                                 else:
-                                    _sp.run(['taskkill', '/F', '/PID', pid],
-                                            capture_output=True)
-                                    log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u5df2\u91ca\u653e\u7aef\u53e3 {port} (\u65e7\u8fdb\u7a0b PID={pid})\n")
+                                    # 验证目标进程是否为 python 进程，避免误杀无关程序
+                                    try:
+                                        proc_check = _sp.run(
+                                            ['wmic', 'process', 'where', f'ProcessId={pid}', 'get', 'CommandLine'],
+                                            capture_output=True, text=True, timeout=3)
+                                        cmd_line = proc_check.stdout.lower() if proc_check.stdout else ''
+                                        is_python = any(kw in cmd_line for kw in ['python', 'pythonw', 'conda'])
+                                    except Exception:
+                                        is_python = False
+
+                                    if is_python:
+                                        _sp.run(['taskkill', '/F', '/PID', pid],
+                                                capture_output=True)
+                                        log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 已释放端口 {port} (旧进程 PID={pid})\n")
+                                    else:
+                                        log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] [WARN] 端口 {port} 被非 Python 进程占用 (PID={pid})，请手动释放\n")
                                 break
                     except Exception:
                         pass
@@ -504,14 +516,21 @@ class MainWindow(QMainWindow):
     def _refresh_display(self):
         try:
             cfg = load_config()
-            self._mlbl.setText(f"\u6a21\u578b: {cfg.get('current_model','auto')}")
+            _m = cfg.get('current_model', 'auto')
+            _m_map = {"auto": "auto（自动）", "qwen3-asr-1.7b": "Qwen3-ASR 1.7B-hf",
+                      "qwen3-asr-0.6b": "Qwen3-ASR 0.6B-hf"}
+            self._mlbl.setText(f"\u6a21\u578b: {_m_map.get(_m, _m)}")
             self._dlbl.setText(f"\u8bbe\u5907: {cfg.get('device','auto')}")
         except Exception as e:
             print(f"[UI] _refresh_display error: {e}", flush=True)
 
     def _start_server(self):
-        if self._running:
+        # 防止按钮和菜单快捷键重复触发：运行中或启动过程中都直接返回
+        if self._running or getattr(self, '_starting', False):
             return
+        self._starting = True
+        self._update_ui_state()
+
         cfg = load_config()
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         self._emit_log(f"\n{'=' * 50}\n")
@@ -520,13 +539,9 @@ class MainWindow(QMainWindow):
         ready_event, error_holder = start_server_backend(cfg, self._emit_log)
         if ready_event is None:
             self._emit_log("[ERROR] \u670d\u52a1\u542f\u52a8\u5931\u8d25\n")
+            self._starting = False
+            self._update_ui_state()
             return
-
-        # Disable start button immediately to prevent double-click
-        self._btn_start.setEnabled(False)
-        self._slbl.setText("\u542f\u52a8\u4e2d...")
-        self._slbl.setStyleSheet(f"font-size:15px;font-weight:bold;color:{LIGHT['yellow']}")
-        self._dot.setStyleSheet(f"background:{LIGHT['yellow']}")
 
         self._wait_start_time = __import__("time").time()
         self._ready_event = ready_event
@@ -539,18 +554,21 @@ class MainWindow(QMainWindow):
     def _poll_server_ready(self):
         if self._ready_event.is_set():
             self._wait_timer.stop()
+            self._starting = False
             self._running = True
             self._update_ui_state()
             self._emit_log("[OK] \u670d\u52a1\u5df2\u5c31\u7eea\n")
         elif self._error_holder[0] is not None:
             self._wait_timer.stop()
-            self._emit_log(f"[ERROR] \u670d\u52a1\u542f\u52a8\u5931\u8d25: {self._error_holder[0]}\n")
+            self._starting = False
             self._running = False
+            self._emit_log(f"[ERROR] \u670d\u52a1\u542f\u52a8\u5931\u8d25: {self._error_holder[0]}\n")
             self._update_ui_state()
         elif __import__("time").time() - self._wait_start_time > 120:
             self._wait_timer.stop()
-            self._emit_log("[ERROR] \u6a21\u578b\u52a0\u8f7d\u8d85\u65f6 (120s)\n")
+            self._starting = False
             self._running = False
+            self._emit_log("[ERROR] \u6a21\u578b\u52a0\u8f7d\u8d85\u65f6 (120s)\n")
             self._update_ui_state()
 
     def _stop_server(self):
@@ -568,6 +586,12 @@ class MainWindow(QMainWindow):
             self._slbl.setStyleSheet(f"font-size:15px;font-weight:bold;color:{LIGHT['green']}")
             self._btn_start.setEnabled(False)
             self._btn_stop.setEnabled(True)
+        elif getattr(self, '_starting', False):
+            self._dot.setStyleSheet(f"background:{LIGHT['yellow']}")
+            self._slbl.setText("\u542f\u52a8\u4e2d...")
+            self._slbl.setStyleSheet(f"font-size:15px;font-weight:bold;color:{LIGHT['yellow']}")
+            self._btn_start.setEnabled(False)
+            self._btn_stop.setEnabled(False)
         else:
             self._dot.setStyleSheet(f"background:{LIGHT['text_dim']}")
             self._slbl.setText("\u672a\u542f\u52a8")

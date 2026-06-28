@@ -1,14 +1,14 @@
 {
-  "current_model": "auto",
-  "device": "auto",
+  "current_model": "qwen3-asr-1.7b",
+  "device": "cuda",
   "model_settings": {
     "vad_force_cut": true,
-    "vad_threshold": 0.8,
+    "vad_threshold": 1.0,
     "force_cut_sec": 6.0,
     "max_buffer_seconds": 30,
     "min_speech_duration": 0.12,
     "threads": 8,
     "ws_port": 8765,
-    "max_new_tokens": 128
+    "max_new_tokens": 256
   }
 }

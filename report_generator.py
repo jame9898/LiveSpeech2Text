@@ -7,7 +7,6 @@ import json
 from datetime import datetime
 
 from text_utils import log_fmt_time
-from pinyin_utils import text_similarity
 
 
 def _build_segment_data(segments, display_names, video_offset):
@@ -179,38 +178,6 @@ def generate_structured_log(segments, speaker_profiles, keyword_history,
         keywords_added=keywords_deduped,
         segments=log_segments,
     ), ensure_ascii=False, indent=2)
-
-
-def merge_segments(segments):
-    """合并相邻同 speaker 且间隔极短的片段（VAD 误切修复）"""
-    if len(segments) < 2:
-        return
-    # 先按时间排序，确保相邻比较基于真实时序
-    segments.sort(key=lambda s: s.get('time', 0))
-    merged = []
-    for seg in segments:
-        if not merged:
-            merged.append(dict(seg))
-            continue
-        prev = merged[-1]
-        if prev['speaker'] == seg['speaker']:
-            seg_time = seg.get('time', 0)
-            prev_time = prev.get('time', 0)
-            prev_dur = prev.get('duration', 0)
-            gap = seg_time - (prev_time + prev_dur)
-            if gap < 1.0:
-                sim = text_similarity(prev['text'], seg['text'])
-                if sim > 0.5:
-                    prev['text'] = seg['text'] if len(seg['text']) > len(prev['text']) else prev['text']
-                else:
-                    prev['text'] = prev['text'].rstrip() + ' ' + seg['text']
-                prev['duration'] = seg_time + seg.get('duration', 0) - prev_time
-                prev['corrections'] = prev.get('corrections', []) + seg.get('corrections', [])
-                prev['kw_corrected'] = prev.get('kw_corrected', False) or seg.get('kw_corrected', False)
-                continue
-        merged.append(dict(seg))
-    segments.clear()
-    segments.extend(merged)
 
 
 def merge_short_trailing(segments):

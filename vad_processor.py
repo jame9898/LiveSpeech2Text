@@ -1,50 +1,68 @@
 # -*- coding: utf-8 -*-
 """
-VAD 处理器：自适应静音断句 + 音乐/噪声检测
-从 RealtimeASRServer 中提取，独立为 VADProcessor 类
+VAD 处理器：自适应能量阈值 VAD（唯一版本）
+
+说明：
+- 本文件为唯一 VAD 实现，基于自适应能量阈值 + 语速感知的静音断句。
+- 历史上曾尝试引入 Silero 神经网络 VAD 作为升级，但因：
+    1) torch.jit.load 在 Windows 中文路径下 errno 2 失败
+    2) Silero 的「即时返回多段 timestamps」语义与 server.py 的
+       「流式累积缓冲区取单段」架构不匹配，强行加累积补丁会碎片化
+    3) Silero 缺乏 legacy 的「自适应语速」和「反向搜索静音点」能力
+  最终回滚为仅保留 legacy 版本，删除所有 Silero 相关代码与依赖。
 """
 
 import numpy as np
 
 
 class VADProcessor:
+    """
+    自适应能量阈值 VAD：根据说话语速动态调整静音断句阈值。
 
-    MUSIC_ENERGY_EPSILON = 1e-8
+    核心特性：
+    - 自适应语速：统计 speech_gaps，快说快切（0.8s）、慢说慢切（1.2s）
+    - 反向搜索静音点：强制切分时回扫 1.5s 找低能量帧，避免词中间断
+    - 三级兜底：quick_cut（2.5s+0.8s 静音）→ 正常切分 → force_cut（回扫静音点）→ desperate（硬切）
+    """
 
-    def __init__(self, vad_silence_threshold=0.85, vad_force_cut=True, vad_force_cut_sec=6.0,
-                 min_speech_duration=0.12,
-                 max_buffer_seconds=30):
+    def __init__(self, vad_silence_threshold=1.0, vad_force_cut=True, vad_force_cut_sec=6.0,
+                 min_speech_duration=0.12):
+        """
+        Args:
+            vad_silence_threshold: 判定一句话结束的静音时长（秒）。
+            vad_force_cut: 是否开启长句强制切分。
+            vad_force_cut_sec: 长句强制切分阈值（秒）。
+            min_speech_duration: 最小有效语音时长（秒）。
+        """
         self.vad_silence_threshold = vad_silence_threshold
         self.vad_force_cut = vad_force_cut
         self.vad_force_cut_sec = vad_force_cut_sec
         self.min_speech_duration = min_speech_duration
-        self.max_buffer_seconds = max_buffer_seconds
 
-        # 自适应VAD内部状态
+        # 自适应 VAD 内部状态
         self.speech_gaps = []
-        self.adaptive_threshold = 1.35
+        self.adaptive_threshold = 1.0
 
     def reset(self):
         """重置会话状态：清空自适应历史数据"""
         self.speech_gaps = []
-        self.adaptive_threshold = 1.35
+        self.adaptive_threshold = 1.0
 
     def cut(self, audio_data, sr):
         """
-        自适应VAD：根据说话语速动态调整静音断句阈值
-        - 说话快（间隙短）→ 阈值小（0.5s），快速断句
-        - 说话慢（间隙长）→ 阈值大（1.3s），耐心等待不打断
+        切分完整语音段。
+
         返回 (语音段, 剩余缓冲区, VAD信息字典)
         - 语音段: numpy array 或 None（无完整语音段）
         - 剩余缓冲区: numpy array 或 None（无需更新时为 None）
-        - VAD信息字典
+        - VAD信息字典: 包含 silence / forced / chunk_dur / engine 等字段
         """
         frame_len = int(sr * 0.03)
         hop_len = int(sr * 0.01)
         n_frames = (len(audio_data) - frame_len) // hop_len + 1
 
         vad_info = {'silence': self.vad_silence_threshold, 'adaptive_coeff': 1.0,
-                    'forced': False, 'overlap': 1.3, 'chunk_dur': 0}
+                    'forced': False, 'overlap': 1.3, 'chunk_dur': 0, 'engine': 'legacy'}
 
         min_dur_frames = int(self.min_speech_duration / 0.03)
         if n_frames < min_dur_frames:
@@ -80,19 +98,19 @@ class VADProcessor:
                     self.speech_gaps.pop(0)
 
         # === 自适应静音阈值：根据说话间隙动态调整 ===
-        # 基础阈值 = vad_silence_threshold（默认 0.85s）
-        # 快速说话（间隙小）→ 降低阈值，快速断句
-        # 慢速说话（间隙大）→ 提高阈值，耐心等待
+        # 基础阈值 = vad_silence_threshold（默认 1.0s）
+        # 快速说话（间隙小）→ 0.8s，快速断句
+        # 慢速说话（间隙大）→ 1.2s，耐心等待
         if len(self.speech_gaps) >= 5:
             median_gap = np.median(self.speech_gaps)
-            # 自适应系数：间隙 < 0.5s → 0.6x; 间隙 > 1.5s → 1.5x
-            self.adaptive_threshold = np.clip(median_gap / 0.8, 0.6, 1.5)
+            # 自适应系数：间隙 < 0.8s → 0.8x; 间隙 > 1.2s → 1.2x
+            self.adaptive_threshold = np.clip(median_gap / 0.8, 0.8, 1.2)
         else:
             self.adaptive_threshold = 1.0  # 样本不足时使用基础阈值
 
         adaptive_silence = self.vad_silence_threshold * self.adaptive_threshold
-        # 限制自适应范围：0.4s ~ 1.5s，防止极端值
-        adaptive_silence = max(0.4, min(adaptive_silence, 1.5))
+        # 限制自适应范围：0.8s ~ 1.2s，防止极端值
+        adaptive_silence = max(0.8, min(adaptive_silence, 1.2))
         min_silence_frames = int(adaptive_silence / 0.01)
 
         vad_info['silence'] = round(adaptive_silence, 2)
@@ -115,7 +133,7 @@ class VADProcessor:
                 speech_segment = audio_data[:cut_point]
                 remaining = audio_data[cut_point:]
                 self.speech_gaps = []
-                self.adaptive_threshold = 1.35
+                self.adaptive_threshold = 1.0
                 vad_info['chunk_dur'] = len(speech_segment) / sr
                 vad_info['forced'] = False
                 return speech_segment, remaining, vad_info
@@ -130,7 +148,7 @@ class VADProcessor:
 
                 # 重置间隙统计
                 self.speech_gaps = []
-                self.adaptive_threshold = 1.35
+                self.adaptive_threshold = 1.0
 
                 vad_info['chunk_dur'] = len(speech_segment) / sr
                 vad_info['forced'] = False
