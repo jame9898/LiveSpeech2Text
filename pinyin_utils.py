@@ -86,41 +86,44 @@ class PinyinCorrector:
 
             kw_len = len(kw_py)
 
-            # 滑动窗口匹配拼音序列
-            for start in range(len(char_info) - kw_len + 1):
-                # 检查拼音是否匹配
-                match = True
-                for j in range(kw_len):
-                    if char_info[start + j][2] != kw_py[j]:
-                        match = False
-                        break
+            # 同一关键词可能出现多次，用 while 循环重复扫描直到没有新匹配
+            while char_info and len(char_info) >= kw_len:
+                found = False
+                # 滑动窗口匹配拼音序列
+                for start in range(len(char_info) - kw_len + 1):
+                    # 检查拼音是否匹配
+                    match = True
+                    for j in range(kw_len):
+                        if char_info[start + j][2] != kw_py[j]:
+                            match = False
+                            break
 
-                if not match:
-                    continue
+                    if not match:
+                        continue
 
-                # 拼音匹配成功，检查原文是否已经是正确关键词
-                original = ''.join(char_info[start + k][1] for k in range(kw_len))
-                if original == keyword:
-                    continue  # 已经正确，不需要纠正
+                    # 拼音匹配成功，检查原文是否已经是正确关键词
+                    original = ''.join(char_info[start + k][1] for k in range(kw_len))
+                    if original == keyword:
+                        continue  # 已经正确，不需要纠正
 
-                # 执行替换
-                idx_start = char_info[start][0]
-                idx_end = char_info[start + kw_len - 1][0]
-                text = text[:idx_start] + keyword + text[idx_end + 1:]
-                corrections.append((original, keyword))
+                    # 执行替换
+                    idx_start = char_info[start][0]
+                    idx_end = char_info[start + kw_len - 1][0]
+                    text = text[:idx_start] + keyword + text[idx_end + 1:]
+                    corrections.append((original, keyword))
 
-                # 重建 char_info（文本长度可能变化）
-                char_info = []
-                for i, ch in enumerate(text):
-                    if '\u4e00' <= ch <= '\u9fff':
-                        py = lazy_pinyin(ch, style=Style.NORMAL)[0]
-                        char_info.append((i, ch, py))
+                    # 重建 char_info（文本长度可能变化）
+                    char_info = []
+                    for i, ch in enumerate(text):
+                        if '\u4e00' <= ch <= '\u9fff':
+                            py = lazy_pinyin(ch, style=Style.NORMAL)[0]
+                            char_info.append((i, ch, py))
 
-                if not char_info:
-                    break
+                    found = True
+                    break  # 跳出 for，重新开始 while（文本已变化）
 
-                # 从头重新匹配（因为文本已变化）
-                break
+                if not found:
+                    break  # 没有更多匹配，处理下一个关键词
 
         return text, corrections
 

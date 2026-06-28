@@ -4,6 +4,7 @@
 支持模型: Qwen3-ASR
 """
 import logging
+import threading
 
 
 def silence_noisy_loggers():
@@ -107,6 +108,9 @@ class ASREngine:
 
     def __init__(self, device=None, config=None):
         self.model = None
+        # model 级锁：qwen_asr 的线程安全性未知，partial 与 segment 会并发调用 transcribe，
+        # 加锁串行化避免 KV cache/临时 tensor 共享导致崩溃或结果错乱
+        self._model_lock = threading.Lock()
         self.model_name = None
         self._config = config if config is not None else load_config()
         self._device = device if device is not None else resolve_device(self._config)
@@ -243,11 +247,13 @@ class ASREngine:
             audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=16000)
 
         # 直接传 (ndarray, sr) 元组给 qwen-asr，跳过临时文件
-        results = self.model.transcribe(
-            audio=(audio_data, 16000),
-            language=None,
-        )
-        result = results[0].text.strip()
+        # 加锁串行化：qwen_asr 线程安全性未知，并发调用可能崩溃
+        with self._model_lock:
+            results = self.model.transcribe(
+                audio=(audio_data, 16000),
+                language=None,
+            )
+            result = results[0].text.strip() if results else ""
 
         elapsed = time.time() - start
         print(f"[OK] Streaming transcription done ({len(result)} chars, {elapsed:.1f}s)")
@@ -255,8 +261,9 @@ class ASREngine:
 
     def _transcribe_qwen(self, audio_path):
         """Qwen3-ASR 官方 qwen-asr 转录"""
-        results = self.model.transcribe(
-            audio=str(audio_path),
-            language=None,
-        )
-        return results[0].text.strip()
+        with self._model_lock:
+            results = self.model.transcribe(
+                audio=str(audio_path),
+                language=None,
+            )
+            return results[0].text.strip() if results else ""

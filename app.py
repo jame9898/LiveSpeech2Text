@@ -279,12 +279,27 @@ def stop_server_backend(log_cb):
         if hasattr(_global_server, 'executor'):
             _global_server.executor.shutdown(wait=False)
         # 触发 shutdown_event 让服务端退出
-        if hasattr(_global_server, '_shutdown_event'):
-            _global_server._shutdown_event.set()
+        # 注意：_shutdown_event 在 server 子线程的 asyncio 循环中创建，
+        # 直接 .set() 非线程安全，必须通过 call_soon_threadsafe 调度到该循环
+        if hasattr(_global_server, '_shutdown_event') and hasattr(_global_server, '_loop'):
+            try:
+                _global_server._loop.call_soon_threadsafe(_global_server._shutdown_event.set)
+            except RuntimeError:
+                # loop 已关闭（服务已自行退出），忽略
+                pass
     log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u6b63\u5728\u505c\u6b62\u670d\u52a1...\n")
     # 等待服务端线程真正退出（最多5秒）
+    # 分段 join + processEvents 避免长时间冻结 UI
     if SERVER_THREAD is not None and SERVER_THREAD.is_alive():
-        SERVER_THREAD.join(timeout=5.0)
+        try:
+            from PySide6.QtWidgets import QApplication
+            waited = 0.0
+            while SERVER_THREAD.is_alive() and waited < 5.0:
+                SERVER_THREAD.join(timeout=0.1)
+                waited += 0.1
+                QApplication.processEvents()
+        except ImportError:
+            SERVER_THREAD.join(timeout=5.0)
         if SERVER_THREAD.is_alive():
             log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] [WARN] \u670d\u52a1\u7ebf\u7a0b\u672a\u5728 5s \u5185\u9000\u51fa\n")
         else:
@@ -552,6 +567,10 @@ class MainWindow(QMainWindow):
             self._emit_log("[ERROR] \u6a21\u578b\u52a0\u8f7d\u8d85\u65f6 (120s)\n")
             self._running = False
             self._update_ui_state()
+            # 清理后台线程：超时后 server 线程可能仍在加载模型/起服务，
+            # 必须主动停止，否则会占用端口导致下次启动冲突
+            self._emit_log("[INFO] \u6b63\u5728\u6e05\u7406\u540e\u53f0\u7ebf\u7a0b...\n")
+            stop_server_backend(self._emit_log)
 
     def _stop_server(self):
         if not self._running:

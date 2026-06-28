@@ -9,6 +9,7 @@ import websockets
 from websockets.http11 import Response, Headers
 import json
 import numpy as np
+from collections import OrderedDict
 
 import time
 import logging
@@ -121,6 +122,9 @@ class RealtimeASRServer:
 
         # 音频缓冲区
         self._audio_buf = np.array([], dtype=np.float32)
+        # chunk 累积区：达到阈值后一次性 concatenate 到 _audio_buf，减少全量拷贝频率
+        self._audio_buf_chunks = []
+        self._audio_buf_chunk_threshold = 16000 * 0.5  # 累积 0.5s 音频后再合并
         self.browser_sample_rate = 48000
         self.target_sample_rate = 16000
         self.max_buffer_seconds = 30
@@ -131,8 +135,8 @@ class RealtimeASRServer:
         self.vad_force_cut_sec = self.asr_engine._config.get("model_settings", {}).get("force_cut_sec", 6.0)
         self.min_speech_duration = self.asr_engine._config.get("model_settings", {}).get("min_speech_duration", 0.12)
 
-        # 避免重复发送已识别的文本（上限防止长会话O(n²)退化）
-        self.sent_texts = set()
+        # 避免重复发送已识别的文本（LRU 滚动窗口，防止长会话 O(n²) 退化）
+        self.sent_texts = OrderedDict()
         self._MAX_SENT_TEXTS = 300
 
         self.total_audio_seconds = 0
@@ -187,6 +191,16 @@ class RealtimeASRServer:
                 filtered = np.convolve(audio, kernel, mode='same')
                 return filtered[::ratio].astype(np.float32)
             return audio_data.astype(np.float32)
+
+    def _flush_audio_chunks(self):
+        """把累积的 chunk 合并到 _audio_buf，确保 _audio_buf 是完整的 ndarray。"""
+        if not self._audio_buf_chunks:
+            return
+        if len(self._audio_buf) > 0:
+            self._audio_buf = np.concatenate([self._audio_buf] + self._audio_buf_chunks)
+        else:
+            self._audio_buf = np.concatenate(self._audio_buf_chunks)
+        self._audio_buf_chunks = []
 
     async def handler(self, websocket):
         self._current_handler_ws = websocket
@@ -262,6 +276,7 @@ class RealtimeASRServer:
                 self.is_running = False
                 # Flush remaining buffer（降低阈值：>=最小语音段即可转录，避免结尾丢字）
                 min_flush_samples = int(self.min_speech_duration * 16000)
+                self._flush_audio_chunks()
                 remaining_buf = self._audio_buf.copy()
                 if len(remaining_buf) >= max(min_flush_samples, 4000):
                     remaining_dur = len(remaining_buf) / 16000
@@ -271,6 +286,7 @@ class RealtimeASRServer:
                     print(f"[WS] stop: 刷新极短尾音 {len(remaining_buf)/16000:.2f}s", flush=True)
                     await self._finalize_segment(remaining_buf, {'voice_start': 0, 'voice_end': len(remaining_buf)/16000, 'seg_type': 'flush'})
                 self._audio_buf = np.array([], dtype=np.float32)
+                self._audio_buf_chunks = []
                 await self._send_to(websocket, {
                     'type': 'status', 'status': 'stopped',
                     'message': 'Stopped', 'full_text': self.full_text.strip(),
@@ -432,10 +448,11 @@ class RealtimeASRServer:
         # 文本与片段
         self.full_text = ""
         self.segments = []
-        self.sent_texts = set()
+        self.sent_texts = OrderedDict()
 
         # 音频缓冲
         self._audio_buf = np.array([], dtype=np.float32)
+        self._audio_buf_chunks = []
 
         # 关键词
         self.keyword_store = {cat: set() for cat in CATEGORIES}
@@ -481,6 +498,7 @@ class RealtimeASRServer:
     async def process_audio(self, audio_data, websocket):
         if not self.is_running or websocket is not self.recording_ws:
             return
+        loop = asyncio.get_running_loop()
         try:
             audio_array = np.frombuffer(audio_data, dtype=np.float32)
 
@@ -488,7 +506,10 @@ class RealtimeASRServer:
                 audio_array = self._resample_audio(
                     audio_array, self.browser_sample_rate, self.target_sample_rate)
 
-            self._audio_buf = np.append(self._audio_buf, audio_array)
+            # 累积 chunk，达到阈值后一次性 concatenate，避免每次 np.append 全量拷贝（O(n²) 退化）
+            self._audio_buf_chunks.append(audio_array)
+            if sum(len(c) for c in self._audio_buf_chunks) >= self._audio_buf_chunk_threshold:
+                self._flush_audio_chunks()
 
             # 每0.25s发一次实时字幕条（纯定时器，不与完整转录耦合）
             # 只对最近3秒音频做ASR，避免buffer滚大后延迟越来越高
@@ -496,18 +517,25 @@ class RealtimeASRServer:
             now = time.time()
             if now - self._stream_partial_time >= self._stream_partial_interval:
                 self._stream_partial_time = now
+                self._flush_audio_chunks()
                 buf = self._audio_buf
                 if len(buf) / 16000 >= 0.2 and not self._partial_in_flight:
                     max_partial_samples = 3 * self.target_sample_rate  # 只取最近3秒
                     if len(buf) > max_partial_samples:
                         buf = buf[-max_partial_samples:]
+                    # 同步置位标志，防止 event loop 调度下一个 process_audio 时重复创建 partial task
+                    self._partial_in_flight = True
                     asyncio.ensure_future(self._send_streaming_partial(buf.copy()))
 
             # 每0.5秒检查一次是否可以转录
+            self._flush_audio_chunks()
             buffer_dur = len(self._audio_buf) / 16000
             if buffer_dur >= 0.5 and len(self._audio_buf) > 0:
                 # 用VAD检测是否有完整的语音段
-                audio_seg, remaining, vad_info = self.vad_processor.cut(self._audio_buf, 16000)
+                # VAD 是 CPU 密集同步操作，丢进 executor 避免阻塞 event loop
+                audio_seg, remaining, vad_info = await loop.run_in_executor(
+                    self.executor, self.vad_processor.cut, self._audio_buf, 16000
+                )
 
                 if audio_seg is not None and len(audio_seg) > int(self.min_speech_duration * 16000):
                     # 统一ASR管线：一次识别，同时输出 partial(字幕条) + transcription(右边记录)
@@ -786,8 +814,10 @@ class RealtimeASRServer:
             display = text
 
         self.full_text += display + " "
-        if len(self.sent_texts) < self._MAX_SENT_TEXTS:
-            self.sent_texts.add(text)
+        # LRU 滚动窗口：超出上限时弹出最旧的，避免长会话去重失效
+        self.sent_texts[text] = True
+        if len(self.sent_texts) > self._MAX_SENT_TEXTS:
+            self.sent_texts.popitem(last=False)
         # total_audio_seconds 在 segment 成功创建时推进（空识别不回滚）
         if seg_duration and seg_duration > 0:
             self.total_audio_seconds += seg_duration
@@ -902,6 +932,8 @@ class RealtimeASRServer:
         ):
             print("[WS] Service ready", flush=True)
             self._shutdown_event = asyncio.Event()
+            # 保存 event loop 引用，供主线程跨线程唤醒（asyncio.Event.set() 非线程安全）
+            self._loop = asyncio.get_running_loop()
             await self._shutdown_event.wait()  # 阻塞直到外部调用 _shutdown_event.set()
             print("[WS] Shutting down...", flush=True)
 

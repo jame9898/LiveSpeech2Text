@@ -657,7 +657,13 @@ pageUrl.addEventListener('input', function() {
 });
 
 connect();
-setInterval(function() { if (!ws || ws.readyState !== 1) { if (!reconnectTimer) connect(); } }, 8000);
+setInterval(function() {
+    // 只在 ws 不存在或已关闭(CLOSING/CLOSED)时才重连，
+    // 避免 ws 处于 CONNECTING 状态时重复创建连接导致死锁
+    if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
+    if (reconnectTimer) return;
+    connect();
+}, 8000);
 })();
 </script>
 </body>

@@ -51,7 +51,8 @@ class CreatorDetector:
         # ---- B站视频 API ----
         bv_match = re.search(r'(?:bilibili\.com/video/|BV)([A-Za-z0-9]{10,12})', page_url)
         if bv_match:
-            bvid = ('BV' + bv_match.group(1)) if not bv_match.group(0).startswith('BV') else bv_match.group(1)
+            # group(1) 可能含或不含 BV 前缀，统一规范化为 BV 开头
+            bvid = bv_match.group(1) if bv_match.group(1).startswith('BV') else 'BV' + bv_match.group(1)
             data = await loop.run_in_executor(None, self._fetch_json, f'https://api.bilibili.com/x/web-interface/view?bvid={bvid}')
             if data and data.get('code') == 0:
                 owner = data.get('data', {}).get('owner', {})
@@ -197,10 +198,11 @@ class CreatorDetector:
                 m = re.search(pat, title)
                 if m:
                     name = m.group(1).strip()
-                    # 清洗：去掉尾部游戏分区名+"直播"（如"主机区"、"CSGO"等）
+                    # 清洗：去掉尾部游戏分区名+"直播"（如"主机区直播"、"CSGO直播"等）
+                    # 注意：不匹配任意 2-4 汉字+"直播"，避免误删短主播名（如"张三直播"）
                     name = re.sub(
                         r'(?:主机区?|CS[:]?GO|CS2|VALORANT|APEX|PUBG|DOTA2?|LOL|CF'
-                        r'|[A-Z]{2,6}|[\u4e00-\u9fff]{2,4})直播$',
+                        r'|[A-Z]{2,6})直播$',
                         '', name, flags=re.IGNORECASE)
                     # 再清洗：纯尾部游戏分区名（无"直播"后缀）
                     name = re.sub(

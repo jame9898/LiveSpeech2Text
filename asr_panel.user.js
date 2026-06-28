@@ -62,7 +62,7 @@ let lastSpeakerId = 'Speaker0';
 let _pendingSegs = [];
 
 // WebSocket via Web Worker (bypasses CSP)
-const _WS_WORKER_CODE = 'const U=["ws://localhost:8765","ws://127.0.0.1:8765"];let s=null,a=0,t=null;function c(i){if(i>=U.length){p("s",{ok:0,msg:"无法连接"});a++;t=setTimeout(function(){c(0)},Math.min(2000*Math.pow(1.5,a),30000));return}try{s=new WebSocket(U[i]);s.binaryType="arraybuffer";s.onopen=function(){p("s",{ok:1});a=0;if(t){clearTimeout(t);t=null}};s.onmessage=function(e){p("m",e.data)};s.onclose=function(e){p("s",{ok:0,msg:"断开 ("+(e.code||"?")+")"});s=null;a++;t=setTimeout(function(){c(0)},Math.min(2000*Math.pow(1.5,a),30000))};s.onerror=function(){p("s",{ok:0,msg:"无法连接"});if(s){s.close();s=null}}}catch(e){p("s",{ok:0,msg:"无法连接"});a++;t=setTimeout(function(){c(0)},Math.min(2000*Math.pow(1.5,a),30000))}}function p(y,d){try{self.postMessage({t:y,d:d})}catch(e){}}self.onmessage=function(e){var m=e.data;if(m.t==="c"){c(0)}else if(m.t==="s"){if(s&&s.readyState===1){try{s.send(m.d)}catch(e){}}}else if(m.t==="x"){if(t){clearTimeout(t);t=null}a=0;if(s){try{s.close()}catch(e){}s=null}}};';
+const _WS_WORKER_CODE = 'const U=["ws://localhost:8765","ws://127.0.0.1:8765"];let s=null,a=0,t=null,ok=0;function c(i){if(i>=U.length){p("s",{ok:0,msg:"无法连接"});a++;t=setTimeout(function(){c(0)},Math.min(2000*Math.pow(1.5,a),30000));return}try{s=new WebSocket(U[i]);s.binaryType="arraybuffer";s.onopen=function(){ok=1;p("s",{ok:1});a=0;if(t){clearTimeout(t);t=null}};s.onmessage=function(e){p("m",e.data)};s.onclose=function(e){p("s",{ok:0,msg:"断开 ("+(e.code||"?")+")"});s=null;a++;var n=ok?0:(i+1);t=setTimeout(function(){c(n)},Math.min(2000*Math.pow(1.5,a),30000))};s.onerror=function(){p("s",{ok:0,msg:"无法连接"});if(s){s.close();s=null}}}catch(e){p("s",{ok:0,msg:"无法连接"});a++;t=setTimeout(function(){c(i+1)},Math.min(2000*Math.pow(1.5,a),30000))}}function p(y,d){try{self.postMessage({t:y,d:d})}catch(e){}}self.onmessage=function(e){var m=e.data;if(m.t==="c"){c(0)}else if(m.t==="s"){if(s&&s.readyState===1){try{s.send(m.d)}catch(e){}}}else if(m.t==="x"){if(t){clearTimeout(t);t=null}a=0;if(s){try{s.close()}catch(e){}s=null}}};';
 let _wsWorker = null, _wsReady = false;
 function _wsInit() {
     if (_wsWorker) return;
@@ -537,7 +537,7 @@ function bindEvents() {
     _eventsBound = true;
     const bind = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
 
-    bind('asr3-close', () => { _panelClosedByUser=true; cleanup(); p.remove(); });
+    bind('asr3-close', () => { _panelClosedByUser=true; cleanup(); _wsClose(); p.remove(); _pendingSegs.length = 0; });
     bind('asr3-min', () => {
         const m = $('asr-v3');
         if (!m) return;
@@ -653,7 +653,7 @@ function onMsg(data) {
             }
             break;
         case 'transcription':
-            addSeg(data.text,data.speaker,data.ocr_corrected,data.ocr_count,data.seg_time,data.seg_dur,data.gap_audio,data.corrections,data.is_host,data.original_text,data.timestamp);
+            addSeg(data.text,data.speaker,data.kw_corrected,data.kw_count,data.seg_time,data.seg_dur,data.gap_audio,data.corrections,data.is_host,data.original_text,data.timestamp);
             updStats(data);
             if (data.keywords) updKws(data.keywords, keywordStore);
             break;
@@ -693,9 +693,10 @@ function getSpeakerColor(speaker) {
 }
 
 function addSeg(text, speaker, ocrFixed, ocrCount, segTime, segDur, gapAudio, corrections, isHost, originalText, timestamp) {
-    if (!_ensurePanel()) { _pendingSegs.push({text,speaker,ocrFixed,ocrCount,segTime,segDur,gapAudio,corrections,isHost,originalText}); return; }
+    if (_panelClosedByUser) return;  // 用户已关闭面板，直接丢弃，防止 _pendingSegs 无限增长
+    if (!_ensurePanel()) { if (_pendingSegs.length < 50) _pendingSegs.push({text,speaker,ocrFixed,ocrCount,segTime,segDur,gapAudio,corrections,isHost,originalText}); return; }
     const box = $('asr3-txt');
-    if (!box) { _pendingSegs.push({text,speaker,ocrFixed,ocrCount,segTime,segDur,gapAudio,corrections,isHost,originalText}); return; }
+    if (!box) { if (_pendingSegs.length < 50) _pendingSegs.push({text,speaker,ocrFixed,ocrCount,segTime,segDur,gapAudio,corrections,isHost,originalText}); return; }
     var pp = $('asr3-partial'); if (pp) { pp.style.display = 'none'; pp.innerHTML = ''; }
     _hideSubtitle();
     if (segCount === 0) box.textContent = '';

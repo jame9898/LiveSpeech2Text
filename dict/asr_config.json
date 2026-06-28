@@ -1,6 +1,6 @@
 {
-  "current_model": "auto",
-  "device": "auto",
+  "current_model": "qwen3-asr-1.7b",
+  "device": "cuda",
   "model_settings": {
     "vad_force_cut": true,
     "vad_threshold": 0.8,

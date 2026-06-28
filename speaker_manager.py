@@ -183,6 +183,7 @@ class SpeakerManager:
                     'embedding': np.zeros(192, dtype=np.float32),
                     'count': 1, 'label': 'Speaker0', 'quality': 0.0,
                 })
+                self._host_speaker_label = 'Speaker0'
             return 'Speaker0'
 
         timestamp = int(time.time() * 1000000)
@@ -191,7 +192,12 @@ class SpeakerManager:
         try:
             # 音频预降噪：提升 CAM++ 在混音场景下的说话人区分度
             audio_denoised = _pre_denoise_audio(audio_data, sr=16000)
-            sf.write(str(temp_path), audio_denoised.astype(np.float32), 16000)
+            try:
+                sf.write(str(temp_path), audio_denoised.astype(np.float32), 16000)
+            except Exception as e:
+                # 磁盘满/权限问题等导致写入失败，不能让整个 detect_speaker 崩溃
+                print(f"[SPEAKER] 音频写入失败: {e}", flush=True)
+                return self._last_speaker_label
 
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
@@ -243,6 +249,8 @@ class SpeakerManager:
             self._reset_pending_speaker()
             profile = self.speaker_profiles[best_idx]
             profile['embedding'] = (profile['embedding'] * profile['count'] + embedding) / (profile['count'] + 1)
+            # 重新归一化：单位向量的加权平均不再是单位向量，必须重新归一化才能作为余弦相似度的输入
+            profile['embedding'] = profile['embedding'] / (np.linalg.norm(profile['embedding']) + 1e-8)
             profile['count'] += 1
             profile['quality'] = min(1.0, profile['count'] / 30.0)
             if profile['count'] % 20 == 0:
@@ -288,6 +296,8 @@ class SpeakerManager:
         profile = self.speaker_profiles[best_idx]
         total_weight = profile['count'] + weight
         profile['embedding'] = (profile['embedding'] * profile['count'] + embedding * weight) / total_weight
+        # 重新归一化：单位向量的加权平均不再是单位向量，必须重新归一化才能作为余弦相似度的输入
+        profile['embedding'] = profile['embedding'] / (np.linalg.norm(profile['embedding']) + 1e-8)
         profile['count'] += weight
         print(f"[SPEAKER] 灰色软更新 {profile['label']} score={best_score:.3f} weight={weight:.2f} count={profile['count']:.1f}", flush=True)
         self._reset_pending_speaker()
