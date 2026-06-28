@@ -7,6 +7,7 @@
 首次运行会从 hf-mirror 下载模型（1.7B 约 4.4GB）。
 """
 import time
+import traceback
 import numpy as np
 import core
 
@@ -49,7 +50,6 @@ try:
     print("=" * 60)
 except Exception as e:
     print(f"      失败: {e}")
-    import traceback
     traceback.print_exc()
     print("=" * 60)
     print("流式元组接口报错 - 需要回退到临时 wav 文件方案")

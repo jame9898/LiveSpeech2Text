@@ -22,9 +22,9 @@ import torch
 import json
 import time
 import copy
+import os
+import traceback
 from pathlib import Path
-
-import os as _os
 
 BASE_DIR = Path(__file__).parent
 DICT_DIR = BASE_DIR / "dict"
@@ -41,7 +41,7 @@ _MODELSCOPE_HUB = Path.home() / ".cache" / "modelscope" / "hub"
 _HF_HUB = Path.home() / ".cache" / "huggingface" / "hub"
 
 # 使用 HF 镜像加速国内下载
-_os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
+os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
 
 _DEFAULT_CONFIG = {
     "current_model": "auto",
@@ -113,7 +113,7 @@ class ASREngine:
         self.model = None
         self.processor = None
         self.model_name = None
-        self._max_new_tokens = 128
+        self._max_new_tokens = None
         self._config = config if config is not None else load_config()
         self._device = device if device is not None else resolve_device(self._config)
         self._settings = self._config.get("model_settings", {})
@@ -121,14 +121,12 @@ class ASREngine:
     def load_model(self, preferred=None):
         if preferred is None:
             preferred = self._config.get("current_model", "auto")
-        if preferred in ('qwen3-asr-1.7b',):
+        if preferred == 'qwen3-asr-1.7b':
             return self._try_load('_load_qwen3_asr', 'Qwen3-ASR 1.7B', size='1.7B')
-        elif preferred in ('qwen3-asr-0.6b',):
+        elif preferred == 'qwen3-asr-0.6b':
             return self._try_load('_load_qwen3_asr', 'Qwen3-ASR 0.6B', size='0.6B')
-        elif preferred in ('qwen3-asr',):
-            return self._try_load('_load_qwen3_asr', 'Qwen3-ASR')
         else:
-            # auto: try 0.6B first (faster), then 1.7B
+            # auto / 'qwen3-asr': 0.6B first (faster), then 1.7B
             if self._try_load('_load_qwen3_asr', 'Qwen3-ASR', size='0.6B'):
                 return True
             if self._try_load('_load_qwen3_asr', 'Qwen3-ASR', size='1.7B'):
@@ -176,11 +174,10 @@ class ASREngine:
                         if candidate.is_dir():
                             search_paths.append(candidate)
                 for p in search_paths:
-                    if p.is_dir():
-                        model_path = str(p)
-                        size_label = s_label
-                        print(f"[LOAD] Qwen3-ASR {s_label} from local: {model_path}", flush=True)
-                        break
+                    model_path = str(p)
+                    size_label = s_label
+                    print(f"[LOAD] Qwen3-ASR {s_label} from local: {model_path}", flush=True)
+                    break
                 if model_path:
                     break
 
@@ -224,22 +221,20 @@ class ASREngine:
             return True
         except Exception as e:
             print(f"[WARN] Qwen3-ASR failed: {e}")
-            import traceback
             traceback.print_exc()
             return False
 
-    def transcribe(self, audio_path):
-        """转录音频文件"""
-        if self.model is None:
-            raise RuntimeError("ASR model not loaded")
-
-        start = time.time()
-
-        result = self._transcribe_qwen(audio_path)
-
-        elapsed = time.time() - start
-        print(f"[OK] Transcription done ({len(result)} chars, {elapsed:.1f}s)")
-        return result
+    def _generate(self, inputs):
+        """统一的 generate + decode 管线（供 transcribe_array 复用）"""
+        with torch.inference_mode():
+            output_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=self._max_new_tokens,
+                do_sample=False,
+            )
+        generated_ids = output_ids[:, inputs["input_ids"].shape[1]:]
+        result = self.processor.decode(generated_ids, return_format="transcription_only")[0] or ""
+        return result.strip()
 
     def transcribe_array(self, audio_array, sr=16000):
         """流式快速转录：接受numpy数组，直接传给模型（避免临时WAV文件IO）"""
@@ -264,34 +259,8 @@ class ASREngine:
             audio=audio_data,
         ).to(self.model.device, self.model.dtype)
 
-        with torch.inference_mode():
-            output_ids = self.model.generate(
-                **inputs,
-                max_new_tokens=self._max_new_tokens,
-                do_sample=False,
-            )
-        generated_ids = output_ids[:, inputs["input_ids"].shape[1]:]
-
-        result = self.processor.decode(generated_ids, return_format="transcription_only")[0] or ""
-        result = result.strip()
+        result = self._generate(inputs)
 
         elapsed = time.time() - start
         print(f"[OK] Streaming transcription done ({len(result)} chars, {elapsed:.1f}s)")
         return result
-
-    def _transcribe_qwen(self, audio_path):
-        """Qwen3-ASR-*-hf Transformers 原生转录（文件路径）"""
-        inputs = self.processor.apply_transcription_request(
-            audio=str(audio_path),
-        ).to(self.model.device, self.model.dtype)
-
-        with torch.inference_mode():
-            output_ids = self.model.generate(
-                **inputs,
-                max_new_tokens=self._max_new_tokens,
-                do_sample=False,
-            )
-        generated_ids = output_ids[:, inputs["input_ids"].shape[1]:]
-
-        result = self.processor.decode(generated_ids, return_format="transcription_only")[0] or ""
-        return result.strip()

@@ -180,6 +180,17 @@ def generate_structured_log(segments, speaker_profiles, keyword_history,
     ), ensure_ascii=False, indent=2)
 
 
+def _merge_into(prev, seg, append_text, seg_time, prev_time, duration=None):
+    """将 append_text 拼接到 prev 末尾，并累加 duration/corrections/kw_corrected。
+    duration 为 None 时按 seg_time + seg.duration - prev_time 计算。"""
+    prev['text'] = prev.get('text', '').rstrip() + ' ' + append_text.lstrip()
+    if duration is None:
+        duration = seg_time + seg.get('duration', 0) - prev_time
+    prev['duration'] = duration
+    prev['corrections'] = prev.get('corrections', []) + seg.get('corrections', [])
+    prev['kw_corrected'] = prev.get('kw_corrected', False) or seg.get('kw_corrected', False)
+
+
 def merge_short_trailing(segments):
     """合并被VAD强行切分的短片段：
     - VAD强制切分标记（当前段或前一段） + 同一说话人 + 间隔<1s → 合并
@@ -216,10 +227,7 @@ def merge_short_trailing(segments):
 
         # 条件0：间隔≈0（VAD硬切分，两段连续语音被强制拆开）
         if prev.get('speaker') == seg.get('speaker') and gap < 0.15:
-            prev['text'] = prev_text.rstrip() + ' ' + text.lstrip()
-            prev['duration'] = seg_time + seg.get('duration', 0) - prev_time
-            prev['corrections'] = prev.get('corrections', []) + seg.get('corrections', [])
-            prev['kw_corrected'] = prev.get('kw_corrected', False) or seg.get('kw_corrected', False)
+            _merge_into(prev, seg, text, seg_time, prev_time)
             continue
 
         # 条件1：VAD强制切分标记 + 同一说话人 → 无论长度和标点都合并
@@ -227,10 +235,7 @@ def merge_short_trailing(segments):
         cur_forced = seg.get('vad', {}).get('forced', False) or False
         prev_forced = prev.get('vad', {}).get('forced', False) or False
         if prev.get('speaker') == seg.get('speaker') and (cur_forced or prev_forced):
-            prev['text'] = prev_text.rstrip() + ' ' + text.lstrip()
-            prev['duration'] = seg_time + seg.get('duration', 0) - prev_time
-            prev['corrections'] = prev.get('corrections', []) + seg.get('corrections', [])
-            prev['kw_corrected'] = prev.get('kw_corrected', False) or seg.get('kw_corrected', False)
+            _merge_into(prev, seg, text, seg_time, prev_time)
             continue
 
         # 条件2：当前段短 + 单侧有句末标点（标点不对称说明是误切）
@@ -238,10 +243,7 @@ def merge_short_trailing(segments):
             text_end_has = text[-1] in PUNCT_END
             prev_end_has = prev_text[-1] in PUNCT_END
             if text_end_has != prev_end_has:
-                prev['text'] = prev_text.rstrip() + ' ' + text.lstrip()
-                prev['duration'] = seg_time + seg.get('duration', 0) - prev_time
-                prev['corrections'] = prev.get('corrections', []) + seg.get('corrections', [])
-                prev['kw_corrected'] = prev.get('kw_corrected', False) or seg.get('kw_corrected', False)
+                _merge_into(prev, seg, text, seg_time, prev_time)
                 continue
 
         merged.append(dict(seg))
@@ -299,19 +301,13 @@ def merge_semantic_continuation(segments, max_move_chars=10, max_gap_sec=3.0):
         # 第二段开头 ≤ max_move_chars 字
         if len(cur_text) <= max_move_chars:
             # 整个第二段都短，直接拼到第一段后面
-            prev['text'] = prev_text.rstrip() + ' ' + cur_text.lstrip()
-            prev['duration'] = seg_time + seg.get('duration', 0) - prev_time
-            prev['corrections'] = prev.get('corrections', []) + seg.get('corrections', [])
-            prev['kw_corrected'] = prev.get('kw_corrected', False) or seg.get('kw_corrected', False)
+            _merge_into(prev, seg, cur_text, seg_time, prev_time)
             continue
 
         # 极短片段（≤3字）即使带句号也可能是语义连续（如"安危。"、"知道吗。"）
         # 判断：片段≤3字 + 有句末标点 + 前一间隔<0.5s → 直接合并
         if len(cur_text) <= 3 and cur_text[-1] in PUNCT_END and gap < 0.5:
-            prev['text'] = prev_text.rstrip() + ' ' + cur_text.lstrip()
-            prev['duration'] = seg_time + seg.get('duration', 0) - prev_time
-            prev['corrections'] = prev.get('corrections', []) + seg.get('corrections', [])
-            prev['kw_corrected'] = prev.get('kw_corrected', False) or seg.get('kw_corrected', False)
+            _merge_into(prev, seg, cur_text, seg_time, prev_time)
             continue
 
         # 取第二段开头 ≤ max_move_chars
@@ -341,10 +337,8 @@ def merge_semantic_continuation(segments, max_move_chars=10, max_gap_sec=3.0):
             continue
 
         # 执行合并：移动部分拼接到第一段结尾
-        prev['text'] = prev_text.rstrip() + ' ' + move_text
-        prev['duration'] = seg_time - prev_time + (cut_idx / max(len(cur_text), 1)) * seg.get('duration', 0)
-        prev['corrections'] = prev.get('corrections', []) + seg.get('corrections', [])
-        prev['kw_corrected'] = prev.get('kw_corrected', False) or seg.get('kw_corrected', False)
+        _merge_into(prev, seg, move_text, seg_time, prev_time,
+                    seg_time - prev_time + (cut_idx / max(len(cur_text), 1)) * seg.get('duration', 0))
 
         # 第二段保留剩余部分
         new_seg = dict(seg)

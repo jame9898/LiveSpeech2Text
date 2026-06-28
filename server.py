@@ -12,6 +12,7 @@ import numpy as np
 import time
 import logging
 import re
+import traceback
 from pathlib import Path
 from datetime import datetime
 
@@ -256,12 +257,7 @@ class RealtimeASRServer:
                     'keywords': list(self.pinyin_corrector.kw_set)
                 })
                 print("[WS] Recording started")
-                for client in list(self._clients):
-                    if client is not websocket:
-                        try:
-                            await self._send_to(client, {'type': 'recording_state', 'recording': True})
-                        except Exception:
-                            pass
+                await self._broadcast_others(websocket, {'type': 'recording_state', 'recording': True})
 
             elif msg_type == 'stop':
                 if self.recording_ws is websocket:
@@ -285,12 +281,7 @@ class RealtimeASRServer:
                 })
 
                 print("[WS] Recording stopped")
-                for client in list(self._clients):
-                    if client is not websocket:
-                        try:
-                            await self._send_to(client, {'type': 'recording_state', 'recording': False})
-                        except Exception:
-                            pass
+                await self._broadcast_others(websocket, {'type': 'recording_state', 'recording': False})
 
             elif msg_type == 'clear':
                 self._reset_session_state(reset_speakers=True)
@@ -398,31 +389,13 @@ class RealtimeASRServer:
                     })
 
             elif msg_type == 'save_report':
-                display_names = self._prepare_report_data()
-                report = generate_comprehensive_report(
-                    self.segments, self.speaker_manager.speaker_profiles,
-                    self.keyword_history,
-                    self.total_audio_seconds,
-                    self.asr_engine.model_name,
-                    self.speaker_manager.page_type, self.speaker_manager.video_offset,
-                    display_names=display_names,
-                    page_creator=self.speaker_manager.page_creator,
-                    session_start_time=getattr(self, '_session_start_time', None),
-                )
-                await self._send_to(websocket, {'type': 'save_report', 'content': report, 'filename': f'asr_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.md'})
+                await self._save_generated(
+                    websocket, generate_comprehensive_report, 'save_report', 'md',
+                    {'session_start_time': getattr(self, '_session_start_time', None)})
 
             elif msg_type == 'save_log':
-                display_names = self._prepare_report_data()
-                log = generate_structured_log(
-                    self.segments, self.speaker_manager.speaker_profiles,
-                    self.keyword_history,
-                    self.total_audio_seconds,
-                    self.asr_engine.model_name if self.asr_engine else 'unknown',
-                    self.speaker_manager.page_type, self.speaker_manager.video_offset,
-                    display_names=display_names,
-                    page_creator=self.speaker_manager.page_creator,
-                )
-                await self._send_to(websocket, {'type': 'save_log', 'content': log, 'filename': f'asr_log_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'})
+                await self._save_generated(
+                    websocket, generate_structured_log, 'save_log', 'json')
 
         except Exception as e:
             print(f"[WS] Control error: {e}")
@@ -502,7 +475,6 @@ class RealtimeASRServer:
         exc = task.exception()
         if exc:
             print(f"[WS] Background task error: {exc}")
-            import traceback
             traceback.print_exc()
 
     async def process_audio(self, audio_data, websocket):
@@ -532,7 +504,7 @@ class RealtimeASRServer:
 
             # 每0.5秒检查一次是否可以转录
             buffer_dur = len(self._audio_buf) / 16000
-            if buffer_dur >= 0.5 and len(self._audio_buf) > 0:
+            if buffer_dur >= 0.5:
                 # 用VAD检测是否有完整的语音段（CPU密集，放入线程池避免阻塞事件循环）
                 loop = asyncio.get_running_loop()
                 audio_seg, remaining, vad_info = await loop.run_in_executor(
@@ -561,7 +533,6 @@ class RealtimeASRServer:
 
         except Exception as e:
             print(f"[WS] Audio error: {e}")
-            import traceback
             traceback.print_exc()
 
     def _postprocess_text(self, raw_text):
@@ -641,7 +612,6 @@ class RealtimeASRServer:
             })
         except Exception as e:
             print(f"[WS] Partial error: {e}", flush=True)
-            import traceback
             traceback.print_exc()
         finally:
             self._partial_in_flight = False
@@ -699,7 +669,6 @@ class RealtimeASRServer:
 
         except Exception as e:
             print(f"[WS] Segment error: {e}", flush=True)
-            import traceback
             traceback.print_exc()
             return
 
@@ -715,32 +684,30 @@ class RealtimeASRServer:
             while self._pending_emit_seq in self._pending_segments:
                 data = self._pending_segments.pop(self._pending_emit_seq)
 
-                if data is not None:
-                    (final_text, final_corrections, final_kw_corrected, audio, vi, seg_dur) = data
-                    seg_time = self.total_audio_seconds
+                (final_text, final_corrections, final_kw_corrected, audio, vi, seg_dur) = data
+                seg_time = self.total_audio_seconds
 
-                    # 阻止并发 partial 覆盖
-                    self._partial_sent_seq = self._partial_seq
-                    # 清空字幕条缓存，让字幕条从新段重新开始
-                    self._stream_last_partial = ""
-                    self._stream_last_corrections = []
+                # 阻止并发 partial 覆盖
+                self._partial_sent_seq = self._partial_seq
+                # 清空字幕条缓存，让字幕条从新段重新开始
+                self._stream_last_partial = ""
+                self._stream_last_corrections = []
 
-                    try:
-                        # 更新字幕条为段 ASR 的最终文本
-                        await self.send({'type': 'partial', 'text': final_text})
+                try:
+                    # 更新字幕条为段 ASR 的最终文本
+                    await self.send({'type': 'partial', 'text': final_text})
 
-                        # 发送到 speaker 面板
-                        await self._emit_segment(audio, final_text, vad_info=vi,
-                                                  seg_audio_time=seg_time, seg_duration=seg_dur,
-                                                  corrections=final_corrections, kw_corrected=final_kw_corrected)
+                    # 发送到 speaker 面板
+                    await self._emit_segment(audio, final_text, vad_info=vi,
+                                              seg_audio_time=seg_time, seg_duration=seg_dur,
+                                              corrections=final_corrections, kw_corrected=final_kw_corrected)
 
-                        status = f"[WS] [{self.transcription_count}] [SEG]"
-                        print(f"{status} {final_text[:60]}...", flush=True)
-                    except Exception as e:
-                        print(f"[WS] Emit segment failed: {e}", flush=True)
-                        import traceback
-                        traceback.print_exc()
-                        # 继续处理下一段，避免卡住整个队列
+                    status = f"[WS] [{self.transcription_count}] [SEG]"
+                    print(f"{status} {final_text[:60]}...", flush=True)
+                except Exception as e:
+                    print(f"[WS] Emit segment failed: {e}", flush=True)
+                    traceback.print_exc()
+                    # 继续处理下一段，避免卡住整个队列
 
                 self._pending_emit_seq += 1
 
@@ -890,13 +857,36 @@ class RealtimeASRServer:
         merge_semantic_continuation(self.segments)
         return self.speaker_manager.get_all_display_names()
 
+    async def _save_generated(self, websocket, generator, msg_type, ext, extra_kwargs=None):
+        """统一的报告/日志生成并发送（消除 save_report / save_log 重复）"""
+        display_names = self._prepare_report_data()
+        model_name = self.asr_engine.model_name if self.asr_engine else 'unknown'
+        kwargs = dict(
+            display_names=display_names,
+            page_creator=self.speaker_manager.page_creator,
+        )
+        if extra_kwargs:
+            kwargs.update(extra_kwargs)
+        content = generator(
+            self.segments, self.speaker_manager.speaker_profiles,
+            self.keyword_history,
+            self.total_audio_seconds,
+            model_name,
+            self.speaker_manager.page_type, self.speaker_manager.video_offset,
+            **kwargs,
+        )
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        name = msg_type.replace('save_', 'asr_')
+        await self._send_to(websocket, {'type': msg_type, 'content': content, 'filename': f'{name}_{ts}.{ext}'})
+
     async def generate_and_send_report(self, websocket):
         display_names = self._prepare_report_data()
+        model_name = self.asr_engine.model_name if self.asr_engine else 'unknown'
         report = generate_comprehensive_report(
             self.segments, self.speaker_manager.speaker_profiles,
             self.keyword_history,
             self.total_audio_seconds,
-            self.asr_engine.model_name,
+            model_name,
             self.speaker_manager.page_type, self.speaker_manager.video_offset,
             display_names=display_names,
             page_creator=self.speaker_manager.page_creator,
@@ -912,8 +902,16 @@ class RealtimeASRServer:
             self._clients.discard(websocket)
 
     async def send(self, message):
-        for ws in list(self._clients):
-            await self._send_to(ws, message)
+        if not self._clients:
+            return
+        await asyncio.gather(*[self._send_to(ws, message) for ws in list(self._clients)])
+
+    async def _broadcast_others(self, websocket, message):
+        """广播给除 websocket 外的所有客户端（_send_to 内部已容错，无需再 try）"""
+        others = [c for c in list(self._clients) if c is not websocket]
+        if not others:
+            return
+        await asyncio.gather(*[self._send_to(c, message) for c in others])
 
     async def start(self):
         print(f"\n[WS] WebSocket server: ws://{self.host}:{self.port}", flush=True)
@@ -941,7 +939,6 @@ def run_server(asr_engine, host='localhost', port=8765):
         print("\n[WS] Stopped")
     except Exception as e:
         print(f"\n[WS] Error: {e}")
-        import traceback
         traceback.print_exc()
     finally:
         _global_server = None

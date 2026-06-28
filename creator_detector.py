@@ -91,6 +91,15 @@ def _is_safe_url(url):
 class CreatorDetector:
     """从平台 URL 自动检测创作者名"""
 
+    _opener = None
+
+    @classmethod
+    def _get_opener(cls):
+        """缓存禁用重定向的 urllib opener（无状态，可全局复用）"""
+        if cls._opener is None:
+            cls._opener = urllib.request.build_opener(_NoRedirectHandler())
+        return cls._opener
+
     @staticmethod
     def parse_platform_info(page_url):
         """返回 (platform, page_type) 从 URL 推断平台"""
@@ -317,54 +326,42 @@ class CreatorDetector:
         return None
 
     @staticmethod
-    def _build_safe_opener():
-        """构建禁止重定向的 urllib opener"""
-        return urllib.request.build_opener(_NoRedirectHandler())
-
-    @staticmethod
-    def _fetch_json(url, retries=2, timeout=8):
+    def _fetch_with_retry(url, parser, retries, timeout, tag, extra_headers=None):
+        """统一的带重试 + 指数退避的抓取：parser(resp) 决定解析方式"""
         if not _is_safe_url(url):
             print(f"[CREATOR] SSRF blocked: {url[:80]}", flush=True)
             return None
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        if extra_headers:
+            headers.update(extra_headers)
+        opener = CreatorDetector._get_opener()
         last_err = None
         for attempt in range(retries + 1):
             try:
-                req = urllib.request.Request(url, headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Referer': 'https://www.bilibili.com/',
-                })
-                opener = CreatorDetector._build_safe_opener()
+                req = urllib.request.Request(url, headers=headers)
                 with opener.open(req, timeout=timeout) as resp:
-                    return json.loads(resp.read().decode('utf-8', errors='ignore'))
+                    return parser(resp)
             except Exception as e:
                 last_err = e
                 if attempt < retries:
                     wait = 0.5 * (2 ** attempt)  # 0.5s, 1.0s 指数退避
-                    print(f"[CREATOR] API {url[:50]} retry {attempt+1}/{retries} after {wait:.1f}s: {e}", flush=True)
+                    print(f"[CREATOR] {tag} {url[:50]} retry {attempt+1}/{retries} after {wait:.1f}s: {e}", flush=True)
                     time.sleep(wait)
-        print(f"[CREATOR] API {url[:50]} failed after {retries+1} attempts: {last_err}", flush=True)
+        print(f"[CREATOR] {tag} {url[:50]} failed after {retries+1} attempts: {last_err}", flush=True)
         return None
 
     @staticmethod
+    def _fetch_json(url, retries=2, timeout=8):
+        return CreatorDetector._fetch_with_retry(
+            url,
+            lambda resp: json.loads(resp.read().decode('utf-8', errors='ignore')),
+            retries, timeout, 'API',
+            {'Referer': 'https://www.bilibili.com/'})
+
+    @staticmethod
     def _fetch_page(url, retries=1, timeout=8):
-        if not _is_safe_url(url):
-            print(f"[CREATOR] SSRF blocked: {url[:80]}", flush=True)
-            return None
-        last_err = None
-        for attempt in range(retries + 1):
-            try:
-                req = urllib.request.Request(url, headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Accept': 'text/html,application/xhtml+xml',
-                })
-                opener = CreatorDetector._build_safe_opener()
-                with opener.open(req, timeout=timeout) as resp:
-                    return resp.read().decode('utf-8', errors='ignore')
-            except Exception as e:
-                last_err = e
-                if attempt < retries:
-                    wait = 0.5 * (2 ** attempt)
-                    print(f"[CREATOR] page {url[:50]} retry {attempt+1}/{retries}: {e}", flush=True)
-                    time.sleep(wait)
-        print(f"[CREATOR] page {url[:50]} failed after {retries+1} attempts: {last_err}", flush=True)
-        return None
+        return CreatorDetector._fetch_with_retry(
+            url,
+            lambda resp: resp.read().decode('utf-8', errors='ignore'),
+            retries, timeout, 'page',
+            {'Accept': 'text/html,application/xhtml+xml'})

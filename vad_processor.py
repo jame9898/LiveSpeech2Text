@@ -43,10 +43,14 @@ class VADProcessor:
         self.speech_gaps = []
         self.adaptive_threshold = 1.0
 
-    def reset(self):
-        """重置会话状态：清空自适应历史数据"""
+    def _reset_adaptive(self):
+        """清空自适应历史数据"""
         self.speech_gaps = []
         self.adaptive_threshold = 1.0
+
+    def reset(self):
+        """重置会话状态：清空自适应历史数据"""
+        self._reset_adaptive()
 
     def cut(self, audio_data, sr):
         """
@@ -132,8 +136,7 @@ class VADProcessor:
                 cut_point = (last_speech_frame + 1) * hop_len
                 speech_segment = audio_data[:cut_point]
                 remaining = audio_data[cut_point:]
-                self.speech_gaps = []
-                self.adaptive_threshold = 1.0
+                self._reset_adaptive()
                 vad_info['chunk_dur'] = len(speech_segment) / sr
                 vad_info['forced'] = False
                 return speech_segment, remaining, vad_info
@@ -147,8 +150,7 @@ class VADProcessor:
                 remaining = audio_data[cut_point:]
 
                 # 重置间隙统计
-                self.speech_gaps = []
-                self.adaptive_threshold = 1.0
+                self._reset_adaptive()
 
                 vad_info['chunk_dur'] = len(speech_segment) / sr
                 vad_info['forced'] = False

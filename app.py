@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 import sys
+import os
+import time
 import threading
+import subprocess
+import platform
+import traceback
+import importlib.util
 from datetime import datetime
 
 from core import load_config
-
-import importlib.util
 
 SERVER_THREAD = None
 
@@ -15,6 +19,53 @@ def check_deps():
         if importlib.util.find_spec(mod) is None:
             missing.append(mod)
     return missing
+
+
+def _find_port_holder_pid(port):
+    """netstat 查询占用指定端口的 PID，返回 (pid_str, is_listening) 或 (None, False)"""
+    try:
+        r = subprocess.run(['netstat', '-ano'], capture_output=True, text=True)
+    except Exception:
+        return None, False
+    for line in r.stdout.split('\n'):
+        if f':{port}' in line and 'LISTENING' in line:
+            parts = line.strip().split()
+            if len(parts) >= 1:
+                return parts[-1], True
+    return None, False
+
+
+def _is_python_process(pid):
+    """判断 PID 对应进程是否为 python 进程，避免误杀无关程序"""
+    try:
+        proc_check = subprocess.run(
+            ['wmic', 'process', 'where', f'ProcessId={pid}', 'get', 'CommandLine'],
+            capture_output=True, text=True, timeout=3)
+        cmd_line = proc_check.stdout.lower() if proc_check.stdout else ''
+        return any(kw in cmd_line for kw in ['python', 'pythonw', 'conda'])
+    except Exception:
+        return False
+
+
+def _ensure_port_free(port, log_cb):
+    """Windows 下确保端口可用：自身占用则等待，python 进程占用则结束，其他进程则告警"""
+    my_pid = str(os.getpid())
+    pid, _ = _find_port_holder_pid(port)
+    if pid is None:
+        return
+    if pid == my_pid:
+        log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 端口 {port} 尚未释放，等待中...\n")
+        for _ in range(10):
+            time.sleep(0.5)
+            pid2, _ = _find_port_holder_pid(port)
+            if pid2 is None:
+                break
+        return
+    if _is_python_process(pid):
+        subprocess.run(['taskkill', '/F', '/PID', pid], capture_output=True)
+        log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 已释放端口 {port} (旧进程 PID={pid})\n")
+    else:
+        log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] [WARN] 端口 {port} 被非 Python 进程占用 (PID={pid})，请手动释放\n")
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QTextCharFormat, QIcon, QPixmap, QPainter, QFont, QTextCursor
@@ -187,7 +238,8 @@ def start_server_backend(config, log_cb):
 
         class LR:
             def __init__(self, cb):
-                self._cb = cb; self._b = ""
+                self._cb = cb
+                self._b = ""
             def write(self, s):
                 if s:
                     self._b += s
@@ -221,43 +273,8 @@ def start_server_backend(config, log_cb):
                 st = config.get("model_settings", {})
                 port = st.get("ws_port", 8765)
 
-                import subprocess as _sp, platform as _plat, os as _os
-                if _plat.system() == 'Windows':
-                    my_pid = str(_os.getpid())
-                    try:
-                        r = _sp.run(['netstat', '-ano'], capture_output=True, text=True)
-                        for line in r.stdout.split('\n'):
-                            if f':{port}' in line and 'LISTENING' in line:
-                                parts = line.strip().split()
-                                pid = parts[-1]
-                                if pid == my_pid:
-                                    log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 端口 {port} 尚未释放，等待中...\n")
-                                    for _ in range(10):
-                                        import time as _t
-                                        _t.sleep(0.5)
-                                        r2 = _sp.run(['netstat', '-ano'], capture_output=True, text=True)
-                                        if not any(f':{port}' in l and 'LISTENING' in l for l in r2.stdout.split('\n')):
-                                            break
-                                else:
-                                    # 验证目标进程是否为 python 进程，避免误杀无关程序
-                                    try:
-                                        proc_check = _sp.run(
-                                            ['wmic', 'process', 'where', f'ProcessId={pid}', 'get', 'CommandLine'],
-                                            capture_output=True, text=True, timeout=3)
-                                        cmd_line = proc_check.stdout.lower() if proc_check.stdout else ''
-                                        is_python = any(kw in cmd_line for kw in ['python', 'pythonw', 'conda'])
-                                    except Exception:
-                                        is_python = False
-
-                                    if is_python:
-                                        _sp.run(['taskkill', '/F', '/PID', pid],
-                                                capture_output=True)
-                                        log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 已释放端口 {port} (旧进程 PID={pid})\n")
-                                    else:
-                                        log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] [WARN] 端口 {port} 被非 Python 进程占用 (PID={pid})，请手动释放\n")
-                                break
-                    except Exception:
-                        pass
+                if platform.system() == 'Windows':
+                    _ensure_port_free(port, log_cb)
 
                 _model_ready.set()
                 log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] WebSocket ws://localhost:{port}\n")
@@ -265,7 +282,6 @@ def start_server_backend(config, log_cb):
                 run_server(eng, 'localhost', port)
                 log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u670d\u52a1\u5df2\u505c\u6b62\n")
             except Exception as e:
-                import traceback
                 _model_error[0] = str(e)
                 log_cb(f"[ERROR] {e}\n{traceback.format_exc()}\n")
             finally:
@@ -277,7 +293,6 @@ def start_server_backend(config, log_cb):
         # Return event and error holder for non-blocking polling
         return _model_ready, _model_error
     except Exception as e:
-        import traceback
         log_cb(f"[ERROR] {e}\n{traceback.format_exc()}\n")
         return None, [str(e)]
 
@@ -333,8 +348,6 @@ class MainWindow(QMainWindow):
         self._append_log_label("\u6b22\u8fce\u4f7f\u7528\u5728\u7ebf\u5b9e\u65f6\u8bed\u97f3\u8bc6\u522b\u7cfb\u7edf v1.0\n")
         missing = check_deps()
         if missing:
-            self._append_log_label(f"[WARN] \u7f3a\u5c11\u4f9d\u8d56: {', '.join(missing)}\n")
-            self._append_log_label("  \u8bf7\u53cc\u51fb \u542f\u52a8.bat \u5b89\u88c5\u4f9d\u8d56\n")
             self._emit_log(f"[WARN] \u7f3a\u5c11\u4f9d\u8d56: {', '.join(missing)}\n")
             self._emit_log("  \u8bf7\u53cc\u51fb \u542f\u52a8.bat \u5b89\u88c5\u4f9d\u8d56\n")
         self._append_log_label("\u70b9\u51fb \u542f\u52a8\u670d\u52a1 \u5f00\u59cb\u8bc6\u522b\n\n")
@@ -543,7 +556,7 @@ class MainWindow(QMainWindow):
             self._update_ui_state()
             return
 
-        self._wait_start_time = __import__("time").time()
+        self._wait_start_time = time.time()
         self._ready_event = ready_event
         self._error_holder = error_holder
         self._wait_timer = QTimer()
@@ -564,7 +577,7 @@ class MainWindow(QMainWindow):
             self._running = False
             self._emit_log(f"[ERROR] \u670d\u52a1\u542f\u52a8\u5931\u8d25: {self._error_holder[0]}\n")
             self._update_ui_state()
-        elif __import__("time").time() - self._wait_start_time > 120:
+        elif time.time() - self._wait_start_time > 120:
             self._wait_timer.stop()
             self._starting = False
             self._running = False

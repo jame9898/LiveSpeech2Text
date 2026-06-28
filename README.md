@@ -21,10 +21,10 @@
 ## 快速开始
 
 ```bash
-# 1. 克隆仓库（GitHub 或 Gitee，二选一）
-git clone https://github.com/jame9898/LiveSpeech2Text/tree/hf
+# 1. 克隆仓库（GitHub 或 Gitee，二选一，使用 hf 分支）
+git clone -b hf https://github.com/jame9898/LiveSpeech2Text
 # 或 Gitee 镜像
-git clone https://gitee.com/linhanduzikai/LiveSpeech2Text/tree/hf
+git clone -b hf https://gitee.com/linhanduzikai/LiveSpeech2Text
 cd LiveSpeech2Text
 
 # 2. 创建虚拟环境（推荐）
@@ -126,7 +126,6 @@ git pull
 ├── text_utils.py          # 文本处理工具（去重/格式化）
 ├── settings_dialog.py     # PySide6 设置对话框（模型/设备/VAD/端口配置）
 ├── asr_panel.user.js      # Tampermonkey 用户脚本（多平台视频页面内嵌面板+字幕条）
-├── __init__.py            # 包导出
 ├── requirements.txt       # Python 依赖 (CPU)
 ├── requirements-gpu.txt   # Python 依赖 (GPU + CUDA)
 ├── start.bat              # 一键启动

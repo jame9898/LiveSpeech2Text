@@ -9,6 +9,11 @@ import soundfile as sf
 import time
 from pathlib import Path
 
+try:
+    from scipy import signal
+except ImportError:
+    signal = None
+
 
 def _pre_denoise_audio(audio_data, sr=16000):
     """音频预降噪：在 CAM++ 提取声纹 embedding 前进行基础降噪处理。
@@ -21,12 +26,16 @@ def _pre_denoise_audio(audio_data, sr=16000):
     audio = np.asarray(audio_data, dtype=np.float32).copy()
 
     # 1. 高通滤波：去除 80Hz 以下低频噪声（空调、风扇、电流声等）
-    try:
-        from scipy import signal
-        sos = signal.butter(4, 80, btype='highpass', fs=sr, output='sos')
-        audio = signal.sosfiltfilt(sos, audio)
-    except (ImportError, Exception):
-        # scipy 不可用或无 signal 模块时，回退到简易时域高通
+    hp_done = False
+    if signal is not None:
+        try:
+            sos = signal.butter(4, 80, btype='highpass', fs=sr, output='sos')
+            audio = signal.sosfiltfilt(sos, audio)
+            hp_done = True
+        except Exception:
+            pass
+    if not hp_done:
+        # scipy 不可用或滤波失败时，回退到简易时域高通
         alpha = 0.97
         audio_hp = np.zeros_like(audio)
         audio_hp[0] = audio[0]

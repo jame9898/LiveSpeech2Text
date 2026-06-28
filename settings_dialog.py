@@ -196,6 +196,10 @@ class SettingsDialog(QDialog):
         r2.addWidget(self._spn_max_tokens)
         r2.addStretch()
         gl3.addLayout(r2)
+        self._chk_torch_compile = QCheckBox("torch.compile 加速（仅 GPU 有效，首次编译较慢）")
+        self._chk_torch_compile.setChecked(self._settings.get("torch_compile", False))
+        self._chk_torch_compile.setToolTip("官方实测 ASR generate 约 2.4x 加速，需 GPU；首次调用会触发编译耗时")
+        gl3.addWidget(self._chk_torch_compile)
         layout.addWidget(g3)
 
         layout.addStretch()
@@ -214,6 +218,7 @@ class SettingsDialog(QDialog):
                 "threads": self._spn_threads.value(),
                 "ws_port": self._spn_ws.value(),
                 "max_new_tokens": self._spn_max_tokens.value(),
+                "torch_compile": self._chk_torch_compile.isChecked(),
             }
         }
 
