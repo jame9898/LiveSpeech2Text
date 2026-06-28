@@ -24,7 +24,7 @@
 # 1. 克隆仓库（GitHub 或 Gitee，二选一）
 git clone https://github.com/jame9898/LiveSpeech2Text/tree/hf
 # 或 Gitee 镜像
-git clone https://gitee.com/linhanduzikai/LiveSpeech2Text
+git clone https://gitee.com/linhanduzikai/LiveSpeech2Text/tree/hf
 cd LiveSpeech2Text
 
 # 2. 创建虚拟环境（推荐）
