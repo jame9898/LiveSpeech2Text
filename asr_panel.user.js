@@ -635,11 +635,12 @@ function onMsg(data) {
             if (data.recording) {
                 isRecording = true;
                 $('asr3-start').disabled = true; $('asr3-start-full').disabled = true;
-                $('asr3-stop').disabled = false;
+                $('asr3-stop').disabled = true;
                 const rst = $('asr3-st');
                 rst.style.background = 'rgba(248,81,73,.08)';
                 rst.style.color = '#f85149';
-                rst.textContent = '🔴 识别中...（网页端）';
+                var modeText = data.mode === 'streamer' ? '主播模式' : (data.mode === 'meeting' ? '会议模式' : '其他端');
+                rst.textContent = '目前处于' + modeText + '，请停止服务后启用观众模式';
             } else {
                 if (!isRecording) {
                     $('asr3-start').disabled = false; $('asr3-start-full').disabled = false;

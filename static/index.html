@@ -270,7 +270,8 @@ function handleMsg(d) {
             if (d.recording) {
                 isRecording = true;
                 updateBtns();
-                setRec('remote-recording', '识别中...（其他端）');
+                var modeText = d.mode === 'streamer' ? '主播模式' : (d.mode === 'meeting' ? '会议模式' : '其他端');
+                setRec('remote-recording', '目前处于' + modeText + '，请停止服务后启用观众模式');
             } else {
                 isRecording = false;
                 updateBtns();

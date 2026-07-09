@@ -39,6 +39,13 @@ for d in [DICT_DIR, TEMP_DIR, MODELS_DIR]:
 # modelscope 默认系统缓存路径
 _MODELSCOPE_HUB = Path.home() / ".cache" / "modelscope" / "hub"
 
+# 创空间持久化目录（容器重启后不丢失）
+# 优先级：MODELS_DIR > /mnt/workspace/livespeech2text_models > ~/.cache/modelscope
+_PERSISTENT_ROOTS = []
+_mnt = Path("/mnt/workspace/livespeech2text_models")
+if _mnt.exists() or Path("/mnt/workspace").exists():
+    _PERSISTENT_ROOTS.append(_mnt)
+
 _os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
 
 _DEFAULT_CONFIG = {
@@ -163,16 +170,32 @@ class ASREngine:
             for folder_name, size_label, ms_id, hf_id in model_variants:
                 search_paths = [
                     MODELS_DIR / 'hub' / 'models' / 'Qwen' / folder_name,
-                    _MODELSCOPE_HUB / 'models' / 'Qwen' / folder_name,
                 ]
+                # 创空间持久化目录
+                for root in _PERSISTENT_ROOTS:
+                    search_paths.append(root / 'hub' / 'models' / 'Qwen' / folder_name)
+                # modelscope 默认缓存
+                search_paths.append(_MODELSCOPE_HUB / 'models' / 'Qwen' / folder_name)
+
+                # 额外递归搜索（兜底）
                 for candidate in list(MODELS_DIR.glob(f'**/{folder_name}')):
                     if candidate.is_dir() and candidate not in search_paths:
                         search_paths.insert(0, candidate)
+                for root in _PERSISTENT_ROOTS:
+                    if root.exists():
+                        for candidate in list(root.glob(f'**/{folder_name}')):
+                            if candidate.is_dir() and candidate not in search_paths:
+                                search_paths.insert(0, candidate)
                 for candidate in list(_MODELSCOPE_HUB.glob(f'**/{folder_name}')):
                     if candidate.is_dir() and candidate not in search_paths:
                         search_paths.insert(0, candidate)
                 for p in search_paths:
                     if p.is_dir():
+                        # 验证目录有权重文件
+                        weights = list(p.rglob("*.safetensors")) + list(p.rglob("*.bin"))
+                        if not weights:
+                            print(f"[LOAD] 跳过（无权重文件）: {p}", flush=True)
+                            continue
                         model_path = str(p)
                         model_variant = (folder_name, size_label, ms_id, hf_id)
                         print(f"[LOAD] Qwen3-ASR {size_label} from local: {model_path}", flush=True)

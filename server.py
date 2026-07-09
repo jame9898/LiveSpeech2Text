@@ -49,6 +49,7 @@ class RealtimeASRServer:
         self.client = None
         self.client_connected = False
         self.recording_ws = None
+        self._recording_mode = 'audience'  # 当前录音客户端的模式：audience/streamer/meeting
         self._current_handler_ws = None
         self._clients = set()
         threads = self.asr_engine._config.get("model_settings", {}).get("threads", 8)
@@ -217,6 +218,14 @@ class RealtimeASRServer:
             self.client_connected = True
             self._clients.add(websocket)
 
+            # 新客户端连接时，若已有其他端在录音，通知当前录音状态+模式
+            if self.recording_ws is not None and self.recording_ws is not websocket:
+                await self._send_to(websocket, {
+                    'type': 'recording_state',
+                    'recording': True,
+                    'mode': self._recording_mode,
+                })
+
             async for message in websocket:
                 if isinstance(message, bytes):
                     await self.process_audio(message, websocket)
@@ -255,6 +264,7 @@ class RealtimeASRServer:
                     return
                 self.is_running = True
                 self.recording_ws = websocket
+                self._recording_mode = msg.get('mode', 'audience')
                 self._session_start_time = datetime.now()
                 self._reset_session_state()
                 await self._send_to(websocket, {
@@ -262,17 +272,22 @@ class RealtimeASRServer:
                     'message': 'Started', 'model': self.asr_engine.model_name,
                     'keywords': list(self.pinyin_corrector.kw_set)
                 })
-                print("[WS] Recording started")
+                print(f"[WS] Recording started (mode={self._recording_mode})")
                 for client in list(self._clients):
                     if client is not websocket:
                         try:
-                            await self._send_to(client, {'type': 'recording_state', 'recording': True})
+                            await self._send_to(client, {
+                                'type': 'recording_state',
+                                'recording': True,
+                                'mode': self._recording_mode,
+                            })
                         except Exception:
                             pass
 
             elif msg_type == 'stop':
                 if self.recording_ws is websocket:
                     self.recording_ws = None
+                self._recording_mode = 'audience'
                 self.is_running = False
                 # Flush remaining buffer（降低阈值：>=最小语音段即可转录，避免结尾丢字）
                 min_flush_samples = int(self.min_speech_duration * 16000)
@@ -297,7 +312,11 @@ class RealtimeASRServer:
                 for client in list(self._clients):
                     if client is not websocket:
                         try:
-                            await self._send_to(client, {'type': 'recording_state', 'recording': False})
+                            await self._send_to(client, {
+                                'type': 'recording_state',
+                                'recording': False,
+                                'mode': 'audience',
+                            })
                         except Exception:
                             pass
 
@@ -625,7 +644,7 @@ class RealtimeASRServer:
             self._partial_sent_seq = my_seq
             self._stream_last_partial = raw_text
 
-            await self.send({
+            await self._send_to_recording({
                 'type': 'partial',
                 'text': raw_text,
             })
@@ -702,7 +721,7 @@ class RealtimeASRServer:
 
             # 更新字幕条为最终文本（字幕条从预览模式切换到最终版本）
             self._stream_last_partial = text
-            await self.send({
+            await self._send_to_recording({
                 'type': 'partial',
                 'text': text,
             })
@@ -824,7 +843,7 @@ class RealtimeASRServer:
             self.speaker_manager.total_audio_seconds = self.total_audio_seconds
         self.transcription_count += 1
 
-        await self.send({
+        await self._send_to_recording({
             'type': 'transcription',
             'text': text,
             'speaker': display_name,
@@ -904,8 +923,14 @@ class RealtimeASRServer:
             self._clients.discard(websocket)
 
     async def send(self, message):
+        """广播给所有已连接客户端"""
         for ws in list(self._clients):
             await self._send_to(ws, message)
+
+    async def _send_to_recording(self, message):
+        """只发给正在录音的客户端，避免主播模式结果串到网页插件"""
+        if self.recording_ws is not None:
+            await self._send_to(self.recording_ws, message)
 
     async def start(self):
         page = STATUS_PAGE.read_text(encoding='utf-8').replace("{host}", self.host).replace("{port}", str(self.port))
