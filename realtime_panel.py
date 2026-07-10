@@ -3,10 +3,11 @@
 实时语音识别面板组件
 
 包含：
-- SubtitleBarWindow: 独立字幕条悬浮窗（无边框置顶、可拖动、可被OBS捕获、可关闭）
 - SubtitleListView: 字幕展示区（滚动展示识别文字+时间戳，嵌入主播/会议页面）
 - MicCaptureThread: 麦克风采集线程（48kHz mono float32，发到WS）
 - RealtimeWSClient: WebSocket客户端（接收partial/transcription，驱动字幕更新）
+
+字幕条悬浮窗已移除：改用 OBS 浏览器源，访问 http://<host>:<port>/subtitle
 
 音频格式约定（与 server.py 对齐）：
 - 采样率 48000 Hz
@@ -24,284 +25,16 @@ import threading
 from datetime import datetime, timedelta
 from collections import deque
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QRect, QPoint
-from PySide6.QtGui import QFont, QColor, QPalette, QPainter, QMouseEvent, QKeyEvent
+from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
-    QListWidget, QListWidgetItem, QTextEdit, QFrame, QSizePolicy,
-    QApplication, QToolButton,
+    QListWidget, QListWidgetItem, QTextEdit, QFrame,
+    QApplication,
 )
 
 
 # ============================================================
-# 1. 独立字幕条悬浮窗（可拖动、可被OBS捕获、可关闭）
-# ============================================================
-class SubtitleBarWindow(QWidget):
-    """无边框置顶悬浮字幕条
-
-    - 半透明黑底白字，可在桌面任意拖动
-    - 窗口置顶，可被OBS窗口捕获
-    - 显示当前实时文字（partial）
-    - 左上角"AI"小标识
-    - 右上角关闭按钮
-    - 可调整文字大小和窗口大小
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowFlags(
-            Qt.FramelessWindowHint
-            | Qt.WindowStaysOnTopHint
-            | Qt.Tool  # Tool 类型：不显示在任务栏，但OBS可捕获
-        )
-        self.setAttribute(Qt.WA_TranslucentBackground, False)
-        self.setMinimumWidth(300)
-        self.setMinimumHeight(60)
-        self.resize(500, 80)  # 默认尺寸
-        self._drag_pos = None
-        self._current_text = ""
-        self._current_speaker = None
-        self._last_speaker = None  # 上一个最终结果的 speaker（partial 无 speaker 信息时用此着色）
-        self._font_size = 18  # 默认文字大小
-        self._resize_edge = None  # 当前调整的边缘方向
-        self._resize_start_rect = None  # 调整起始矩形
-        self._resize_start_pos = None  # 调整起始鼠标全局位置
-        self._EDGE_WIDTH = 8  # 边缘检测宽度（像素）
-
-        # 鼠标跟踪：让 mouseMoveEvent 在未按下时也触发（用于边缘光标切换）
-        self.setMouseTracking(True)
-
-        # 布局
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 10, 16, 8)
-        layout.setSpacing(2)
-
-        # 顶部行：AI标识（左）
-        top_row = QHBoxLayout()
-        top_row.setContentsMargins(0, 0, 0, 0)
-        self._ai_label = QLabel("AI")
-        self._ai_label.setStyleSheet(
-            "color: #aaa; font-size: 10px; font-weight: 600; "
-            "background: rgba(255,255,255,0.1); "
-            "padding: 1px 5px; border-radius: 3px;"
-        )
-        # 标签设为鼠标透明：让鼠标事件穿透到父窗口，边缘检测和光标才能正常工作
-        self._ai_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        top_row.addWidget(self._ai_label)
-        top_row.addStretch()
-        layout.addLayout(top_row)
-
-        # 主文字
-        self._label = QLabel("等待语音...")
-        self._label.setAlignment(Qt.AlignCenter)
-        self._label.setStyleSheet(
-            f"color: #ffffff; font-size: {self._font_size}px; font-weight: 500; "
-            "background: transparent;"
-        )
-        self._label.setWordWrap(False)
-        self._label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        layout.addWidget(self._label)
-
-        # 关闭按钮（右上角小叉）
-        self._close_btn = QToolButton(self)
-        self._close_btn.setText("x")
-        self._close_btn.setFixedSize(18, 18)
-        self._close_btn.setStyleSheet(
-            "QToolButton { color: #aaa; border: none; font-size: 14px; }"
-            "QToolButton:hover { color: #fff; }"
-        )
-        self._close_btn.clicked.connect(self.hide)
-
-        self._update_style()
-
-    def _update_style(self):
-        self.setStyleSheet(
-            "SubtitleBarWindow {"
-            "  background: rgba(0, 0, 0, 0.75);"
-            "  border-radius: 10px;"
-            "  border: 1px solid rgba(255,255,255,0.15);"
-            "}"
-        )
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._close_btn.move(self.width() - 26, 4)
-
-    # 说话人颜色映射（黑底字幕条上清晰可辨的颜色）
-    _SPEAKER_COLORS = {
-        "Speaker0": "#ffffff",   # 白色
-        "Speaker1": "#ff6b6b",   # 浅红
-        "Speaker2": "#6bb6ff",   # 浅蓝
-        "Speaker3": "#a8e6cf",   # 浅绿
-        "Speaker4": "#ffd93d",   # 浅黄
-    }
-    _DEFAULT_SPEAKER_COLOR = "#ffffff"
-
-    def _speaker_color(self, speaker: str) -> str:
-        """根据 speaker ID 返回对应颜色"""
-        if not speaker:
-            return self._DEFAULT_SPEAKER_COLOR
-        return self._SPEAKER_COLORS.get(speaker, self._DEFAULT_SPEAKER_COLOR)
-
-    def set_text(self, text: str, speaker: str = None):
-        """更新字幕条文字，按 speaker 设置颜色区分
-        partial 无 speaker 信息时用上一个最终结果的 speaker 着色，实现即时变色。
-        """
-        self._current_text = text or ""
-        # partial（speaker=None）用 last_speaker 着色；transcription 更新 last_speaker
-        if speaker is not None:
-            self._last_speaker = speaker
-            self._current_speaker = speaker
-        else:
-            self._current_speaker = self._last_speaker
-        color = self._speaker_color(self._current_speaker)
-        self._label.setStyleSheet(
-            f"color: {color}; font-size: {self._font_size}px; font-weight: 500; "
-            "background: transparent;"
-        )
-        self._label.setText(self._current_text if self._current_text else "等待语音...")
-
-    def set_font_size(self, size: int):
-        """调整文字大小"""
-        self._font_size = max(10, min(36, size))
-        color = self._speaker_color(self._current_speaker)
-        self._label.setStyleSheet(
-            f"color: {color}; font-size: {self._font_size}px; font-weight: 500; "
-            "background: transparent;"
-        )
-
-    def get_font_size(self) -> int:
-        return self._font_size
-
-    def clear_text(self):
-        self._current_text = ""
-        self._current_speaker = None
-        self._label.setStyleSheet(
-            f"color: {self._DEFAULT_SPEAKER_COLOR}; font-size: {self._font_size}px; "
-            "font-weight: 500; background: transparent;"
-        )
-        self._label.setText("等待语音...")
-
-    # ---- 边缘检测 + 拖动 + 调整大小（四边方向，对边固定）----
-    def _detect_edge(self, pos):
-        """检测鼠标位置所在的边缘方向，返回 None 表示在中间（可拖动移动）
-        只支持四边：拖某边时对边固定，仅一个维度变化，逻辑简单不易出错。
-        """
-        ew = self._EDGE_WIDTH
-        x, y = pos.x(), pos.y()
-        w, h = self.width(), self.height()
-
-        # 四边（互斥，只返回一个方向）
-        if x < ew:
-            return "left"
-        if x > w - ew:
-            return "right"
-        if y < ew:
-            return "top"
-        if y > h - ew:
-            return "bottom"
-        return None  # 中间区域 → 拖动移动
-
-    def _cursor_for_edge(self, edge):
-        """根据边缘方向返回对应的鼠标光标形状"""
-        if edge in ("left", "right"):
-            return Qt.SizeHorCursor
-        if edge in ("top", "bottom"):
-            return Qt.SizeVerCursor
-        return Qt.ArrowCursor
-
-    def mousePressEvent(self, event: QMouseEvent):
-        if event.button() == Qt.LeftButton:
-            edge = self._detect_edge(event.position().toPoint())
-            if edge:
-                # 进入调整大小模式
-                self._resize_edge = edge
-                self._resize_start_rect = self.geometry()
-                self._resize_start_pos = event.globalPosition().toPoint()
-            else:
-                # 中间区域 → 拖动移动
-                self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            event.accept()
-
-    def mouseMoveEvent(self, event: QMouseEvent):
-        global_pos = event.globalPosition().toPoint()
-        if self._resize_edge is not None and event.buttons() & Qt.LeftButton:
-            # 调整大小中
-            self._do_resize(global_pos)
-            event.accept()
-        elif self._drag_pos is not None and event.buttons() & Qt.LeftButton:
-            # 拖动移动中
-            self.move(global_pos - self._drag_pos)
-            event.accept()
-        else:
-            # 未按下：根据位置更新鼠标光标
-            edge = self._detect_edge(event.position().toPoint())
-            self.setCursor(self._cursor_for_edge(edge))
-
-    def _do_resize(self, global_pos):
-        """根据起始矩形和鼠标位移计算新几何，应用约束
-        四边方向：每个方向只变一个维度，对边固定。
-        - left: 右边固定，宽度和左边x变化
-        - right: 左边固定，宽度变化
-        - top: 下边固定，高度和上边y变化
-        - bottom: 上边固定，高度变化
-        """
-        r = self._resize_start_rect
-        dx = global_pos.x() - self._resize_start_pos.x()
-        dy = global_pos.y() - self._resize_start_pos.y()
-        min_w = self.minimumWidth()
-        min_h = self.minimumHeight()
-        edge = self._resize_edge
-
-        new_x, new_y, new_w, new_h = r.x(), r.y(), r.width(), r.height()
-
-        if edge == "left":
-            new_x = r.x() + dx
-            new_w = r.width() - dx
-            if new_w < min_w:
-                new_x = r.x() + r.width() - min_w
-                new_w = min_w
-        elif edge == "right":
-            new_w = r.width() + dx
-            if new_w < min_w:
-                new_w = min_w
-        elif edge == "top":
-            new_y = r.y() + dy
-            new_h = r.height() - dy
-            if new_h < min_h:
-                new_y = r.y() + r.height() - min_h
-                new_h = min_h
-        elif edge == "bottom":
-            new_h = r.height() + dy
-            if new_h < min_h:
-                new_h = min_h
-
-        self.setGeometry(new_x, new_y, new_w, new_h)
-
-    def mouseReleaseEvent(self, event: QMouseEvent):
-        self._drag_pos = None
-        self._resize_edge = None
-        self._resize_start_rect = None
-        self._resize_start_pos = None
-
-    def mouseDoubleClickEvent(self, event: QMouseEvent):
-        """双击切换宽度（窄/宽）"""
-        if self.width() < 700:
-            self.resize(900, self.height())
-        else:
-            self.resize(400, self.height())
-
-    def wheelEvent(self, event):
-        """滚轮调整文字大小"""
-        delta = event.angleDelta().y()
-        if delta > 0:
-            self.set_font_size(self._font_size + 1)
-        else:
-            self.set_font_size(self._font_size - 1)
-
-
-# ============================================================
-# 2. 字幕展示区（滚动展示识别文字+时间戳）
+# 1. 字幕展示区（滚动展示识别文字+时间戳）
 # ============================================================
 class SubtitleListView(QFrame):
     """字幕展示区：顶部斜体实时区 + 滚动记录区
@@ -416,7 +149,7 @@ class SubtitleListView(QFrame):
 
 
 # ============================================================
-# 3. 麦克风采集线程（48kHz mono float32）
+# 2. 麦克风采集线程（48kHz mono float32）
 # ============================================================
 class MicCaptureThread(QThread):
     """麦克风采集线程
@@ -488,7 +221,7 @@ class MicCaptureThread(QThread):
 
 
 # ============================================================
-# 4. WebSocket 客户端线程（接收 partial/transcription）
+# 3. WebSocket 客户端线程（接收 partial/transcription）
 # ============================================================
 class RealtimeWSClient(QThread):
     """WebSocket 客户端线程
@@ -648,7 +381,7 @@ class RealtimeWSClient(QThread):
 
 
 # ============================================================
-# 5. 时间戳格式化工具
+# 4. 时间戳格式化工具
 # ============================================================
 def format_wall_time(timestamp_str: str = None) -> str:
     """把 ISO 时间戳或当前时间转为 HH:MM:SS 格式（精确到秒）"""

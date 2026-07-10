@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QFileDialog, QProgressBar, QLineEdit, QSpinBox,
 )
 from realtime_panel import (
-    SubtitleBarWindow, SubtitleListView,
+    SubtitleListView,
     MicCaptureThread, RealtimeWSClient, format_wall_time,
 )
 
@@ -608,7 +608,7 @@ class MainWindow(QMainWindow):
         mic_row.addWidget(self._mic_level)
         pl_s.addLayout(mic_row)
 
-        # 工具栏：测试麦克风 + 字幕条开关 + 字号 + 导出（统一高度32px）
+        # 工具栏：测试麦克风 + 打开字幕页 + 导出（统一高度32px）
         tool_row_s = QHBoxLayout()
         tool_row_s.setSpacing(8)
         self._btn_test_mic = QPushButton("测试麦克风")
@@ -617,15 +617,12 @@ class MainWindow(QMainWindow):
         self._btn_test_mic.setMinimumWidth(104)
         self._btn_test_mic.clicked.connect(self._test_microphone)
         tool_row_s.addWidget(self._btn_test_mic)
-        self._chk_subtitle_bar = QCheckBox("字幕条")
-        self._chk_subtitle_bar.setChecked(True)
-        self._chk_subtitle_bar.stateChanged.connect(self._on_subtitle_bar_toggle)
-        tool_row_s.addWidget(self._chk_subtitle_bar)
-        # 字号：整体方框分三块 [- 数字 +]
-        tool_row_s.addWidget(QLabel("字号:"))
-        self._font_size_spin, self._font_size_widget = self._make_font_size_control()
-        self._font_size_spin.valueChanged.connect(self._on_font_size_changed)
-        tool_row_s.addWidget(self._font_size_widget)
+        self._btn_subtitle = QPushButton("打开字幕页")
+        self._btn_subtitle.setObjectName("toolBtn")
+        self._btn_subtitle.setFixedHeight(32)
+        self._btn_subtitle.setMinimumWidth(104)
+        self._btn_subtitle.clicked.connect(self._open_subtitle_page)
+        tool_row_s.addWidget(self._btn_subtitle)
         tool_row_s.addStretch()
         self._btn_export_s = QPushButton("导出 MD 文档")
         self._btn_export_s.setObjectName("toolBtn")
@@ -653,6 +650,9 @@ class MainWindow(QMainWindow):
         name_row_s.addWidget(self._speaker_name_input)
         name_row_s.addStretch()
         pl_s.addLayout(name_row_s)
+
+        # 字幕页 URL 显示与复制（主播模式）
+        self._url_rows_s = self._build_url_rows(pl_s)
 
         ls2 = QLabel("选择麦克风后启动服务，本地将采集麦克风音频并实时识别。")
         ls2.setStyleSheet(f"color:{LIGHT['text_dim']};font-size:12px")
@@ -695,7 +695,7 @@ class MainWindow(QMainWindow):
         msys_row.addWidget(self._meet_level)
         pl_m.addLayout(msys_row)
 
-        # 工具栏：测试麦克风 + 字幕条开关 + 导出（会议模式）
+        # 工具栏：测试麦克风 + 打开字幕页 + 导出（会议模式）
         tool_row_m = QHBoxLayout()
         tool_row_m.setSpacing(8)
         self._btn_test_mic_m = QPushButton("测试麦克风")
@@ -704,15 +704,12 @@ class MainWindow(QMainWindow):
         self._btn_test_mic_m.setMinimumWidth(104)
         self._btn_test_mic_m.clicked.connect(self._test_microphone)
         tool_row_m.addWidget(self._btn_test_mic_m)
-        self._chk_subtitle_bar_m = QCheckBox("字幕条")
-        self._chk_subtitle_bar_m.setChecked(True)
-        self._chk_subtitle_bar_m.stateChanged.connect(self._on_subtitle_bar_toggle)
-        tool_row_m.addWidget(self._chk_subtitle_bar_m)
-        # 字号：整体方框分三块 [- 数字 +]
-        tool_row_m.addWidget(QLabel("字号:"))
-        self._font_size_spin_m, self._font_size_widget_m = self._make_font_size_control()
-        self._font_size_spin_m.valueChanged.connect(self._on_font_size_changed)
-        tool_row_m.addWidget(self._font_size_widget_m)
+        self._btn_subtitle_m = QPushButton("打开字幕页")
+        self._btn_subtitle_m.setObjectName("toolBtn")
+        self._btn_subtitle_m.setFixedHeight(32)
+        self._btn_subtitle_m.setMinimumWidth(104)
+        self._btn_subtitle_m.clicked.connect(self._open_subtitle_page)
+        tool_row_m.addWidget(self._btn_subtitle_m)
         tool_row_m.addStretch()
         self._btn_export_m = QPushButton("导出 MD 文档")
         self._btn_export_m.setObjectName("toolBtn")
@@ -740,6 +737,9 @@ class MainWindow(QMainWindow):
         name_row_m.addWidget(self._speaker_name_input_m)
         name_row_m.addStretch()
         pl_m.addLayout(name_row_m)
+
+        # 字幕页 URL 显示与复制（会议模式）
+        self._url_rows_m = self._build_url_rows(pl_m)
 
         lm2 = QLabel("本地说话人由麦克风采集，远端参会者由系统音频采集（需虚拟声卡）。")
         lm2.setStyleSheet(f"color:{LIGHT['text_dim']};font-size:12px")
@@ -769,9 +769,6 @@ class MainWindow(QMainWindow):
         self._info = QLabel("Ctrl+Enter \u542f\u52a8 | Ctrl+Shift+Enter \u505c\u6b62 | Ctrl+, \u8bbe\u7f6e | Ctrl+Q \u9000\u51fa")
         self._info.setStyleSheet(f"color:{LIGHT['text_dim']};font-size:11px")
         rl.addWidget(self._info)
-
-        # 独立字幕条悬浮窗（默认隐藏，服务启动后按开关显示）
-        self._subtitle_bar = SubtitleBarWindow()
 
         # 实时采集/WS 客户端成员（主播/会议模式使用）
         self._mic_thread = None
@@ -976,8 +973,6 @@ class MainWindow(QMainWindow):
         stop_server_backend(self._emit_log)
         self._running = False
         self._update_ui_state()
-        # 隐藏字幕条
-        self._subtitle_bar.hide()
 
 
     # ============================================================
@@ -1032,10 +1027,6 @@ class MainWindow(QMainWindow):
         )
         self._mic_thread.start()
 
-        # 显示字幕条（如果开关打开）
-        if self._is_subtitle_bar_on():
-            self._subtitle_bar.show()
-
     def _stop_realtime_capture(self):
         """停止麦克风采集 + WS客户端"""
         if self._mic_thread is not None:
@@ -1078,7 +1069,6 @@ class MainWindow(QMainWindow):
     def _on_partial(self, text):
         """收到 partial 中间结果（无 speaker 信息，用白色）"""
         self._subtitle_view.set_partial(text)
-        self._subtitle_bar.set_text(text)
 
     def _on_transcription(self, data):
         """收到 transcription 最终结果"""
@@ -1098,8 +1088,6 @@ class MainWindow(QMainWindow):
         self._subtitle_view.add_segment(time_str, display_name, text, is_host)
         # partial 清空（等待下一段）
         self._subtitle_view.set_partial("")
-        # 字幕条按 speaker 颜色显示
-        self._subtitle_bar.set_text(text, speaker)
 
     def _ensure_speaker(self, spk_id: str):
         """检测新 Speaker，自动添加到两个下拉框（主播+会议）"""
@@ -1111,20 +1099,6 @@ class MainWindow(QMainWindow):
                 combo.addItem(spk_id)
         self._emit_log(f"[INFO] 检测到新说话人: {spk_id}，可在下拉框选择并命名\n")
 
-    def _is_subtitle_bar_on(self):
-        """检查字幕条开关是否打开"""
-        mode = self._get_current_mode()
-        chk = self._chk_subtitle_bar if mode == 1 else self._chk_subtitle_bar_m
-        return chk.isChecked()
-
-    def _on_subtitle_bar_toggle(self, state):
-        """字幕条开关变化"""
-        if state:
-            if self._running:
-                self._subtitle_bar.show()
-        else:
-            self._subtitle_bar.hide()
-
     def _get_speaker_name_input(self):
         """获取当前模式的说话人名称输入框"""
         mode = self._get_current_mode()
@@ -1134,11 +1108,6 @@ class MainWindow(QMainWindow):
         """获取当前模式的说话人下拉框"""
         mode = self._get_current_mode()
         return self._speaker_combo if mode == 1 else self._speaker_combo_m
-
-    def _get_font_size_spin(self):
-        """获取当前模式的字号 SpinBox"""
-        mode = self._get_current_mode()
-        return self._font_size_spin if mode == 1 else self._font_size_spin_m
 
     def _on_speaker_combo_changed(self):
         """下拉框切换：加载已保存的说话人名称到输入框"""
@@ -1166,91 +1135,88 @@ class MainWindow(QMainWindow):
             # 缓存名称，服务启动后发送
             self._pending_speaker_name = (spk_id, name)
 
-    def _make_font_size_control(self):
-        """创建字号控件：整体方框分三块 [- 数字 +]
-        返回 (QSpinBox, QWidget) —— spin 隐藏内置按钮只显示数字，widget 是组合容器。
-        不用 QFrame（会被样式表背景覆盖），用 QWidget 避免层叠问题。
+    def _open_subtitle_page(self):
+        """打开字幕页设置（OBS 浏览器源配置）
+        点击后打开配置模式（?settings=1），可在网页内调整字号/说话人名/历史句数。
         """
-        # 用 QWidget 作容器，不设 background，避免覆盖子控件
-        widget = QWidget()
-        widget.setFixedHeight(32)
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        config = load_config()
+        port = config.get("model_settings", {}).get("ws_port", 8765)
+        cfg_url = f"http://localhost:{port}/subtitle?settings=1"
+        obs_url = f"http://localhost:{port}/subtitle"
+        if not self._running:
+            QMessageBox.information(self, "提示", f"请先启动服务，再打开字幕页。\n\n配置页（调字号/说话人名）：\n{cfg_url}\n\nOBS 浏览器源 URL：\n{obs_url}")
+            return
+        try:
+            import webbrowser
+            webbrowser.open(cfg_url)
+            self._emit_log(f"[INFO] 已打开字幕页配置: {cfg_url}\n[INFO] OBS 浏览器源 URL(填入OBS): {obs_url}\n")
+        except Exception as e:
+            self._emit_log(f"[ERROR] 打开字幕页失败: {e}\n[INFO] OBS 浏览器源 URL: {obs_url}\n")
 
-        # 左：减号按钮（自带完整边框和背景，确保可见）
-        btn_minus = QPushButton("−")
-        btn_minus.setObjectName("fontStepBtn")
-        btn_minus.setFixedSize(34, 32)
-        btn_minus.setCursor(Qt.PointingHandCursor)
-        btn_minus.setStyleSheet(f"""
-            QPushButton#fontStepBtn {{
-                border: 1px solid {LIGHT['border']};
-                border-right: none;
-                border-top-left-radius: 6px;
-                border-bottom-left-radius: 6px;
-                background: {LIGHT['surface']};
-                color: {LIGHT['text']};
-                font-size: 16px;
-                font-weight: bold;
-                padding: 0px;
-            }}
-            QPushButton#fontStepBtn:hover {{ background: {LIGHT['border']}; }}
-            QPushButton#fontStepBtn:pressed {{ background: {LIGHT['text_dim']}; color: #fff; }}
-        """)
+    def _build_url_rows(self, parent_layout):
+        """构建字幕页 URL 显示行（字幕页 + 设置页），含复制按钮。
+        未启动时显示提示文字，启动后显示真实 URL。
+        返回控件引用字典，用于后续更新 URL。
+        """
+        config = load_config()
+        port = config.get("model_settings", {}).get("ws_port", 8765)
+        obs_url = f"http://localhost:{port}/subtitle"
+        cfg_url = f"http://localhost:{port}/subtitle?settings=1"
 
-        # 中：数字输入框（只显示数字，无内置按钮，白底无边框）
-        spin = QSpinBox()
-        spin.setRange(10, 36)
-        spin.setValue(18)
-        spin.setAlignment(Qt.AlignCenter)
-        spin.setButtonSymbols(QSpinBox.NoButtons)
-        spin.setFixedHeight(32)
-        spin.setFixedWidth(50)
-        spin.setStyleSheet(f"""
-            QSpinBox {{
-                border: 1px solid {LIGHT['border']};
-                border-left: none;
-                border-right: none;
-                background: #fff;
-                color: {LIGHT['text']};
-                font-size: 13px;
-                font-weight: 600;
-            }}
-        """)
+        refs = {}
+        # 字幕页 URL 行
+        row1 = QHBoxLayout()
+        row1.setSpacing(8)
+        lbl1 = QLabel("字幕页:")
+        lbl1.setStyleSheet(f"color:{LIGHT['text_dim']};font-size:12px")
+        lbl1.setFixedWidth(60)
+        row1.addWidget(lbl1)
+        url1 = QLineEdit("启动服务后，显示字幕页http地址")
+        url1.setReadOnly(True)
+        url1.setStyleSheet("font-size:12px;")
+        row1.addWidget(url1, stretch=1)
+        btn1 = QPushButton("复制")
+        btn1.setObjectName("toolBtn")
+        btn1.setFixedHeight(26)
+        btn1.setFixedWidth(56)
+        btn1.setEnabled(False)
+        btn1.clicked.connect(lambda: self._copy_url(obs_url, btn1))
+        row1.addWidget(btn1)
+        parent_layout.addLayout(row1)
 
-        # 右：加号按钮（自带完整边框和背景，确保可见）
-        btn_plus = QPushButton("+")
-        btn_plus.setObjectName("fontStepBtn")
-        btn_plus.setFixedSize(34, 32)
-        btn_plus.setCursor(Qt.PointingHandCursor)
-        btn_plus.setStyleSheet(f"""
-            QPushButton#fontStepBtn {{
-                border: 1px solid {LIGHT['border']};
-                border-left: none;
-                border-top-right-radius: 6px;
-                border-bottom-right-radius: 6px;
-                background: {LIGHT['surface']};
-                color: {LIGHT['text']};
-                font-size: 16px;
-                font-weight: bold;
-                padding: 0px;
-            }}
-            QPushButton#fontStepBtn:hover {{ background: {LIGHT['border']}; }}
-            QPushButton#fontStepBtn:pressed {{ background: {LIGHT['text_dim']}; color: #fff; }}
-        """)
+        # 设置页 URL 行
+        row2 = QHBoxLayout()
+        row2.setSpacing(8)
+        lbl2 = QLabel("设置页:")
+        lbl2.setStyleSheet(f"color:{LIGHT['text_dim']};font-size:12px")
+        lbl2.setFixedWidth(60)
+        row2.addWidget(lbl2)
+        url2 = QLineEdit("启动服务后，显示字幕设置页http地址")
+        url2.setReadOnly(True)
+        url2.setStyleSheet("font-size:12px;")
+        row2.addWidget(url2, stretch=1)
+        btn2 = QPushButton("复制")
+        btn2.setObjectName("toolBtn")
+        btn2.setFixedHeight(26)
+        btn2.setFixedWidth(56)
+        btn2.setEnabled(False)
+        btn2.clicked.connect(lambda: self._copy_url(cfg_url, btn2))
+        row2.addWidget(btn2)
+        parent_layout.addLayout(row2)
 
-        btn_minus.clicked.connect(lambda: spin.setValue(spin.value() - 1))
-        btn_plus.clicked.connect(lambda: spin.setValue(spin.value() + 1))
+        refs['obs_url'] = url1
+        refs['cfg_url'] = url2
+        refs['btn_obs'] = btn1
+        refs['btn_cfg'] = btn2
+        return refs
 
-        layout.addWidget(btn_minus)
-        layout.addWidget(spin)
-        layout.addWidget(btn_plus)
-        return spin, widget
-
-    def _on_font_size_changed(self, value):
-        """字号变化时调整字幕条文字大小"""
-        self._subtitle_bar.set_font_size(value)
+    def _copy_url(self, url, btn):
+        """复制 URL 到剪贴板"""
+        clipboard = QApplication.clipboard()
+        clipboard.setText(url)
+        old_text = btn.text()
+        btn.setText("已复制")
+        QTimer.singleShot(1500, lambda: btn.setText(old_text))
 
     # ============================================================
     # 测试麦克风
@@ -1368,6 +1334,8 @@ class MainWindow(QMainWindow):
             self._rb_audience.setEnabled(False)
             self._rb_streamer.setEnabled(False)
             self._rb_meeting.setEnabled(False)
+            # 启动后显示真实 URL
+            self._update_url_rows(True)
         else:
             self._dot.setStyleSheet(f"background:{LIGHT['text_dim']}")
             self._slbl.setText("\u672a\u542f\u52a8")
@@ -1379,6 +1347,31 @@ class MainWindow(QMainWindow):
             self._rb_audience.setEnabled(True)
             self._rb_streamer.setEnabled(True)
             self._rb_meeting.setEnabled(True)
+            # 未启动时显示提示文字
+            self._update_url_rows(False)
+
+    def _update_url_rows(self, running):
+        """根据服务状态更新字幕页/设置页 URL 框内容"""
+        config = load_config()
+        port = config.get("model_settings", {}).get("ws_port", 8765)
+        if running:
+            obs_url = f"http://localhost:{port}/subtitle"
+            cfg_url = f"http://localhost:{port}/subtitle?settings=1"
+        else:
+            obs_url = "启动服务后，显示字幕页http地址"
+            cfg_url = "启动服务后，显示字幕设置页http地址"
+        for refs in (getattr(self, '_url_rows_s', None), getattr(self, '_url_rows_m', None)):
+            if not refs:
+                continue
+            if 'obs_url' in refs:
+                refs['obs_url'].setText(obs_url)
+            if 'cfg_url' in refs:
+                refs['cfg_url'].setText(cfg_url)
+            # 同步启用/禁用复制按钮：未启动时禁用，启动后启用
+            if 'btn_obs' in refs:
+                refs['btn_obs'].setEnabled(running)
+            if 'btn_cfg' in refs:
+                refs['btn_cfg'].setEnabled(running)
 
     def _refresh_status(self):
         try:

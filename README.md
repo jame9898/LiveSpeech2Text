@@ -42,12 +42,16 @@ python -c "from modelscope.hub.snapshot_download import snapshot_download; snaps
 # Qwen3-ASR 1.7B — 精度更高，需 GPU 和更多内存
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', cache_dir='models')"
 
-# 5.（可选）下载说话人识别模型 CAM++，约 27MB
+# 5. 下载说话人识别模型 CAM++，约 27MB
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common', cache_dir='models')"
 
 # 6. 启动桌面面板
 python app.py
 ```
+
+> **关于虚拟环境**：第 2 步是可选的。不创建虚拟环境可直接跳过第 2 步。**依赖装在哪个环境，启动就要在哪个环境**——装在 venv 里就得在 venv 里启动，装在系统里就在系统启动。
+>
+> 双击 `start.bat` 可自动处理：脚本会检测 `venv\` 是否存在，存在就用 venv 的 Python 启动，否则用系统 Python。启动前还会快速检查依赖是否装齐，缺失会提示安装命令。
 
 更新已有本地仓库：
 ```bash
@@ -77,9 +81,54 @@ git pull
 1. 选择「主播模式」，下拉框选择麦克风设备（自动检测本地输入设备）
 2. 可选：在「说话人」下拉框选择 Speaker0，输入名字并回车命名
 3. 点击「启动服务」，服务就绪后自动开始采集麦克风音频
-4. 实时字幕展示在右侧滚动区，同时可开启独立字幕条悬浮窗（可被 OBS 捕获）
-5. 字幕条支持拖拽移动、滚轮调字号、右下角拖拽调整大小、双击切换宽窄
-6. 可点击「测试麦克风」采集 5 秒验证识别是否正常，结束后可「导出」字幕文本
+4. 实时字幕展示在右侧滚动区；底部「字幕页」「设置页」两栏会显示对应 URL（含复制按钮），未启动时显示提示文字，启动后显示真实地址
+5. 可点击「测试麦克风」采集 5 秒验证识别是否正常，结束后可「导出」字幕文本
+
+### OBS 浏览器源配置（直播字幕）
+
+字幕条通过 OBS 浏览器源（Browser Source）接入，透明背景叠加在画面上，可拖动、可缩放。这是直播字幕的主流方案，比窗口采集更干净（无黑底、无窗口边框、可任意缩放）。
+
+#### 接入步骤
+
+1. 打开桌面面板，选择「主播模式」，点击「启动服务」
+2. 在桌面面板复制「字幕页」地址，浏览器打开可预览字幕效果（`http://localhost:8765/subtitle`）
+3. 在桌面面板复制「设置页」地址，浏览器打开进入「字幕页设置」面板（`http://localhost:8765/subtitle?settings=1`）
+4. （可选）在设置页调整字幕样式，可配置项见下表。不调整则使用默认配置
+5. 复制设置页底部的 **「OBS 浏览器源地址（已含配置）」**（该地址已把当前所有配置编码进 URL）
+6. 打开 OBS →「来源」面板点击 **＋** → 选择 **浏览器（Browser）** → URL 粘贴上一步复制的地址 → 宽高自定（如 800×120）→ 勾选「刷新浏览器激活时」→ 确定
+7. 该源在 OBS 画布中可自由拖动、缩放；透明背景，只显示字幕文字
+
+> 关键：粘贴到 OBS 的必须是设置页里生成的「已含配置」URL（带 `#` 后缀），不是裸地址。原因见下方说明。
+
+#### 可配置项
+
+所有字幕样式都在网页设置页调整，不在桌面客户端：
+
+| 配置项 | 说明 |
+|---|---|
+| 当前字幕字号 | 滑块调整（16–72px） |
+| 历史记录字号 | 滑块调整（12–48px） |
+| 历史保留句数 | 0–5 句（0 = 只显示当前句） |
+| 字幕条背景 | 启用/关闭、颜色、透明度（关闭=透明，OBS 推荐） |
+| 强制文字颜色 | 所有字幕统一使用此颜色 |
+| 显示讲话人 | 开启后字幕前显示 Speaker 编号 |
+| AI 角标 | 显示开关 + 角标比例（角标字号 = 正文字号 × 比例，默认 35%） |
+
+#### 为什么 URL 里要带配置
+
+设置页生成的 OBS 地址长这样：
+
+```
+http://localhost:8765/subtitle#bar=36&hist=20&histCount=3&bg=0&color=%23ffffff&badge=1&badgeScale=0.35&...
+```
+
+`#` 后面的一串是当前所有配置项的编码。**OBS 内置的浏览器与系统浏览器的 localStorage 是隔离的**，直接在 OBS 里打开裸地址 `http://localhost:8765/subtitle` 不会读取到你在 Chrome 里设置的配置。所以必须用设置页生成的「已含配置」URL 填入 OBS，配置才会生效。
+
+每次在设置页修改配置后，该地址会自动更新，需在 OBS 浏览器源属性里重新粘贴一次。
+
+#### 说话人名字同步
+
+说话人自定义名字（如把 Speaker0 改成「主持人」）在桌面客户端设置，服务端会广播给所有连接的客户端（含 OBS 字幕页），实时同步显示。
 
 ### 会议模式
 
@@ -133,7 +182,7 @@ git pull
 ```
 在线实时语音识别/
 ├── app.py                 # PySide6 桌面 GUI（三模式切换/启动停止/字幕展示/日志/系统托盘）
-├── realtime_panel.py      # 实时面板组件（字幕条悬浮窗/字幕展示区/麦克风采集线程/WS客户端）
+├── realtime_panel.py      # 实时面板组件（字幕展示区/麦克风采集线程/WS客户端）
 ├── server.py              # WebSocket 服务端（音频接收/VAD调度/转录/说话人分离/报告/网页渲染）
 ├── core.py                # ASR 引擎和模型加载（Qwen3-ASR）
 ├── vad_processor.py       # 自适应 VAD 语音活动检测（静音断句/强制切分/音乐噪声检测）
@@ -144,7 +193,6 @@ git pull
 ├── text_utils.py          # 文本处理工具（去重/格式化）
 ├── settings_dialog.py     # PySide6 设置对话框（模型/设备/VAD/端口配置）
 ├── batch_transcribe.py    # 批量音频转录脚本（复用 VAD/ASR/说话人/报告管线）
-├── make_upload_zip.py     # 打包上传 ZIP 脚本（排除大文件/缓存/敏感数据）
 ├── asr_panel.user.js      # Tampermonkey 用户脚本（多平台视频页面内嵌面板+字幕条）
 ├── __init__.py            # 包导出
 ├── requirements.txt       # Python 依赖 (CPU)
@@ -155,7 +203,8 @@ git pull
 ├── dict/
 │   └── asr_config.json    # ASR 运行时配置（模型/设备/VAD参数）
 └── static/
-    └── index.html         # 网页前端
+    ├── index.html         # 控制面板主页
+    └── subtitle.html      # OBS 浏览器源字幕页（透明背景）
 ```
 
 ---

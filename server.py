@@ -18,6 +18,7 @@ from pathlib import Path
 from datetime import datetime
 
 STATUS_PAGE = Path(__file__).parent / "static" / "index.html"
+SUBTITLE_PAGE = Path(__file__).parent / "static" / "subtitle.html"
 from concurrent.futures import ThreadPoolExecutor
 from core import MODELS_DIR, DICT_DIR, silence_noisy_loggers
 from pinyin_utils import PinyinCorrector, CATEGORIES, CATEGORY_ICONS
@@ -419,11 +420,17 @@ class RealtimeASRServer:
                 if speaker_id and new_label:
                     self.speaker_manager.rename_speaker(speaker_id, new_label)
                     print(f"[WS] 重命名: {speaker_id} → {new_label}", flush=True)
-                    await self._send_to(websocket, {
+                    # 广播给所有客户端（含字幕页），让字幕页更新名字映射
+                    rename_msg = {
                         'type': 'speaker_renamed',
                         'old_id': speaker_id,
                         'new_label': new_label,
-                    })
+                    }
+                    for ws in list(self._clients):
+                        try:
+                            await self._send_to(ws, rename_msg)
+                        except Exception:
+                            pass
 
             elif msg_type == 'save_report':
                 display_names = self._prepare_report_data()
@@ -848,6 +855,7 @@ class RealtimeASRServer:
             'text': text,
             'speaker': display_name,
             'speaker_label': speaker_label,
+            'display_speaker': display_name,
             'full_text': self.full_text.strip(),
             'timestamp': datetime.now().isoformat(),
             'duration': self.total_audio_seconds,
@@ -928,12 +936,25 @@ class RealtimeASRServer:
             await self._send_to(ws, message)
 
     async def _send_to_recording(self, message):
-        """只发给正在录音的客户端，避免主播模式结果串到网页插件"""
+        """发给录音客户端 + 所有其他已连接客户端（含字幕页浏览器源）
+
+        原先只发给 recording_ws 是为避免串扰网页插件，
+        但字幕页（OBS 浏览器源）需要接收 partial/transcription 才能显示字幕。
+        本服务端的 _clients 均为本地连接（桌面客户端+字幕页），广播安全。
+        """
         if self.recording_ws is not None:
             await self._send_to(self.recording_ws, message)
+        # 同时发给其他客户端（字幕页浏览器源在此列）
+        for ws in list(self._clients):
+            if ws is not self.recording_ws:
+                try:
+                    await self._send_to(ws, message)
+                except Exception:
+                    pass
 
     async def start(self):
         page = STATUS_PAGE.read_text(encoding='utf-8').replace("{host}", self.host).replace("{port}", str(self.port))
+        subtitle_page = SUBTITLE_PAGE.read_text(encoding='utf-8') if SUBTITLE_PAGE.exists() else None
         async def process_request(connection, request):
             path = request.path if hasattr(request, 'path') else '/'
             print(f"[WS] HTTP request: {path}", flush=True)
@@ -942,13 +963,19 @@ class RealtimeASRServer:
                 return None
             h = Headers()
             h['Connection'] = 'close'
-
             h['Content-Type'] = 'text/html; charset=utf-8'
+
+            # /subtitle → OBS 浏览器源字幕页（透明背景）
+            if path.startswith('/subtitle') and subtitle_page:
+                return Response(200, "OK", h, subtitle_page.encode("utf-8"))
+
+            # 其他请求 → 控制面板主页
             print(f"[WS] Serving status page ({len(page)} bytes)", flush=True)
             return Response(200, "OK", h, page.encode("utf-8"))
 
         print(f"\n[WS] WebSocket server: ws://{self.host}:{self.port}", flush=True)
         print(f"[WS] Status page:     http://{self.host}:{self.port}", flush=True)
+        print(f"[WS] Subtitle page:   http://{self.host}:{self.port}/subtitle (OBS浏览器源)", flush=True)
         async with websockets.serve(
             self.handler, self.host, self.port,
             ping_interval=20, ping_timeout=60, close_timeout=10,
