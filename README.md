@@ -49,9 +49,14 @@ python -c "from modelscope.hub.snapshot_download import snapshot_download; snaps
 python app.py
 ```
 
-> **关于虚拟环境**：第 2 步是可选的。不创建虚拟环境可直接跳过第 2 步。**依赖装在哪个环境，启动就要在哪个环境**——装在 venv 里就得在 venv 里启动，装在系统里就在系统启动。
+> **关于虚拟环境**：第 2 步是可选的。不创建虚拟环境，依赖装在系统里，双击 `start.bat` 或运行 `python app.py` 即可启动。
 >
-> 双击 `start.bat` 可自动处理：脚本会检测 `venv\` 是否存在，存在就用 venv 的 Python 启动，否则用系统 Python。启动前还会快速检查依赖是否装齐，缺失会提示安装命令。
+> 如果第 2 步创建了虚拟环境（依赖装在 venv 里），每次启动前必须先激活虚拟环境：
+> ```bash
+> cd LiveSpeech2Text
+> venv\Scripts\activate
+> python app.py
+> ```
 
 更新已有本地仓库：
 ```bash
