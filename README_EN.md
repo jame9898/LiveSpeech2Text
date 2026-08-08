@@ -1,8 +1,13 @@
 # LiveSpeech2Text — Real-time Speech Recognition
 
-A Chinese real-time speech recognition tool based on **Qwen3-ASR**. Audio is captured via browser (Chrome tab or full-screen sharing), sent to a local server via WebSocket for VAD segmentation, ASR recognition, and speaker diarization. Results are streamed back to the frontend (**pseudo-streaming**). Includes a PySide6 desktop panel and a Tampermonkey userscript.
+A Chinese real-time speech recognition tool based on **Qwen3-ASR**. Audio is captured from the browser/microphone/system output, sent to a local server via WebSocket for **VAD segmentation + ASR recognition + speaker diarization**, producing real-time subtitles and Markdown reports. Includes a PySide6 desktop panel and a Tampermonkey userscript.
 
----
+## Features
+
+- **Four modes**: Audience (web audio), Streamer (microphone), Meeting (microphone + system audio), Local (batch audio/video files)
+- **Real-time subtitles**: 0.3s low-latency preview bar + final text at VAD segment ends; OBS browser source supported
+- **Speaker diarization**: CAM++ / ERes2NetV2 voiceprint recognition
+- **Keyword correction**: pinyin-based homophone error correction, add/remove keywords on the fly
 
 ## System Requirements
 
@@ -13,10 +18,8 @@ Developed and tested on Windows 11. Other systems are not verified.
 | OS | Windows 11 64-bit |
 | Python | 3.10 ~ 3.12 |
 | RAM | 8 GB+ (1.7B model requires 6GB+) |
-| Disk | ~6 GB (including model downloads) |
+| Storage usage | ~6 GB (including model downloads) |
 | GPU | CPU works; GPU acceleration requires NVIDIA + CUDA |
-
----
 
 ## Quick Start
 
@@ -27,235 +30,89 @@ git clone https://github.com/jame9898/LiveSpeech2Text
 git clone https://gitee.com/linhanduzikai/LiveSpeech2Text
 cd LiveSpeech2Text
 
-# 2. Create a virtual environment (recommended)
-python -m venv venv
-venv\Scripts\activate
+# 2. Install dependencies (CPU only)
+python -m venv venv && venv\Scripts\activate
+pip install -r requirements.txt
+# or (GPU + CUDA only)
+pip install -r requirements-gpu.txt
 
-# 3. Install dependencies
-pip install -r requirements.txt          # CPU environment
-# or
-pip install -r requirements-gpu.txt      # GPU + CUDA environment
-
-# 4. Download a model (choose one, auto-saved to models/)
-# Qwen3-ASR 0.6B — lightweight, runs on CPU
+# 3. Download models (auto-saved to models/)
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', cache_dir='models')"
-# Qwen3-ASR 1.7B — higher accuracy, requires GPU and more memory
-python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', cache_dir='models')"
-
-# 5. Download the speaker recognition model CAM++ (~27MB)
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common', cache_dir='models')"
 
-# 6. Launch the desktop panel
+# 4. Launch the desktop panel
 python app.py
 ```
 
-> **About Virtual Environments**: Step 2 is optional. If you skip it, dependencies are installed in the system Python — just double-click `start.bat` or run `python app.py` to launch.
->
-> If you created a virtual environment in Step 2 (dependencies installed in venv), you must activate it before each launch:
-> ```bash
-> cd LiveSpeech2Text
-> venv\Scripts\activate
-> python app.py
-> ```
+> You can also double-click `start.bat` (uses system Python). The 1.7B model offers higher accuracy but requires a GPU and more RAM: `snapshot_download('Qwen/Qwen3-ASR-1.7B', cache_dir='models')`.
 
-Update an existing local repository:
+**Updating**: after `git pull`, dependencies may have changed — reinstall them:
+
 ```bash
 git pull
+pip install -r requirements.txt   # CPU only (GPU + CUDA: requirements-gpu.txt)
 ```
-
----
-
-## Usage
-
-The desktop panel (`python app.py`) provides three recognition modes, switchable via radio buttons at the top:
-
-### Audience Mode (Default)
-
-Recognizes audio played by web pages (Bilibili/Douyu live streams or videos).
-
-1. Double-click `start.bat` or run `python app.py`
-2. Select "Audience Mode", click "Start Service"
-3. Open `http://localhost:8765` in your browser, or install the Tampermonkey script for auto-injection
-4. Click "Tab Capture" or "Full Screen" to start capturing
-5. Recognition results are displayed in real-time in the subtitle area
-
-### Streamer Mode
-
-Captures local microphone audio (solo streaming, voice-over, etc.).
-
-1. Select "Streamer Mode", choose a microphone device from the dropdown (auto-detects local input devices)
-2. Optional: In the "Speaker" dropdown, select Speaker0, enter a name and press Enter to rename
-3. Click "Start Service" — microphone capture starts automatically once the service is ready
-4. Real-time subtitles appear in the scrolling area on the right; the bottom "Subtitle Page" and "Settings Page" rows show their respective URLs (with copy buttons) — placeholder text when not running, real addresses when running
-5. Click "Test Microphone" to capture 5 seconds and verify recognition; afterwards you can "Export" the subtitle text
-
-### OBS Browser Source Configuration (Live Subtitles)
-
-The subtitle bar is integrated via OBS Browser Source, with a transparent background overlaid on the video. It can be dragged and resized. This is the mainstream solution for live subtitles — cleaner than window capture (no black background, no window borders, freely scalable).
-
-#### Setup Steps
-
-1. Open the desktop panel, select "Streamer Mode", click "Start Service"
-2. Copy the "Subtitle Page" URL from the desktop panel and open it in a browser to preview subtitles (`http://localhost:8765/subtitle`)
-3. Copy the "Settings Page" URL from the desktop panel and open it in a browser to enter the subtitle settings panel (`http://localhost:8765/subtitle?settings=1`)
-4. (Optional) Adjust subtitle styles on the settings page — see the table below for configurable options. Skip to use defaults
-5. Copy the **"OBS Browser Source URL (with config)"** at the bottom of the settings page (this URL encodes all current settings into the URL)
-6. Open OBS → "Sources" panel, click **＋** → select **Browser** → paste the URL from the previous step → set custom width/height (e.g. 800×120) → check "Refresh browser when scene becomes active" → OK
-7. The source can be freely dragged and resized on the OBS canvas; transparent background, only subtitle text is shown
-
-> Key: The URL pasted into OBS must be the "with config" URL generated by the settings page (with a `#` suffix), not the bare address. See the explanation below.
-
-#### Configurable Options
-
-All subtitle styles are adjusted on the web settings page, not in the desktop client:
-
-| Option | Description |
-|---|---|
-| Current subtitle font size | Slider (16–72px) |
-| History font size | Slider (12–48px) |
-| History line count | 0–5 lines (0 = show only current line) |
-| Subtitle bar background | Enable/disable, color, opacity (disabled = transparent, recommended for OBS) |
-| Force text color | All subtitles use this color uniformly |
-| Show speaker | When enabled, shows Speaker ID before subtitle text |
-| AI badge | Show toggle + scale ratio (badge font size = body font size × ratio, default 35%) |
-
-#### Why the URL Must Include Configuration
-
-The OBS URL generated by the settings page looks like this:
-
-```
-http://localhost:8765/subtitle#bar=36&hist=20&histCount=3&bg=0&color=%23ffffff&badge=1&badgeScale=0.35&...
-```
-
-The string after `#` is the encoded form of all current settings. **OBS's built-in browser and your system browser have isolated localStorage** — opening the bare URL `http://localhost:8765/subtitle` directly in OBS will not read the settings you configured in Chrome. Therefore, you must use the "with config" URL generated by the settings page in OBS for the configuration to take effect.
-
-Each time you modify settings on the settings page, the URL updates automatically — you need to re-paste it in the OBS browser source properties.
-
-#### Speaker Name Sync
-
-Custom speaker names (e.g. renaming Speaker0 to "Host") are set in the desktop client. The server broadcasts these to all connected clients (including the OBS subtitle page) for real-time synchronization.
-
-### Meeting Mode
-
-Captures both microphone and system audio simultaneously (remote meetings, two-way conversations, etc.).
-
-1. Select "Meeting Mode", choose microphone (local speaker) and system audio (remote participant) separately
-2. Speaker naming, subtitle bar, test, and export functions work the same as Streamer Mode
-3. When the server detects a new speaker (e.g. Speaker1), the dropdown automatically adds the item for naming
-
-#### System Audio Loopback Capture (WASAPI)
-
-Meeting mode captures system output device (speaker) audio via WASAPI loopback. The speaker plays sound normally while the audio stream is captured simultaneously — no virtual sound card needed. This feature depends on `PyAudioWPatch` (included in requirements).
-
-#### Half-Duplex Mode (Prevents Echo Duplication)
-
-Meeting mode uses a half-duplex strategy to solve the problem of the microphone picking up speaker audio and causing duplicate recognition:
-
-- **When remote is speaking** (system audio level exceeds threshold) → microphone auto-mutes
-- **After remote goes silent** for 300ms → microphone resumes
-
-This prevents the other party's speech from being captured twice by the microphone, at the cost of not being able to speak simultaneously (the first few words when taking turns may be lost). If both parties use headphones, this problem is avoided, but half-duplex remains as default protection.
-
-### Tampermonkey Userscript (Audience Mode Enhancement)
-
-1. Install the [Tampermonkey](https://www.tampermonkey.net/) browser extension
-2. Import the `asr_panel.user.js` script
-3. Open a video/live stream page — the panel appears automatically on the right
-4. Panel can be dragged, minimized, and a floating subtitle bar can be enabled
-
-> Currently supported platforms: Bilibili, Douyu
-
-### Technical Notes on Recognition Modes
-
-All three modes share the same WebSocket connection (`ws://localhost:8765`), handled uniformly by the server:
-
-- **Audience Mode**: Browser `getDisplayMedia` captures tab/full-screen audio, pushed via Tampermonkey script or web frontend
-- **Streamer/Meeting Mode**: Local `sounddevice` captures microphone (48kHz/mono/float32), forwarded by the desktop panel's built-in WS client
-
-Streaming recognition latency is approximately 0.8s. The server skips VAD segmentation during silence and waits for the next valid speech segment.
-
----
-
-## Available Models
-
-| Model | Size | Purpose | Download Command (ModelScope ID) |
-|---|---|---|---|
-| Qwen3-ASR 0.6B | ~2.0 GB | Speech recognition, runs on CPU | `Qwen/Qwen3-ASR-0.6B` |
-| Qwen3-ASR 1.7B | ~4.4 GB | Speech recognition, highest accuracy, GPU recommended | `Qwen/Qwen3-ASR-1.7B` |
-| CAM++ | ~27 MB | Speaker voiceprint recognition | `iic/speech_campplus_sv_zh-cn_16k-common` |
-| FSMN-VAD | ~4 MB | Voice activity detection (auto-loaded with modelscope) | `iic/speech_fsmn_vad_zh-cn-16k-common-pytorch` |
-
----
-
-## Keyword Management
-
-The system supports manual keyword addition for marking important terms in recognition content:
-
-| Feature | Description |
-|---|---|
-| Keyword tagging | User enters keyword → auto-categorization (speaker/keyword) → pinyin matching for homophone correction → highlighted in recognition results |
-
-## Project Structure
-
-```
-LiveSpeech2Text/
-├── app.py                 # PySide6 desktop GUI (mode switching/start-stop/subtitle display/log/system tray)
-├── realtime_panel.py      # Realtime panel components (subtitle view/mic capture thread/WS client)
-├── server.py              # WebSocket server (audio receive/VAD scheduling/transcription/speaker diarization/report/web)
-├── core.py                # ASR engine and model loading (Qwen3-ASR)
-├── vad_processor.py       # Adaptive VAD voice activity detection (silence segmentation/forced cut/music noise detection)
-├── speaker_manager.py     # CAM++ speaker management (voiceprint detection/cold-start 3-level confirmation/soft update/quality assessment)
-├── pinyin_utils.py        # Keyword management + text similarity matching
-├── creator_detector.py    # Creator detector (extracts UP/streamer names from Bilibili/Douyu URLs)
-├── report_generator.py    # Report and log generation (Markdown report + structured JSON log)
-├── text_utils.py          # Text processing utilities (dedup/formatting)
-├── settings_dialog.py     # PySide6 settings dialog (model/device/VAD/port config)
-├── batch_transcribe.py    # Batch audio transcription script (reuses VAD/ASR/speaker/report pipeline)
-├── asr_panel.user.js      # Tampermonkey userscript (multi-platform in-page panel + subtitle bar)
-├── __init__.py            # Package exports
-├── requirements.txt       # Python dependencies (CPU)
-├── requirements-gpu.txt   # Python dependencies (GPU + CUDA)
-├── start.bat              # One-click launcher
-├── .gitignore
-├── LICENSE
-├── dict/
-│   └── asr_config.json    # ASR runtime config (model/device/VAD params)
-└── static/
-    ├── index.html         # Control panel homepage
-    └── subtitle.html      # OBS browser source subtitle page (transparent background)
-```
-
----
-
-## FAQ
-
-**Model loading failed**
-Check if the corresponding model folder exists in the `models/` directory. If not, download it using the command from "Quick Start" above.
-
-**CPU mode is slow**
-If you have an NVIDIA GPU, switching to 1.7B + CUDA can significantly speed up recognition.
-
-**Speaker always shows Speaker0**
-A certain amount of voice samples must be accumulated before different speakers can be distinguished. Additionally, short sentences with fewer than 3 Chinese characters automatically inherit the previous sentence's speaker label.
-
----
 
 ## Uninstall
 
 This project is not packaged as an installer. Simply delete the project folder:
 
 ```bash
-# Delete the project folder
 Remove-Item -Recurse -Force "C:\path\to\LiveSpeech2Text"
-
-# Delete ModelScope cached models (optional)
+# Optional: clear ModelScope model cache
 Remove-Item -Recurse -Force "$env:USERPROFILE\.cache\modelscope"
 ```
 
-Tampermonkey plugin: Delete the `LiveSpeech2Text V1.0` script in the browser's Tampermonkey management panel.
+Tampermonkey plugin: delete the `LiveSpeech2Text V1.0` script in the Tampermonkey management panel.
 
----
+## Usage
+
+| Mode | How to use |
+|---|---|
+| **Audience** (default) | Start service → open `http://localhost:8765` → click "Tab/Fullscreen" to capture web audio (Bilibili/Douyu etc.) |
+| **Streamer** | Pick a microphone → start service, capture begins automatically. Subtitle page `http://localhost:8765/subtitle` works with OBS |
+| **Meeting** | Microphone + system audio (WASAPI loopback + half-duplex anti-echo), for two-way conversations |
+| **Local** | Select files/folder → start processing → Markdown report per file (ffmpeg required for video files) |
+| **Tampermonkey** | Import `asr_panel.user.js` for an in-page recognition panel on Bilibili/Douyu |
+
+## Documentation
+
+| Doc | Content |
+|---|---|
+| [docs/OBS_SUBTITLE.md](docs/OBS_SUBTITLE.md) | OBS subtitle bar setup, subtitle style configuration |
+| [docs/VAD.md](docs/VAD.md) | VAD engine comparison and parameters |
+| [docs/DATASET.md](docs/DATASET.md) | Fine-tuning dataset (layout/scoring/manual correction flow) |
+| [docs/LICENSE_DETAILS.md](docs/LICENSE_DETAILS.md) | Third-party dependency and model license details |
+
+## Project Structure
+
+```
+├── app.py                 # PySide6 desktop GUI (mode switching/start-stop/subtitles/system tray)
+├── server.py              # WebSocket server (audio receive/VAD/transcription/speaker/web pages)
+├── core.py                # ASR engine and model loading + config management
+├── vad_processor.py       # VAD engines (energy/Silero streaming/FSMN batch)
+├── local_processor.py     # Local mode batch processing (ffmpeg+VAD+ASR+report)
+├── dataset_manager.py     # Fine-tuning dataset manager
+├── realtime_panel.py      # Realtime panel components (subtitle view/capture threads/WS client)
+├── speaker_manager.py     # Speaker management (voiceprint/naming/profiles)
+├── pinyin_utils.py        # Keyword management + pinyin correction
+├── report_generator.py    # Markdown report generation
+├── batch_transcribe.py    # CLI batch transcription script
+├── asr_panel.user.js      # Tampermonkey userscript
+├── dict/                  # Runtime config (asr_config.json)
+└── static/                # Control page + OBS subtitle page
+```
+
+## FAQ
+
+**Model loading failed** — Check the `models/` directory; download using the Quick Start step 3 commands.
+
+**CPU mode is slow** — Use an NVIDIA GPU with 1.7B + CUDA for a significant speedup.
+
+**Speaker always shows Speaker0** — Voice samples must accumulate before speakers are distinguished; sentences with fewer than 3 Chinese characters inherit the previous sentence's speaker.
+
+**OBS subtitles not working** — You must use the "with config" URL (with `#` suffix) generated by the settings page, see [docs/OBS_SUBTITLE.md](docs/OBS_SUBTITLE.md).
 
 ## License
 
-[MIT License](LICENSE)
+[MIT License](LICENSE), free for commercial use. Third-party dependency and model license details: [docs/LICENSE_DETAILS.md](docs/LICENSE_DETAILS.md).
