@@ -139,9 +139,22 @@ Custom speaker names (e.g. renaming Speaker0 to "Host") are set in the desktop c
 
 Captures both microphone and system audio simultaneously (remote meetings, two-way conversations, etc.).
 
-1. Select "Meeting Mode", choose microphone (local speaker) and system audio (remote participant, requires virtual sound card) separately
+1. Select "Meeting Mode", choose microphone (local speaker) and system audio (remote participant) separately
 2. Speaker naming, subtitle bar, test, and export functions work the same as Streamer Mode
 3. When the server detects a new speaker (e.g. Speaker1), the dropdown automatically adds the item for naming
+
+#### System Audio Loopback Capture (WASAPI)
+
+Meeting mode captures system output device (speaker) audio via WASAPI loopback. The speaker plays sound normally while the audio stream is captured simultaneously — no virtual sound card needed. This feature depends on `PyAudioWPatch` (included in requirements).
+
+#### Half-Duplex Mode (Prevents Echo Duplication)
+
+Meeting mode uses a half-duplex strategy to solve the problem of the microphone picking up speaker audio and causing duplicate recognition:
+
+- **When remote is speaking** (system audio level exceeds threshold) → microphone auto-mutes
+- **After remote goes silent** for 300ms → microphone resumes
+
+This prevents the other party's speech from being captured twice by the microphone, at the cost of not being able to speak simultaneously (the first few words when taking turns may be lost). If both parties use headphones, this problem is avoided, but half-duplex remains as default protection.
 
 ### Tampermonkey Userscript (Audience Mode Enhancement)
 

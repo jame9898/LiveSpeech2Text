@@ -1,0 +1,257 @@
+{
+  "_说明": "热词库：按大类 → 子主题 → exclusive(专精词)/related(相关词) 分层组织。当前仅用于拼音纠正（后处理），context 注入已停用（非语音段会诱导 ASR 输出幻觉词）。拼音纠正对中文同音字纠错有效，英文专有名词的 ASR 误识别无法通过拼音纠正修复。",
+  "_大类": "AI 人工智能 + 财经科技领域热词库，按子主题组织。",
+  "categories": {
+    "AI": {
+      "_desc": "AI 人工智能大类",
+      "subtopics": {
+        "LLM": {
+          "_desc": "大语言模型 / 模型训练与架构",
+          "exclusive": [
+            "LLM", "Large Language Model", "大语言模型", "大模型",
+            "Foundation Model", "基础模型", "底座模型", "Base Model",
+            "Pre-training", "预训练", "Post-training", "后训练",
+            "SFT", "Supervised Fine-Tuning", "监督微调",
+            "LoRA", "Low-Rank Adaptation", "低秩适配",
+            "QLoRA", "Quantized LoRA",
+            "PEFT", "Parameter-Efficient Fine-Tuning",
+            "Fine-tuning", "微调",
+            "Alignment", "对齐",
+            "Reward Model", "奖励模型",
+            "DPO", "Direct Preference Optimization",
+            "PPO", "Proximal Policy Optimization",
+            "RLHF", "Reinforcement Learning from Human Feedback",
+            "KV Cache", "KV 缓存", "Key-Value Cache",
+            "Safetensors", "Safe Tensors",
+            "Transformer", "Attention", "Self-Attention", "自注意力",
+            "Multi-Head Attention", "多头注意力",
+            "Embedding", "嵌入", "向量化",
+            "Tokenizer", "分词器", "Token", "词元",
+            "Vocabulary", "词表",
+            "Context Window", "上下文窗口", "Context Length", "上下文长度",
+            "Decoding", "解码", "Greedy Decoding", "贪心解码",
+            "Beam Search", "束搜索", "Sampling", "采样",
+            "Temperature", "温度", "Top-k", "Top-p", "Nucleus Sampling", "核采样",
+            "Distillation", "蒸馏", "Pruning", "剪枝",
+            "Quantization", "量化", "INT8", "INT4", "FP16", "BF16", "FP32",
+            "Overfitting", "过拟合", "Underfitting", "欠拟合", "Generalization", "泛化"
+          ],
+          "related": [
+            "Agent", "Subagent", "智能体", "提示词", "Prompt", "Skill", "技能",
+            "Pipeline", "流水线", "工作流", "Workflow", "工具链", "Toolchain",
+            "Inference", "推理", "Throughput", "吞吐量", "Latency", "延迟",
+            "CUDA", "GPU", "CPU", "vLLM", "TensorRT", "ONNX",
+            "Dataset", "数据集", "Corpus", "语料库", "Benchmark", "基准测试"
+          ]
+        },
+        "Agent": {
+          "_desc": "AI 智能体 / Agent",
+          "exclusive": [
+            "Agent", "Subagent", "Multi-Agent", "Autonomous Agent", "AI Agent",
+            "智能体", "子智能体", "多智能体", "自主智能体",
+            "Agentic", "Agentic Workflow", "Agentic AI",
+            "Tool Use", "Tool Calling", "Function Calling", "工具调用",
+            "ReAct", "Chain of Thought", "CoT", "思维链",
+            "Planning", "Reflection", "Self-Reflection", "反思",
+            "MCP", "Model Context Protocol", "模型上下文协议",
+            "A2A", "Agent-to-Agent", "Agent 间通信",
+            "Orchestrator", "编排器",
+            "Skill", "Skills", "技能", "Skill Library", "技能库",
+            "Capability", "能力", "Competency", "胜任力"
+          ],
+          "related": [
+            "LLM", "大模型", "提示词", "Prompt", "RAG", "检索增强",
+            "向量数据库", "Embedding", "Pipeline", "工作流", "Workflow",
+            "Instruction Tuning", "指令微调", "Few-shot", "少样本"
+          ]
+        },
+        "Prompt": {
+          "_desc": "提示词工程 / Prompt Engineering",
+          "exclusive": [
+            "Prompt", "Prompting", "Prompt Engineering", "提示词工程",
+            "System Prompt", "系统提示词", "User Prompt", "用户提示词",
+            "Few-shot", "Zero-shot", "One-shot", "少样本", "零样本",
+            "Chain of Thought Prompting", "CoT Prompting",
+            "Prompt Template", "提示词模板",
+            "Prompt Injection", "提示词注入",
+            "Prompt Chaining", "提示词链",
+            "Prompt Optimization", "提示词优化",
+            "Instruction Tuning", "指令微调"
+          ],
+          "related": [
+            "Agent", "智能体", "LLM", "大模型", "RLHF",
+            "Context Window", "上下文窗口", "Token", "词元"
+          ]
+        },
+        "RAG": {
+          "_desc": "检索增强生成 / RAG",
+          "exclusive": [
+            "RAG", "Retrieval-Augmented Generation", "检索增强生成",
+            "Vector Database", "向量数据库", "Vector Search", "向量检索",
+            "Semantic Search", "语义搜索",
+            "Chunking", "分块", "Retriever", "检索器",
+            "Reranker", "重排序", "Hybrid Search", "混合检索",
+            "BM25", "TF-IDF"
+          ],
+          "related": [
+            "LLM", "大模型", "Prompt", "提示词", "多模态", "Multimodal",
+            "Embedding", "嵌入", "向量化"
+          ]
+        },
+        "Coding": {
+          "_desc": "AI 编程 / Coding",
+          "exclusive": [
+            "Copilot", "GitHub Copilot", "Cursor", "Claude Code", "Trae",
+            "Code Completion", "代码补全", "Code Generation", "代码生成",
+            "Pair Programming", "结对编程",
+            "IDE", "Integrated Development Environment",
+            "IDE Plugin", "IDE 插件",
+            "LSP", "Language Server Protocol",
+            "Refactoring", "重构", "Syntax", "语法", "Semantics", "语义"
+          ],
+          "related": [
+            "Agent", "智能体", "LLM", "大模型", "Prompt", "提示词",
+            "Skill", "技能", "Toolchain", "工具链"
+          ]
+        },
+        "Multimodal": {
+          "_desc": "多模态 / 音视频",
+          "exclusive": [
+            "ASR", "Automatic Speech Recognition", "语音识别",
+            "TTS", "Text-to-Speech", "语音合成",
+            "VAD", "Voice Activity Detection", "语音活动检测",
+            "STT", "Speech-to-Text",
+            "Speaker Diarization", "说话人分离",
+            "Multimodal", "多模态",
+            "Vision Language Model", "视觉语言模型", "VLM", "Vision-Language Model",
+            "Whisper", "Qwen3-ASR", "SenseVoice"
+          ],
+          "related": [
+            "LLM", "大模型", "Transformer", "Attention",
+            "Dataset", "数据集", "Annotation", "标注",
+            "Fine-tuning", "微调", "Inference", "推理"
+          ]
+        },
+        "Deploy": {
+          "_desc": "部署 / 推理优化",
+          "exclusive": [
+            "vLLM", "TensorRT", "ONNX", "ONNX Runtime",
+            "Quantization", "量化", "INT8", "INT4", "FP16", "BF16", "FP32",
+            "Acceleration", "加速",
+            "Throughput", "吞吐量", "Latency", "延迟",
+            "Batch Size", "批大小",
+            "CUDA", "GPU", "CPU",
+            "Distillation", "蒸馏", "Pruning", "剪枝"
+          ],
+          "related": [
+            "LLM", "大模型", "Transformer", "Attention", "KV Cache",
+            "Inference", "推理", "Safetensors", "Tensor", "张量"
+          ]
+        },
+        "Data": {
+          "_desc": "数据 / 训练评估",
+          "exclusive": [
+            "Dataset", "数据集", "Corpus", "语料库",
+            "Annotation", "标注", "Label", "标签", "Ground Truth", "真值",
+            "Benchmark", "基准测试", "Evaluation", "评估", "Metric", "指标",
+            "Perplexity", "困惑度", "BLEU", "ROUGE", "WER",
+            "Overfitting", "过拟合", "Underfitting", "欠拟合", "Generalization", "泛化"
+          ],
+          "related": [
+            "LLM", "大模型", "Fine-tuning", "微调", "Pre-training", "预训练",
+            "SFT", "监督微调", "Embedding", "嵌入"
+          ]
+        },
+        "Models": {
+          "_desc": "大模型公司与模型名称（截至 2026-07）",
+          "exclusive": [
+            "OpenAI", "Anthropic", "Google DeepMind", "DeepMind", "Meta AI", "Meta", "Mistral",
+            "月之暗面", "Moonshot", "DeepSeek", "深度求索", "百度", "阿里", "阿里云", "字节跳动", "智谱", "智谱AI", "腾讯", "MiniMax", "零一万物", "阶跃星辰",
+            "GPT-4o", "GPT-4 Turbo", "GPT-4", "GPT-3.5",
+            "GPT-5", "GPT-5.3-Codex", "GPT-5.6",
+            "o1", "o3", "o4-mini",
+            "Codex",
+            "Claude", "Claude 3.5 Sonnet", "Claude 3 Opus", "Claude 3 Haiku",
+            "Claude Sonnet", "Claude Opus", "Claude Opus 4.5", "Claude Opus 4.6",
+            "Gemini", "Gemini Pro", "Gemini Flash", "Gemini 2.0", "Gemini 2.5",
+            "Gemini 3", "Gemini 3 Pro", "Gemini 3 Flash",
+            "Llama", "Llama 3", "Llama 3.1", "Llama 3.2",
+            "Llama 4", "Llama 4 Scout", "Llama 4 Maverick", "Llama 4 Behemoth",
+            "Kimi", "Kimi K2", "Kimi K2.6", "Kimi K2.7", "Kimi K3",
+            "ChatGPT", "ChatGPT 4o", "ChatGPT 5.5", "ChatGPT 5.6",
+            "Claude 5", "Claude 5 Sonnet", "Claude 5 Opus",
+            "Claude 5.3 Codex", "Claude 5.6",
+            "Fable Five", "Mythos Five",
+            "DeepSeek-V2", "DeepSeek-V3", "DeepSeek-R1", "DeepSeek-V4", "DeepSeek-R2",
+            "Qwen", "Qwen 2.5", "Qwen 3", "Qwen3-Coder", "Qwen 3.5", "Qwen 3.7", "通义千问",
+            "文心一言", "文心", "ERNIE", "ERNIE 4.0",
+            "豆包", "Doubao",
+            "GLM", "GLM-4", "GLM-5", "GLM-5.2", "ChatGLM", "智谱清言",
+            "混元", "Hunyuan",
+            "V4 Pro", "V4 Flash", "Flash"
+          ],
+          "related": [
+            "LLM", "大模型", "Foundation Model", "基础模型",
+            "Pre-training", "预训练", "Fine-tuning", "微调",
+            "Open Source", "开源", "Closed Source", "闭源",
+            "MoE", "Mixture of Experts", "混合专家",
+            "Multimodal", "多模态", "Vision", "视觉",
+            "API", "Inference", "推理", "Benchmark", "基准测试",
+            "Delta Attention", "注意力机制"
+          ]
+        },
+        "Chips": {
+          "_desc": "芯片 / 半导体 / AI 基础设施",
+          "exclusive": [
+            "Nvidia", "英伟达", "Jensen Huang", "黄仁勋",
+            "TSMC", "台积电", "SK Hynix", "SK海力士", "Samsung", "三星",
+            "HBM", "HBM3", "HBM3E", "HBM4", "高带宽内存",
+            "Blackwell", "Blackwell B200", "Blackwell B100",
+            "Hopper", "Hopper H100", "Hopper H200",
+            "Rubin", "Rubin R100",
+            "capex", "资本支出", "CapEx",
+            "hyperscaler", "超大规模云服务商",
+            "data center", "数据中心",
+            "open-weight", "开源权重", "open weight",
+            "ASML", "ASML光刻机", "EUV", "极紫外光刻",
+            "Intel", "AMD", "Broadcom", "博通", "Micron", "美光",
+            "Huawei", "华为", "Ascend", "昇腾", "Kirin", "麒麟",
+            "SMIC", "中芯国际", "Biren", "壁仞科技"
+          ],
+          "related": [
+            "GPU", "CUDA", "AI芯片", "半导体", "chip", "foundry", "晶圆厂",
+            "supply chain", "供应链", "export control", "出口管制",
+            "distillation", "蒸馏", "inference", "推理", "training", "训练"
+          ]
+        },
+        "Finance": {
+          "_desc": "财经 / 资本市场 / 监管",
+          "exclusive": [
+            "Bloomberg", "彭博", "Reuters", "路透社",
+            "KOSPI", "韩国综合指数", "KOSDAQ",
+            "NASDAQ", "纳斯达克", "S&P 500", "标普500", "Dow Jones", "道琼斯",
+            "Fed", "美联储", "Federal Reserve", "ECB", "欧洲央行",
+            "FINRA", "美国金融监管局", "SEC", "美国证券交易委员会",
+            "Trump", "特朗普", "Biden", "拜登",
+            "Silicon Valley", "硅谷",
+            "Shanghai", "上海", "Beijing", "北京", "Shenzhen", "深圳",
+            "WAIC", "世界人工智能大会", "World AI Conference",
+            "Hoover Institution", "斯坦福大学", "Stanford"
+          ],
+          "related": [
+            "stock", "股票", "market", "市场", "sell-off", "抛售",
+            "investor", "投资者", "valuation", "估值",
+            "regulation", "监管", "export control", "出口管制",
+            "tariff", "关税", "trade war", "贸易战",
+            "IPO", "上市", "startup", "初创公司"
+          ]
+        }
+      }
+    }
+  },
+  "_default_context": "若主题未命中（冷启动或非 AI 话题），可使用此通用 AI 词表作为弱 context",
+  "default_exclusive": [
+    "AI", "人工智能", "LLM", "大模型", "Agent", "智能体", "Prompt", "提示词",
+    "RAG", "微调", "Fine-tuning", "推理", "Inference"
+  ]
+}

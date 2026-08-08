@@ -1,9 +1,61 @@
 # -*- coding: utf-8 -*-
 import sys
+import os
 import threading
 from datetime import datetime
+from pathlib import Path
 
-from core import load_config
+# ===== 崩溃诊断：启用 faulthandler 捕获 segfault =====
+# 注意：不能用 dump_traceback_later，它在 Windows 上会创建后台线程
+# 周期性获取 GIL，会干扰 PyTorch C++ 张量加载导致 access violation
+_CRASH_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash_trace.log")
+try:
+    import faulthandler
+    _crash_fp = open(_CRASH_LOG_PATH, "a", encoding="utf-8")
+    _crash_fp.write(f"\n{'=' * 60}\n[{datetime.now()}] 程序启动\n{'=' * 60}\n")
+    _crash_fp.flush()
+    faulthandler.enable(_crash_fp)
+except Exception:
+    _crash_fp = None
+
+# 全局异常钩子：捕获未处理的 Python 异常
+def _global_excepthook(exc_type, exc_value, exc_tb):
+    import traceback
+    try:
+        with open(_CRASH_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"\n[{datetime.now()}] 未捕获异常:\n")
+            traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+    except Exception:
+        pass
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+sys.excepthook = _global_excepthook
+# ===== 崩溃诊断结束 =====
+
+# ===== 预导入重模块：在程序启动时后台导入 torch/transformers/qwen_asr =====
+# 这样点击「加载模型」时 step1→step2 几乎瞬间完成（省 3-4 秒）
+import threading as _threading_mod
+
+def _preload_heavy_modules():
+    try:
+        import torch  # noqa
+        import transformers  # noqa
+        import qwen_asr  # noqa
+        print("[PRELOAD] torch/transformers/qwen_asr 预导入完成", flush=True)
+    except Exception as e:
+        print(f"[PRELOAD] 预导入失败（不影响功能）: {e}", flush=True)
+
+_preload_thread = _threading_mod.Thread(target=_preload_heavy_modules, daemon=True)
+_preload_thread.start()
+# ===== 预导入结束 =====
+
+try:
+    from core import load_config
+except ImportError as _e:
+    print(f"[ERROR] 缺少核心依赖（{getattr(_e, 'name', _e)}）。请双击「start.bat」安装依赖后重试。", flush=True)
+    sys.exit(1)
+
+from common_utils import StdoutRedirect
 
 import importlib.util
 
@@ -16,18 +68,22 @@ def check_deps():
             missing.append(mod)
     return missing
 
-from PySide6.QtCore import Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QTextCharFormat, QIcon, QPixmap, QPainter, QFont, QTextCursor
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QTextEdit, QFrame, QSplitter,
-    QGroupBox, QMessageBox, QSystemTrayIcon, QMenu,
-    QComboBox, QStackedWidget, QRadioButton, QButtonGroup,
-    QCheckBox, QFileDialog, QProgressBar, QLineEdit, QSpinBox,
-)
+try:
+    from PySide6.QtCore import Qt, QTimer, Signal, Slot
+    from PySide6.QtGui import QColor, QTextCharFormat, QIcon, QPixmap, QPainter, QFont, QTextCursor
+    from PySide6.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+        QPushButton, QLabel, QTextEdit, QFrame, QSplitter,
+        QGroupBox, QMessageBox, QSystemTrayIcon, QMenu,
+        QComboBox, QStackedWidget, QButtonGroup,
+        QCheckBox, QFileDialog, QProgressBar, QLineEdit,
+    )
+except ImportError as _e:
+    print(f"[ERROR] 缺少 GUI 依赖（{getattr(_e, 'name', _e)}）。请双击「start.bat」安装依赖后重试。", flush=True)
+    sys.exit(1)
 from realtime_panel import (
     SubtitleListView,
-    MicCaptureThread, RealtimeWSClient, format_wall_time,
+    MicCaptureThread, LoopbackCaptureThread, RealtimeWSClient, format_wall_time,
 )
 
 LIGHT = {
@@ -114,6 +170,40 @@ QPushButton:pressed {{
 QPushButton:disabled {{
     color: {text_dim};
 }}
+/* 模式切换卡片按钮：2x2 网格，选中态高亮 */
+QPushButton#modeBtn {{
+    border: 1px solid {border};
+    border-radius: 8px;
+    padding: 10px 4px;
+    background-color: {surface};
+    color: {text_dim};
+    font-size: 13px;
+    font-weight: 500;
+}}
+QPushButton#modeBtn:hover {{
+    border-color: {accent};
+    color: {accent};
+    background-color: #fff;
+}}
+QPushButton#modeBtn:checked {{
+    background-color: {accent};
+    border-color: {accent};
+    color: #fff;
+    font-weight: 600;
+}}
+QPushButton#modeBtn:checked:hover {{
+    color: #fff;
+}}
+QPushButton#modeBtn:disabled {{
+    color: {text_dim};
+    background-color: {surface};
+    border-color: {border};
+}}
+QPushButton#modeBtn:checked:disabled {{
+    background-color: {green};
+    border-color: {green};
+    color: #fff;
+}}
 /* 工具栏按钮：小padding避免文字被裁剪 */
 QPushButton#toolBtn {{
     padding: 6px 14px 6px 16px;
@@ -136,6 +226,39 @@ QPushButton#btnStop {{
 }}
 QPushButton#btnStop:hover {{
     background-color: #b51d28;
+}}
+/* 本地模式开始/停止按钮：复用主按钮配色，padding 保证文字完整显示 */
+QPushButton#startBtn {{
+    background-color: {green};
+    border-color: {green};
+    color: #fff;
+    font-weight: 600;
+    padding: 6px 18px;
+    min-width: 80px;
+}}
+QPushButton#startBtn:hover {{
+    background-color: #1f6f32;
+}}
+QPushButton#startBtn:disabled {{
+    background-color: {surface};
+    border-color: {border};
+    color: {text_dim};
+}}
+QPushButton#stopBtn {{
+    background-color: {red};
+    border-color: {red};
+    color: #fff;
+    font-weight: 600;
+    padding: 6px 18px;
+    min-width: 60px;
+}}
+QPushButton#stopBtn:hover {{
+    background-color: #b51d28;
+}}
+QPushButton#stopBtn:disabled {{
+    background-color: {surface};
+    border-color: {border};
+    color: {text_dim};
 }}
 QTextEdit {{
     background-color: {log_bg};
@@ -172,60 +295,6 @@ QScrollBar::handle:vertical {{
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
-}}
-/* RadioButton：圆环样式
-   未选中=空心灰边框 | 选中=实心绿色填充 | 禁用+选中=保持绿色（锁定当前模式）
-   禁用+未选中=空心浅灰边框（其他模式变暗但保持空心） */
-QRadioButton {{
-    spacing: 10px;
-    font-size: 13px;
-    padding: 6px 8px 6px 6px;
-    min-height: 22px;
-    color: {text_dim};
-    background: transparent;
-}}
-QRadioButton:checked {{
-    color: {text};
-    font-weight: 600;
-}}
-QRadioButton:!checked {{
-    color: {text_dim};
-}}
-QRadioButton::indicator {{
-    width: 14px;
-    height: 14px;
-    border-radius: 7px;
-    border: 2px solid {text_dim};
-    background: #fff;
-    margin-left: 4px;
-    margin-right: 2px;
-}}
-QRadioButton::indicator:hover {{
-    border-color: {accent};
-}}
-QRadioButton::indicator:checked {{
-    border-color: {green};
-    background: {green};
-}}
-QRadioButton::indicator:!checked {{
-    border-color: {text_dim};
-    background: #fff;
-}}
-/* 禁用状态下：选中的保持绿色（锁定当前模式），未选中的变浅灰 */
-QRadioButton::indicator:checked:disabled {{
-    border-color: {green};
-    background: {green};
-}}
-QRadioButton::indicator:!checked:disabled {{
-    border-color: {border};
-    background: #fff;
-}}
-QRadioButton:checked:disabled {{
-    color: {text};
-    font-weight: 600;
-}}
-QRadioButton:!checked:disabled {{
-    color: {border};
 }}
 /* ComboBox：设备下拉框（箭头用系统原生样式，避免被背景覆盖） */
 QComboBox {{
@@ -288,22 +357,9 @@ def start_server_backend(config, log_cb):
         from core import ASREngine, resolve_device
         from server import run_server
 
-        class LR:
-            def __init__(self, cb):
-                self._cb = cb; self._b = ""
-            def write(self, s):
-                if s:
-                    self._b += s
-                    if "\n" in self._b:
-                        ls = self._b.split("\n"); self._b = ls.pop()
-                        for l in ls:
-                            if l.strip(): self._cb(l + "\n")
-            def flush(self):
-                if self._b.strip(): self._cb(self._b + "\n"); self._b = ""
-
         _so, _se = sys.stdout, sys.stderr
-        sys.stdout = LR(log_cb)
-        sys.stderr = LR(log_cb)
+        sys.stdout = StdoutRedirect(log_cb)
+        sys.stderr = StdoutRedirect(log_cb)
 
         _model_ready = threading.Event()
         _model_error = [None]
@@ -311,49 +367,104 @@ def start_server_backend(config, log_cb):
         def _run():
             nonlocal _model_ready, _model_error
             try:
-                log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u6b63\u5728\u52a0\u8f7d\u6a21\u578b...\n")
-                dev = resolve_device(config)
-                eng = ASREngine(device=dev, config=config)
-                pref = config.get("current_model", "auto")
-                if pref == "auto": pref = None
-                if not eng.load_model(preferred=pref):
-                    log_cb("[ERROR] \u6a21\u578b\u52a0\u8f7d\u5931\u8d25\n")
-                    _model_error[0] = "\u6a21\u578b\u52a0\u8f7d\u5931\u8d25"
-                    return
-                log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u6a21\u578b: {eng.model_name}\n")
                 st = config.get("model_settings", {})
                 port = st.get("ws_port", 8765)
 
+                # 端口冲突检测与释放（必须在启动 WS 服务前完成）
                 import subprocess as _sp, platform as _plat, os as _os
                 if _plat.system() == 'Windows':
                     my_pid = str(_os.getpid())
-                    try:
+
+                    def _find_listen_pid():
+                        """精确匹配监听端口（本地地址列以 :port 结尾，避免误匹配 :87650 等），返回占用 PID 或 None"""
                         r = _sp.run(['netstat', '-ano'], capture_output=True, text=True)
                         for line in r.stdout.split('\n'):
-                            if f':{port}' in line and 'LISTENING' in line:
-                                parts = line.strip().split()
-                                pid = parts[-1]
-                                if pid == my_pid:
-                                    log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u7aef\u53e3 {port} \u5c1a\u672a\u91ca\u653e\uff0c\u7b49\u5f85\u4e2d...\n")
-                                    # 等旧服务退出后再重试，最长等5秒
-                                    for _ in range(10):
-                                        import time as _t
-                                        _t.sleep(0.5)
-                                        r2 = _sp.run(['netstat', '-ano'], capture_output=True, text=True)
-                                        if not any(f':{port}' in l and 'LISTENING' in l for l in r2.stdout.split('\n')):
-                                            break
-                                else:
-                                    _sp.run(['taskkill', '/F', '/PID', pid],
-                                            capture_output=True)
-                                    log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u5df2\u91ca\u653e\u7aef\u53e3 {port} (\u65e7\u8fdb\u7a0b PID={pid})\n")
-                                break
+                            if 'LISTENING' not in line:
+                                continue
+                            parts = line.strip().split()
+                            if len(parts) >= 5 and parts[1].endswith(f':{port}'):
+                                return parts[-1]
+                        return None
+
+                    try:
+                        pid = _find_listen_pid()
+                        if pid is not None:
+                            if pid == my_pid:
+                                log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 端口 {port} 尚未释放，等待中...\n")
+                                # 等旧服务退出后再重试，最长等5秒
+                                for _ in range(10):
+                                    import time as _t
+                                    _t.sleep(0.5)
+                                    if _find_listen_pid() is None:
+                                        break
+                            else:
+                                # 其他进程占用端口：只提示用户，不强制结束他人进程
+                                log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] [WARN] 端口 {port} 被其他进程占用 (PID={pid})，请手动关闭该进程或在设置中更换端口\n")
                     except Exception:
                         pass
 
-                _model_ready.set()
+                # 模型加载函数（在后台线程执行，由 server._load_model_background 调用）
+                # 启动顺序优化：先启动 WebSocket（插件可秒连），再后台加载模型
+                def _load_model():
+                    nonlocal _model_ready, _model_error
+                    try:
+                        log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 正在加载模型...\n")
+                        # 加载前清理 GPU 缓存
+                        try:
+                            import torch
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                        except Exception:
+                            pass
+                        # 加载前强制释放残留引擎（上次服务异常退出可能留下）
+                        try:
+                            from server import _global_server as _gs
+                            if _gs is not None and getattr(_gs, 'asr_engine', None) is not None:
+                                # 检查服务是否已停止，避免与活跃转录并发释放导致崩溃
+                                if not getattr(_gs, 'is_running', False):
+                                    log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 检测到残留引擎，先释放...\n")
+                                    _release_asr_engine(_gs.asr_engine)
+                                    _gs.asr_engine = None
+                        except Exception:
+                            pass
+                        # 本地模式引擎也可能残留（加锁保护，避免与本地处理线程竞态）
+                        try:
+                            global _LOCAL_ENGINE
+                            _local_eng_to_release = None
+                            with _LOCAL_ENGINE_LOCK:
+                                if _LOCAL_ENGINE is not None:
+                                    log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 检测到本地模式残留引擎，先释放...\n")
+                                    _local_eng_to_release = _LOCAL_ENGINE
+                                    _LOCAL_ENGINE = None
+                            if _local_eng_to_release is not None:
+                                _release_asr_engine(_local_eng_to_release)
+                        except Exception:
+                            pass
+                        dev = resolve_device(config)
+                        eng = ASREngine(device=dev, config=config)
+                        pref = config.get("current_model", "auto")
+                        if pref == "auto": pref = None
+                        if not eng.load_model(preferred=pref):
+                            log_cb("[ERROR] \u6a21\u578b\u52a0\u8f7d\u5931\u8d25\n")
+                            _model_error[0] = "\u6a21\u578b\u52a0\u8f7d\u5931\u8d25"
+                            return None
+                        log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u6a21\u578b: {eng.model_name}\n")
+                        # 加载说话人模型（与 ASR 模型并行，但同一线程内顺序执行）
+                        from server import _load_speaker_pipeline
+                        sv_pipeline, _ = _load_speaker_pipeline(config)
+                        # 通知主线程：模型已就绪（更新 UI、启动采集）
+                        _model_ready.set()
+                        return (eng, sv_pipeline)
+                    except Exception as e:
+                        import traceback
+                        _model_error[0] = str(e)
+                        log_cb(f"[ERROR] {e}\n{traceback.format_exc()}\n")
+                        return None
+
                 log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] WebSocket ws://localhost:{port}\n")
                 log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u7b49\u5f85\u8fde\u63a5...\n")
-                run_server(eng, 'localhost', port)
+                # 启动 WebSocket 服务（model_loader 在后台线程加载模型，加载完成后自动注入）
+                run_server(config, 'localhost', port, model_loader=_load_model)
                 log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u670d\u52a1\u5df2\u505c\u6b62\n")
             except Exception as e:
                 import traceback
@@ -373,24 +484,165 @@ def start_server_backend(config, log_cb):
         return None, [str(e)]
 
 
+# 本地模式专用：只加载模型，不启动 WS 服务
+_LOCAL_ENGINE = None
+_LOCAL_ENGINE_LOCK = threading.Lock()
+
+
+def get_local_engine():
+    """获取本地模式已加载的 ASR 引擎（未加载返回 None）"""
+    with _LOCAL_ENGINE_LOCK:
+        return _LOCAL_ENGINE
+
+
+def start_model_only_backend(config, log_cb):
+    """只加载 ASR 模型，不启动 WebSocket 服务（本地模式专用）。
+    加载完成后引擎存入全局变量，供 LocalProcessThread 复用。
+    返回 (ready_event, error_holder)。
+    """
+    global _LOCAL_ENGINE
+    try:
+        from core import ASREngine, resolve_device
+
+        # 重定向 stdout/stderr 到 log_cb，让模型加载的详细日志可见
+        _model_ready = threading.Event()
+        _model_error = [None]
+
+        def _run():
+            nonlocal _model_ready, _model_error
+            global _LOCAL_ENGINE  # 必须声明 global，否则下面的赋值只创建局部变量
+            # 崩溃诊断日志：即使程序 segfault 也能保留最后一步信息
+            import os as _os
+            _crash_log = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "crash_load.log")
+            def _crash_log_write(msg):
+                try:
+                    with open(_crash_log, "a", encoding="utf-8") as _f:
+                        _f.write(f"[{datetime.now().strftime('%H:%M:%S.%f')}] {msg}\n")
+                except Exception:
+                    pass
+            _crash_log_write("===== 开始加载模型 =====")
+            _so, _se = sys.stdout, sys.stderr
+            sys.stdout = StdoutRedirect(log_cb)
+            sys.stderr = StdoutRedirect(log_cb)
+            try:
+                log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 本地模式：正在加载模型...\n")
+                # 加载前先释放可能残留的旧引擎（避免显存冲突导致 access violation）
+                _crash_log_write("检查残留旧引擎")
+                with _LOCAL_ENGINE_LOCK:
+                    _old_eng = _LOCAL_ENGINE
+                    _LOCAL_ENGINE = None
+                if _old_eng is not None:
+                    _crash_log_write("发现残留引擎，开始释放")
+                    _release_asr_engine(_old_eng)
+                    _crash_log_write("残留引擎已释放")
+                _crash_log_write("准备清理 GPU 缓存")
+                # 加载前清理 GPU 缓存
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 已清理 GPU 缓存\n")
+                        _crash_log_write("GPU 缓存清理完成")
+                except Exception as _e:
+                    _crash_log_write(f"GPU 缓存清理异常: {_e}")
+                _crash_log_write("准备 resolve_device")
+                dev = resolve_device(config)
+                _crash_log_write(f"设备: {dev}")
+                _crash_log_write("准备创建 ASREngine")
+                eng = ASREngine(device=dev, config=config)
+                _crash_log_write("ASREngine 创建完成")
+                pref = config.get("current_model", "auto")
+                if pref == "auto":
+                    pref = None
+                _crash_log_write(f"准备加载模型, preferred={pref}")
+                if not eng.load_model(preferred=pref):
+                    _crash_log_write("模型加载失败（load_model 返回 False）")
+                    log_cb("[ERROR] 模型加载失败，请查看上方日志的详细错误信息\n")
+                    _model_error[0] = "模型加载失败（详见日志）"
+                    return
+                _crash_log_write(f"模型加载成功: {eng.model_name}")
+                log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 模型就绪: {eng.model_name}\n")
+                with _LOCAL_ENGINE_LOCK:
+                    _LOCAL_ENGINE = eng
+                _model_ready.set()
+                _crash_log_write("===== 加载完成 =====")
+            except Exception as e:
+                import traceback
+                _tb = traceback.format_exc()
+                _crash_log_write(f"异常: {e}\n{_tb}")
+                _model_error[0] = str(e)
+                log_cb(f"[ERROR] {e}\n{_tb}\n")
+            finally:
+                sys.stdout = _so; sys.stderr = _se
+                _crash_log_write("===== _run 结束 =====")
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        return _model_ready, _model_error
+    except Exception as e:
+        import traceback
+        log_cb(f"[ERROR] {e}\n{traceback.format_exc()}\n")
+        return None, [str(e)]
+
+
+def _release_asr_engine(eng):
+    """释放 ASR 引擎，释放 GPU 显存。
+    优先调用 ASREngine.release()（线程安全，封装完整），失败时回退到旧逻辑。
+    """
+    if eng is None:
+        return
+    # 优先使用 ASREngine.release()（封装了 _model_lock 保护）
+    if hasattr(eng, 'release') and callable(eng.release):
+        try:
+            eng.release()
+            return
+        except Exception as e:
+            print(f"[RELEASE] eng.release() 失败，回退到旧逻辑: {e}", flush=True)
+    # 回退逻辑（兼容旧引擎对象）
+    import gc
+    try:
+        if hasattr(eng, 'model') and eng.model is not None:
+            import torch
+            try:
+                eng.model.cpu()
+            except Exception:
+                pass
+            eng.model = None
+    except Exception:
+        pass
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def stop_server_backend(log_cb):
+    """停止 WS 服务后端。
+
+    返回 True 表示服务线程已退出并完成清理；
+    返回 False 表示线程未在限时内退出（模型可能仍在加载），
+    此时保持 _global_server/SERVER_THREAD 引用、不释放引擎，
+    调用方应阻止立即重启，并在线程退出后调用 finalize_server_cleanup 收尾。
+    """
     global SERVER_THREAD
     from server import _global_server
     if _global_server is not None:
         _global_server.is_running = False
+        # 先触发 shutdown_event 让服务端退出（通过线程安全方法），
+        # 再关闭线程池：避免关停窗口内 server 的 run_in_executor 提交抛 RuntimeError
+        if hasattr(_global_server, '_safe_shutdown'):
+            try:
+                _global_server._safe_shutdown()
+            except RuntimeError:
+                pass
         # 关闭线程池，释放资源
         if hasattr(_global_server, 'executor'):
             _global_server.executor.shutdown(wait=False)
-        # 触发 shutdown_event 让服务端退出
-        # 注意：_shutdown_event 在 server 子线程的 asyncio 循环中创建，
-        # 直接 .set() 非线程安全，必须通过 call_soon_threadsafe 调度到该循环
-        if hasattr(_global_server, '_shutdown_event') and hasattr(_global_server, '_loop'):
-            try:
-                _global_server._loop.call_soon_threadsafe(_global_server._shutdown_event.set)
-            except RuntimeError:
-                # loop 已关闭（服务已自行退出），忽略
-                pass
-    log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u6b63\u5728\u505c\u6b62\u670d\u52a1...\n")
+    log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 正在停止服务...\n")
     # 等待服务端线程真正退出（最多5秒）
     # 分段 join + processEvents 避免长时间冻结 UI
     if SERVER_THREAD is not None and SERVER_THREAD.is_alive():
@@ -404,10 +656,31 @@ def stop_server_backend(log_cb):
         except ImportError:
             SERVER_THREAD.join(timeout=5.0)
         if SERVER_THREAD.is_alive():
-            log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] [WARN] \u670d\u52a1\u7ebf\u7a0b\u672a\u5728 5s \u5185\u9000\u51fa\n")
-        else:
-            log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] \u670d\u52a1\u5df2\u505c\u6b62\n")
+            log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] [WARN] 服务线程未在 5s 内退出（模型可能仍在加载），等待其后台结束\n")
+            return False
+        log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 服务已停止\n")
+    finalize_server_cleanup(log_cb)
+    return True
+
+
+def finalize_server_cleanup(log_cb):
+    """服务线程真正退出后的收尾：释放 ASR 引擎和 GPU 显存、清空全局引用。"""
+    global SERVER_THREAD
     SERVER_THREAD = None
+    from server import _global_server as _gs_ref
+    _eng_to_release = getattr(_gs_ref, 'asr_engine', None) if _gs_ref is not None else None
+    # 释放 ASR 引擎和 GPU 显存
+    _release_asr_engine(_eng_to_release)
+    # 清除 _global_server 引用，避免残留
+    if _gs_ref is not None:
+        try:
+            _gs_ref.asr_engine = None
+        except Exception:
+            pass
+    import server as _server_mod
+    _server_mod._global_server = None
+    if _eng_to_release is not None:
+        log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 模型已释放，GPU 显存已清理\n")
 
 
 class MainWindow(QMainWindow):
@@ -419,6 +692,20 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(820, 620)
         self.resize(960, 780)
         self._running = False
+        self._starting = False   # 服务/模型启动中（就绪前拦截重复启动）
+        self._stopping = False   # 服务停止中（后端线程未退出前阻止重启）
+        self._cleaning_up = False  # 退出清理中（防 processEvents 重入）
+        self._abandoned_load = None  # 被放弃的本地加载线程的 (ready_event, error_holder)
+        self._pending_unload_after_finish = False  # 处理线程结束后待卸载模型
+        self._stop_poll_timer = None   # "停止中"状态轮询定时器（按需创建）
+        self._abandoned_timer = None   # 被放弃的本地加载线程的监视定时器（按需创建）
+        self._detached_threads = set()  # wait 超时的采集线程引用，finished 后释放
+        self._local_model_ready = False  # 本地模式模型加载状态
+        self._local_ready_event = None
+        self._local_error_holder = None
+        self._local_wait_timer = QTimer()
+        self._local_wait_timer.setInterval(500)
+        self._local_wait_timer.timeout.connect(self._poll_local_model_ready)
         self._tray = None
         self._icon = _make_icon()
         self.setWindowIcon(self._icon)
@@ -430,7 +717,6 @@ class MainWindow(QMainWindow):
 
         self.log_signal.connect(self._append_log)
 
-        self._build_menu()
         self._build_ui()
         self._apply_style()
         self._setup_tray()
@@ -441,32 +727,10 @@ class MainWindow(QMainWindow):
         missing = check_deps()
         if missing:
             self._append_log_label(f"[WARN] \u7f3a\u5c11\u4f9d\u8d56: {', '.join(missing)}\n")
-            self._append_log_label("  \u8bf7\u53cc\u51fb \u542f\u52a8.bat \u5b89\u88c5\u4f9d\u8d56\n")
+            self._append_log_label("  \u8bf7\u53cc\u51fb start.bat \u5b89\u88c5\u4f9d\u8d56\n")
             self._emit_log(f"[WARN] \u7f3a\u5c11\u4f9d\u8d56: {', '.join(missing)}\n")
-            self._emit_log("  \u8bf7\u53cc\u51fb \u542f\u52a8.bat \u5b89\u88c5\u4f9d\u8d56\n")
+            self._emit_log("  \u8bf7\u53cc\u51fb start.bat \u5b89\u88c5\u4f9d\u8d56\n")
         self._append_log_label("\u70b9\u51fb \u542f\u52a8\u670d\u52a1 \u5f00\u59cb\u8bc6\u522b\n\n")
-
-    def _build_menu(self):
-        mb = self.menuBar()
-        fm = mb.addMenu("\u670d\u52a1(&S)")
-        a1 = QAction("\u542f\u52a8\u670d\u52a1", self)
-        a1.setShortcut("Ctrl+Return")
-        a1.triggered.connect(self._start_server)
-        fm.addAction(a1)
-        a2 = QAction("\u505c\u6b62\u670d\u52a1", self)
-        a2.setShortcut("Ctrl+Shift+Return")
-        a2.triggered.connect(self._stop_server)
-        fm.addAction(a2)
-        fm.addSeparator()
-        aq = QAction("\u9000\u51fa(&Q)", self)
-        aq.setShortcut("Ctrl+Q")
-        aq.triggered.connect(self.close)
-        fm.addAction(aq)
-        sm = mb.addMenu("\u8bbe\u7f6e")
-        as_ = QAction("\u6253\u5f00\u8bbe\u7f6e", self)
-        as_.setShortcut("Ctrl+,")
-        as_.triggered.connect(self._open_settings)
-        sm.addAction(as_)
 
     def _build_ui(self):
         cw = QWidget()
@@ -485,24 +749,37 @@ class MainWindow(QMainWindow):
         ll.setContentsMargins(0, 0, 0, 0)
         ll.setSpacing(10)
 
-        # 识别模式选择
+        # 识别模式选择（2x2 卡片式切换按钮）
         mg = QGroupBox("识别模式")
-        ml_box = QVBoxLayout(mg)
-        ml_box.setSpacing(4)
-        self._rb_audience = QRadioButton("观众模式")
+        ml_box = QGridLayout(mg)
+        ml_box.setContentsMargins(8, 12, 8, 8)
+        ml_box.setHorizontalSpacing(8)
+        ml_box.setVerticalSpacing(8)
+        self._rb_audience = QPushButton("观众")
+        self._rb_streamer = QPushButton("主播")
+        self._rb_meeting = QPushButton("会议")
+        self._rb_local = QPushButton("本地")
+        for _b, _tip in (
+            (self._rb_audience, "识别网页播放的声音（浏览器油猴脚本采集）"),
+            (self._rb_streamer, "识别本机麦克风"),
+            (self._rb_meeting, "同时拾取麦克风和系统音频（半双工）"),
+            (self._rb_local, "批量处理本地视频/音频文件"),
+        ):
+            _b.setCheckable(True)
+            _b.setObjectName("modeBtn")
+            _b.setCursor(Qt.PointingHandCursor)
+            _b.setToolTip(_tip)
         self._rb_audience.setChecked(True)
-        self._rb_streamer = QRadioButton("主播模式")
-        self._rb_meeting = QRadioButton("会议模式")
         self._mode_group = QButtonGroup(self)
+        self._mode_group.setExclusive(True)
         self._mode_group.addButton(self._rb_audience, 0)
         self._mode_group.addButton(self._rb_streamer, 1)
         self._mode_group.addButton(self._rb_meeting, 2)
-        ml_box.addWidget(self._rb_audience)
-        ml_box.addWidget(self._rb_streamer)
-        ml_box.addWidget(self._rb_meeting)
-        self._mode_hint = QLabel("网页声音")
-        self._mode_hint.setStyleSheet(f"color:{LIGHT['text_dim']};font-size:11px")
-        ml_box.addWidget(self._mode_hint)
+        self._mode_group.addButton(self._rb_local, 3)
+        ml_box.addWidget(self._rb_audience, 0, 0)
+        ml_box.addWidget(self._rb_streamer, 0, 1)
+        ml_box.addWidget(self._rb_meeting, 1, 0)
+        ml_box.addWidget(self._rb_local, 1, 1)
         ll.addWidget(mg)
 
         sg = QGroupBox("\u72b6\u6001")
@@ -571,13 +848,11 @@ class MainWindow(QMainWindow):
         pl_a = QVBoxLayout(page_audience)
         pl_a.setContentsMargins(8, 8, 8, 8)
         pl_a.setSpacing(6)
-        la1 = QLabel("观众模式：识别网页播放的声音")
-        la1.setStyleSheet(f"font-size:13px;font-weight:600;color:{LIGHT['text']}")
-        pl_a.addWidget(la1)
-        la2 = QLabel("安装油猴脚本 asr_panel.user.js，在目标直播/视频页面打开，\n脚本通过 getDisplayMedia 捕获标签页音频并推送到本地服务。")
-        la2.setStyleSheet(f"color:{LIGHT['text_dim']};font-size:12px")
-        la2.setWordWrap(True)
-        pl_a.addWidget(la2)
+
+        self._audience_dataset_chk = QCheckBox("后训练数据集收集（存入 BackTrain/audience/）")
+        self._audience_dataset_chk.setToolTip("启用后，识别的语音段将存入后训练数据集，供人工修正与模型微调")
+        self._audience_dataset_chk.toggled.connect(self._on_dataset_chk_changed)
+        pl_a.addWidget(self._audience_dataset_chk)
         pl_a.addStretch()
         self._source_stack.addWidget(page_audience)
 
@@ -586,9 +861,6 @@ class MainWindow(QMainWindow):
         pl_s = QVBoxLayout(page_streamer)
         pl_s.setContentsMargins(8, 8, 8, 8)
         pl_s.setSpacing(6)
-        ls1 = QLabel("主播模式：拾取麦克风声音")
-        ls1.setStyleSheet(f"font-size:13px;font-weight:600;color:{LIGHT['text']}")
-        pl_s.addWidget(ls1)
         mic_row = QHBoxLayout()
         mic_row.addWidget(QLabel("麦克风:"))
         self._mic_combo = QComboBox()
@@ -608,28 +880,9 @@ class MainWindow(QMainWindow):
         mic_row.addWidget(self._mic_level)
         pl_s.addLayout(mic_row)
 
-        # 工具栏：测试麦克风 + 打开字幕页 + 导出（统一高度32px）
+        # 工具栏已移除（测试麦克风、打开字幕页、导出按钮已迁移）
         tool_row_s = QHBoxLayout()
-        tool_row_s.setSpacing(8)
-        self._btn_test_mic = QPushButton("测试麦克风")
-        self._btn_test_mic.setObjectName("toolBtn")
-        self._btn_test_mic.setFixedHeight(32)
-        self._btn_test_mic.setMinimumWidth(104)
-        self._btn_test_mic.clicked.connect(self._test_microphone)
-        tool_row_s.addWidget(self._btn_test_mic)
-        self._btn_subtitle = QPushButton("打开字幕页")
-        self._btn_subtitle.setObjectName("toolBtn")
-        self._btn_subtitle.setFixedHeight(32)
-        self._btn_subtitle.setMinimumWidth(104)
-        self._btn_subtitle.clicked.connect(self._open_subtitle_page)
-        tool_row_s.addWidget(self._btn_subtitle)
         tool_row_s.addStretch()
-        self._btn_export_s = QPushButton("导出 MD 文档")
-        self._btn_export_s.setObjectName("toolBtn")
-        self._btn_export_s.setFixedHeight(32)
-        self._btn_export_s.setMinimumWidth(110)
-        self._btn_export_s.clicked.connect(self._export_subtitles)
-        tool_row_s.addWidget(self._btn_export_s)
         pl_s.addLayout(tool_row_s)
 
         # Speaker命名（下拉框和输入框统一高度32px、统一宽度140px）
@@ -654,10 +907,10 @@ class MainWindow(QMainWindow):
         # 字幕页 URL 显示与复制（主播模式）
         self._url_rows_s = self._build_url_rows(pl_s)
 
-        ls2 = QLabel("选择麦克风后启动服务，本地将采集麦克风音频并实时识别。")
-        ls2.setStyleSheet(f"color:{LIGHT['text_dim']};font-size:12px")
-        ls2.setWordWrap(True)
-        pl_s.addWidget(ls2)
+        self._streamer_dataset_chk = QCheckBox("后训练数据集收集（存入 BackTrain/streamer/）")
+        self._streamer_dataset_chk.setToolTip("启用后，识别的语音段将存入后训练数据集，供人工修正与模型微调")
+        self._streamer_dataset_chk.toggled.connect(self._on_dataset_chk_changed)
+        pl_s.addWidget(self._streamer_dataset_chk)
         pl_s.addStretch()
         self._source_stack.addWidget(page_streamer)
 
@@ -666,9 +919,6 @@ class MainWindow(QMainWindow):
         pl_m = QVBoxLayout(page_meeting)
         pl_m.setContentsMargins(8, 8, 8, 8)
         pl_m.setSpacing(6)
-        lm1 = QLabel("会议模式：同时拾取麦克风和系统音频")
-        lm1.setStyleSheet(f"font-size:13px;font-weight:600;color:{LIGHT['text']}")
-        pl_m.addWidget(lm1)
         mmic_row = QHBoxLayout()
         mmic_row.addWidget(QLabel("麦克风（本地）:"))
         self._meet_mic_combo = QComboBox()
@@ -695,28 +945,9 @@ class MainWindow(QMainWindow):
         msys_row.addWidget(self._meet_level)
         pl_m.addLayout(msys_row)
 
-        # 工具栏：测试麦克风 + 打开字幕页 + 导出（会议模式）
+        # 工具栏已移除（测试麦克风、打开字幕页、导出按钮已迁移）
         tool_row_m = QHBoxLayout()
-        tool_row_m.setSpacing(8)
-        self._btn_test_mic_m = QPushButton("测试麦克风")
-        self._btn_test_mic_m.setObjectName("toolBtn")
-        self._btn_test_mic_m.setFixedHeight(32)
-        self._btn_test_mic_m.setMinimumWidth(104)
-        self._btn_test_mic_m.clicked.connect(self._test_microphone)
-        tool_row_m.addWidget(self._btn_test_mic_m)
-        self._btn_subtitle_m = QPushButton("打开字幕页")
-        self._btn_subtitle_m.setObjectName("toolBtn")
-        self._btn_subtitle_m.setFixedHeight(32)
-        self._btn_subtitle_m.setMinimumWidth(104)
-        self._btn_subtitle_m.clicked.connect(self._open_subtitle_page)
-        tool_row_m.addWidget(self._btn_subtitle_m)
         tool_row_m.addStretch()
-        self._btn_export_m = QPushButton("导出 MD 文档")
-        self._btn_export_m.setObjectName("toolBtn")
-        self._btn_export_m.setFixedHeight(32)
-        self._btn_export_m.setMinimumWidth(110)
-        self._btn_export_m.clicked.connect(self._export_subtitles)
-        tool_row_m.addWidget(self._btn_export_m)
         pl_m.addLayout(tool_row_m)
 
         # Speaker命名（下拉框和输入框统一高度32px、统一宽度140px）
@@ -741,23 +972,94 @@ class MainWindow(QMainWindow):
         # 字幕页 URL 显示与复制（会议模式）
         self._url_rows_m = self._build_url_rows(pl_m)
 
-        lm2 = QLabel("本地说话人由麦克风采集，远端参会者由系统音频采集（需虚拟声卡）。")
-        lm2.setStyleSheet(f"color:{LIGHT['text_dim']};font-size:12px")
-        lm2.setWordWrap(True)
-        pl_m.addWidget(lm2)
+        self._meeting_dataset_chk = QCheckBox("后训练数据集收集（存入 BackTrain/meeting/）")
+        self._meeting_dataset_chk.setToolTip("启用后，识别的语音段将存入后训练数据集，供人工修正与模型微调")
+        self._meeting_dataset_chk.toggled.connect(self._on_dataset_chk_changed)
+        pl_m.addWidget(self._meeting_dataset_chk)
         pl_m.addStretch()
         self._source_stack.addWidget(page_meeting)
+
+        # 页3：本地模式 — 文件夹批量处理
+        page_local = QWidget()
+        pl_l = QVBoxLayout(page_local)
+        pl_l.setContentsMargins(8, 8, 8, 8)
+        pl_l.setSpacing(6)
+
+        # 输入路径选择（支持单文件或文件夹）
+        in_row = QHBoxLayout()
+        in_row.addWidget(QLabel("输入路径:"))
+        self._local_input_edit = QLineEdit()
+        self._local_input_edit.setPlaceholderText("选择视频/音频文件或包含媒体的文件夹")
+        in_row.addWidget(self._local_input_edit, 1)
+        btn_browse_file = QPushButton("选文件")
+        btn_browse_file.clicked.connect(self._browse_local_input_file)
+        in_row.addWidget(btn_browse_file)
+        btn_browse_folder = QPushButton("选文件夹")
+        btn_browse_folder.clicked.connect(self._browse_local_input)
+        in_row.addWidget(btn_browse_folder)
+        pl_l.addLayout(in_row)
+
+        # 输出目录选择
+        out_row = QHBoxLayout()
+        out_row.addWidget(QLabel("输出目录:"))
+        self._local_output_edit = QLineEdit()
+        self._local_output_edit.setPlaceholderText("MD 报告输出目录（默认与输入相同）")
+        out_row.addWidget(self._local_output_edit, 1)
+        btn_browse_out = QPushButton("浏览")
+        btn_browse_out.clicked.connect(self._browse_local_output)
+        out_row.addWidget(btn_browse_out)
+        pl_l.addLayout(out_row)
+
+        # 后训练数据集收集开关
+        self._local_save_dataset = QCheckBox("同时存入后训练数据集（存入 BackTrain/local/）")
+        self._local_save_dataset.setToolTip("启用后，处理过程中切出的语音段将存入 BackTrain/local/ 目录，供人工修正与模型微调")
+        cfg = load_config()
+        ds_enabled = cfg.get("dataset_settings", {}).get("enabled", False)
+        self._local_save_dataset.setChecked(ds_enabled)
+        pl_l.addWidget(self._local_save_dataset)
+
+        # 开始处理按钮
+        btn_row = QHBoxLayout()
+        self._btn_local_start = QPushButton("开始处理")
+        self._btn_local_start.setObjectName("startBtn")
+        self._btn_local_start.clicked.connect(self._start_local_process)
+        btn_row.addWidget(self._btn_local_start)
+        btn_row.addStretch()
+        pl_l.addLayout(btn_row)
+
+        # 进度条：段进度（显示当前段号/总段数/文件名）
+        self._local_seg_progress = QProgressBar()
+        self._local_seg_progress.setRange(0, 100)
+        self._local_seg_progress.setTextVisible(True)
+        self._local_seg_progress.setFormat("等待开始")
+        self._local_seg_progress.setFixedHeight(18)
+        pl_l.addWidget(self._local_seg_progress)
+        pl_l.addStretch()
+        self._source_stack.addWidget(page_local)
 
         rl.addWidget(self._source_stack)
 
         # 模式切换 → 切换输入源页 + 更新提示
         self._mode_group.idClicked.connect(self._on_mode_changed)
 
-        # 字幕展示区（所有模式共用，放在输入源和日志之间）
-        rl.addWidget(QLabel("\u5b57\u5e55\u5c55\u793a"))
+        # 字幕展示区（实时模式共用；本地模式隐藏，因处理结果直接输出到文件）
+        self._subtitle_container = QFrame()
+        sc_layout = QVBoxLayout(self._subtitle_container)
+        sc_layout.setContentsMargins(0, 0, 0, 0)
+        sub_header = QHBoxLayout()
+        sub_header.addWidget(QLabel("\u5b57\u5e55\u5c55\u793a"))
+        sub_header.addStretch()
+        self._btn_export = QPushButton("导出 MD 文档")
+        self._btn_export.setObjectName("toolBtn")
+        self._btn_export.setFixedHeight(28)
+        self._btn_export.setMinimumWidth(110)
+        self._btn_export.clicked.connect(self._export_subtitles)
+        sub_header.addWidget(self._btn_export)
+        sc_layout.addLayout(sub_header)
         self._subtitle_view = SubtitleListView()
         self._subtitle_view.setMinimumHeight(120)
-        rl.addWidget(self._subtitle_view, stretch=1)
+        sc_layout.addWidget(self._subtitle_view, stretch=1)
+        rl.addWidget(self._subtitle_container)
 
         # 日志区（程序性日志：VAD切分、连接状态、识别段数等）
         rl.addWidget(QLabel("\u63a7\u5236\u53f0\u65e5\u5fd7"))
@@ -766,17 +1068,21 @@ class MainWindow(QMainWindow):
         self._log.document().setMaximumBlockCount(6000)
         self._log.setMaximumHeight(160)
         rl.addWidget(self._log)
-        self._info = QLabel("Ctrl+Enter \u542f\u52a8 | Ctrl+Shift+Enter \u505c\u6b62 | Ctrl+, \u8bbe\u7f6e | Ctrl+Q \u9000\u51fa")
-        self._info.setStyleSheet(f"color:{LIGHT['text_dim']};font-size:11px")
-        rl.addWidget(self._info)
 
         # 实时采集/WS 客户端成员（主播/会议模式使用）
         self._mic_thread = None
+        self._loopback_thread = None  # 会议模式系统音频回环采集
         self._ws_client = None
-        self._test_mic_thread = None
-        self._test_ws_client = None
         self._pending_speaker_name = None  # 缓存的说话人名称（服务启动后发送）
         self._speaker_names = {"Speaker0": ""}  # 说话人名称字典 {speaker_id: name}
+
+        # 半双工仲裁状态（会议模式）
+        self._half_duplex_sys_level = 0.0   # 系统音频当前电平
+        self._half_duplex_sys_active = False  # 系统音频是否在说话（远端活跃）
+        self._half_duplex_mic_muted = False   # 麦克风是否被静音
+        self._half_duplex_silence_since = 0.0  # 系统音频安静下来的时间戳
+        self._HALF_DUPLEX_THRESHOLD = 0.02    # 远端说话电平阈值
+        self._HALF_DUPLEX_HOLD_MS = 300       # 远端安静后多久恢复麦克风（ms）
 
         sp.addWidget(left)
         sp.addWidget(right)
@@ -785,10 +1091,66 @@ class MainWindow(QMainWindow):
         sp.setSizes([240, 640])
 
     def _on_mode_changed(self, btn_id):
-        """模式切换：切换输入源页 + 更新提示文字"""
+        """模式切换：切换输入源页"""
         self._source_stack.setCurrentIndex(btn_id)
-        hints = {0: "网页声音", 1: "麦克风", 2: "麦克风 + 系统音频"}
-        self._mode_hint.setText(hints.get(btn_id, ""))
+        # 本地模式隐藏字幕展示区（处理结果直接输出到文件，不需要字幕展示和导出 MD）
+        is_local = (btn_id == 3)
+        self._subtitle_container.setVisible(not is_local)
+        # 统一调用 _update_ui_state 更新按钮状态
+        self._update_ui_state()
+        # 切换模式时同步后训练状态（各模式复选框独立）
+        self._sync_dataset_state()
+
+    def _get_current_dataset_chk(self):
+        """获取当前模式对应的后训练复选框"""
+        mode = self._get_current_mode()
+        if mode == 0:
+            return getattr(self, '_audience_dataset_chk', None)
+        if mode == 1:
+            return getattr(self, '_streamer_dataset_chk', None)
+        if mode == 2:
+            return getattr(self, '_meeting_dataset_chk', None)
+        return None  # 本地模式有自己的复选框，不在此处理
+
+    def _on_dataset_chk_changed(self, checked):
+        """后训练复选框状态变化：动态启用/禁用 server 的 dataset_manager"""
+        if not self._running:
+            return  # 服务未运行时仅记录状态，启动时再同步
+        self._sync_dataset_state()
+
+    def _sync_dataset_state(self):
+        """根据当前模式复选框状态 + 设置页全局开关，同步 server 的 dataset_manager。
+
+        启用逻辑（OR）：
+          - 当前模式 UI 复选框勾选 → 启用（单次生效）
+          - 设置页全局启用 → 启用（所有模式默认）
+        两者任一为真即启用；仅当两者都为假时才禁用。
+        """
+        if not self._running:
+            return
+        try:
+            from server import _global_server
+            if _global_server is None:
+                return
+            chk = self._get_current_dataset_chk()
+            if chk is None:
+                return
+            # 设置页全局开关
+            cfg = load_config()
+            global_enabled = cfg.get("dataset_settings", {}).get("enabled", False)
+            should_enable = chk.isChecked() or global_enabled
+
+            mgr = _global_server.dataset_manager
+            if should_enable:
+                if not mgr.enabled:
+                    mgr.enable()
+                    self._emit_log("[DATASET] 后训练数据集收集已启用\n")
+            else:
+                if mgr.enabled:
+                    mgr.disable()
+                    self._emit_log("[DATASET] 后训练数据集收集已禁用\n")
+        except Exception as e:
+            print(f"[DATASET] 同步状态失败: {e}", flush=True)
 
     def _refresh_audio_devices(self):
         """检测本地音频设备，填充下拉框
@@ -857,17 +1219,76 @@ class MainWindow(QMainWindow):
             self.activateWindow()
 
     def closeEvent(self, event):
-        if self._running:
+        # 先停止所有定时器，避免回调操作已销毁的 UI 导致崩溃
+        for timer_attr in ('_status_timer', '_local_wait_timer', '_wait_timer',
+                           '_stop_poll_timer', '_abandoned_timer'):
+            t = getattr(self, timer_attr, None)
+            if t is not None:
+                try:
+                    t.stop()
+                except Exception:
+                    pass
+        # 启动中/停止中同样需要清理（后台线程可能在加载模型）
+        if self._running or self._starting or self._stopping:
             r = QMessageBox.question(self, "\u786e\u8ba4\u9000\u51fa",
-                "\u670d\u52a1\u6b63\u5728\u8fd0\u884c\u4e2d\uff0c\u786e\u5b9a\u8981\u9000\u51fa\u5417\uff1f",
+                "\u670d\u52a1\u6b63\u5728\u8fd0\u884c\u4e2d\uff0c\u786e\u5b9a\u8981\u9000\u51fa\u5417\uff1f\n\n"
+                "\u70b9\u51fb\u300c\u662f\u300d\u5c06\u5148\u5378\u8f7d\u6a21\u578b\u91ca\u653e GPU \u663e\u5b58\uff0c\u7136\u540e\u5173\u95ed\u7a0b\u5e8f\u3002",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if r == QMessageBox.No:
                 event.ignore()
                 return
-            self._stop_server()
+            # 卸载模型并释放 GPU 显存
+            self._cleanup_before_exit()
         if self._tray is not None:
             self._tray.hide()
         event.accept()
+
+    def _cleanup_before_exit(self):
+        """退出程序前的清理：停止采集 + 停止处理 + 卸载模型 + 释放 GPU 显存。
+
+        覆盖三种状态：
+        1. 本地模式加载中（_running=True 但模型未就绪）：停止定时器 + 等加载线程退出
+        2. 本地模式处理中：停止处理线程 + 卸载模型
+        3. 实时模式运行中：停止采集 + 停止 WS 服务 + 释放引擎
+        """
+        # processEvents 重入防护：清理过程中嵌套事件循环再次触发时直接返回
+        if self._cleaning_up:
+            return
+        self._cleaning_up = True
+        try:
+            is_local = (self._get_current_mode() == 3)
+            if is_local:
+                # 停止本地处理线程（如果在跑）
+                if hasattr(self, '_local_thread') and self._local_thread and self._local_thread.isRunning():
+                    self._stop_local_process()
+                # 卸载已加载的模型
+                if self._local_model_ready or get_local_engine() is not None:
+                    self._unload_local_model(force=True)
+                else:
+                    # 本地模式加载中（模型还没加载完就退出）
+                    # _local_wait_timer 已在 closeEvent 中停止
+                    # 加载线程是 daemon，会随进程退出而结束
+                    # 加锁保护，避免与加载线程赋值 _LOCAL_ENGINE 竞态导致显存泄漏
+                    try:
+                        global _LOCAL_ENGINE
+                        _eng_to_release = None
+                        with _LOCAL_ENGINE_LOCK:
+                            if _LOCAL_ENGINE is not None:
+                                _eng_to_release = _LOCAL_ENGINE
+                                _LOCAL_ENGINE = None
+                        if _eng_to_release is not None:
+                            _release_asr_engine(_eng_to_release)
+                    except Exception:
+                        pass
+            else:
+                # 实时模式：停止采集 + 停止 WS 服务 + 释放引擎
+                self._stop_realtime_capture()
+                stop_server_backend(self._emit_log)
+            self._running = False
+        except Exception as e:
+            print(f"[EXIT] 清理失败: {e}", flush=True)
+        finally:
+            self._cleaning_up = False
 
     @Slot(str)
     def _append_log(self, text):
@@ -916,9 +1337,31 @@ class MainWindow(QMainWindow):
             print(f"[UI] _refresh_display error: {e}", flush=True)
 
     def _start_server(self):
-        if self._running:
+        # 启动中/停止中拦截重复启动（_running 要到模型就绪才置 True）
+        if self._running or self._starting or self._stopping:
             return
         cfg = load_config()
+        is_local = (self._get_current_mode() == 3)
+
+        if is_local:
+            # 本地模式：「启动服务」= 加载模型
+            ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            self._emit_log(f"\n{'=' * 50}\n")
+            self._emit_log(f"  加载模型 {ts}\n")
+            self._emit_log(f"{'=' * 50}\n")
+            ready_event, error_holder = start_model_only_backend(cfg, self._emit_log)
+            if ready_event is None:
+                self._emit_log("[ERROR] 模型加载启动失败\n")
+                return
+            self._running = True
+            self._starting = True  # 模型加载中，就绪后由 _poll_local_model_ready 清除
+            self._update_ui_state()
+            self._local_ready_event = ready_event
+            self._local_error_holder = error_holder
+            self._wait_start_time = __import__("time").time()
+            self._local_wait_timer.start()
+            return
+
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         self._emit_log(f"\n{'=' * 50}\n")
         self._emit_log(f"  \u542f\u52a8\u670d\u52a1 {ts}\n")
@@ -929,6 +1372,7 @@ class MainWindow(QMainWindow):
             return
 
         # Disable start button immediately to prevent double-click
+        self._starting = True  # 启动中状态：就绪/失败/超时后由 _poll_server_ready 清除
         self._btn_start.setEnabled(False)
         self._slbl.setText("\u542f\u52a8\u4e2d...")
         self._slbl.setStyleSheet(f"font-size:15px;font-weight:bold;color:{LIGHT['yellow']}")
@@ -946,32 +1390,399 @@ class MainWindow(QMainWindow):
         if self._ready_event.is_set():
             self._wait_timer.stop()
             self._running = True
+            self._starting = False  # 启动完成，解除启动中状态
             self._update_ui_state()
             self._emit_log("[OK] \u670d\u52a1\u5df2\u5c31\u7eea\n")
+            # 同步后训练数据集状态（由当前模式复选框控制，覆盖配置默认值）
+            self._sync_dataset_state()
             # 主播/会议模式：启动麦克风采集 + WS 客户端
             self._start_realtime_capture()
         elif self._error_holder[0] is not None:
             self._wait_timer.stop()
             self._emit_log(f"[ERROR] \u670d\u52a1\u542f\u52a8\u5931\u8d25: {self._error_holder[0]}\n")
             self._running = False
+            self._starting = False  # 启动失败，解除启动中状态
             self._update_ui_state()
+            # 模型加载失败后 server 线程可能仍在运行（WS 服务可能已监听端口），
+            # 必须同样做清理，否则 WS 服务残留、端口被占、永远无法再启动
+            self._emit_log("[INFO] 正在清理后台线程...\n")
+            if not stop_server_backend(self._emit_log):
+                self._begin_stop_polling()
         elif __import__("time").time() - self._wait_start_time > 120:
             self._wait_timer.stop()
             self._emit_log("[ERROR] \u6a21\u578b\u52a0\u8f7d\u8d85\u65f6 (120s)\n")
             self._running = False
+            self._starting = False  # 启动超时，解除启动中状态
             self._update_ui_state()
             # 清理后台线程：超时后 server 线程可能仍在加载模型/起服务，
             # 必须主动停止，否则会占用端口导致下次启动冲突
             self._emit_log("[INFO] \u6b63\u5728\u6e05\u7406\u540e\u53f0\u7ebf\u7a0b...\n")
-            stop_server_backend(self._emit_log)
+            if not stop_server_backend(self._emit_log):
+                self._begin_stop_polling()
+
+    def _poll_local_model_ready(self):
+        """轮询本地模式模型加载状态"""
+        if self._local_ready_event is not None and self._local_ready_event.is_set():
+            self._local_wait_timer.stop()
+            self._local_model_ready = True
+            self._starting = False  # 模型就绪，解除启动中状态
+            self._emit_log("[OK] 本地模型已就绪，可点击「开始处理」\n")
+            # 显示模型显存占用
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    allocated = torch.cuda.memory_allocated() / 1024 / 1024
+                    reserved = torch.cuda.memory_reserved() / 1024 / 1024
+                    self._emit_log(f"[INFO] GPU 显存占用: 已分配 {allocated:.0f}MB, 已保留 {reserved:.0f}MB\n")
+            except Exception:
+                pass
+            # 模型就绪，保持「运行中」状态（等待用户点击「停止服务」卸载）
+            self._slbl.setText("运行中")
+            self._slbl.setStyleSheet(f"font-size:15px;font-weight:bold;color:{LIGHT['green']}")
+            self._dot.setStyleSheet(f"background:{LIGHT['green']}")
+        elif self._local_error_holder is not None and self._local_error_holder[0] is not None:
+            self._local_wait_timer.stop()
+            self._emit_log(f"[ERROR] 模型加载失败: {self._local_error_holder[0]}\n")
+            self._local_model_ready = False
+            self._running = False
+            self._starting = False  # 加载失败，解除启动中状态
+            self._update_ui_state()
+            self._slbl.setText("加载失败")
+            self._slbl.setStyleSheet(f"font-size:15px;font-weight:bold;color:{LIGHT['red']}")
+            self._dot.setStyleSheet(f"background:{LIGHT['red']}")
+        elif __import__("time").time() - self._wait_start_time > 120:
+            self._local_wait_timer.stop()
+            self._emit_log("[ERROR] 模型加载超时 (120s)\n")
+            self._local_model_ready = False
+            self._running = False
+            self._starting = False  # 加载超时，解除启动中状态
+            self._update_ui_state()
+            self._slbl.setText("超时")
+            self._slbl.setStyleSheet(f"font-size:15px;font-weight:bold;color:{LIGHT['red']}")
+            self._dot.setStyleSheet(f"background:{LIGHT['red']}")
+            # 超时不清理加载线程会导致模型静默驻留 GPU：
+            # 放弃本次加载，由后台监视在线程完成后释放引擎
+            self._abandon_local_load()
 
     def _stop_server(self):
+        # 本地模式：「停止服务」= 卸载模型
+        is_local = (self._get_current_mode() == 3)
+        if is_local:
+            # 如果正在处理，先停止处理
+            if hasattr(self, '_local_thread') and self._local_thread and self._local_thread.isRunning():
+                self._stop_local_process()
+                return
+            # 模型加载中点停止：停掉等待定时器、重置状态，避免加载完成后
+            # _poll_local_model_ready 把 UI 置为"运行中"但 _running=False 的状态机错乱
+            if self._starting and not self._local_model_ready:
+                self._local_wait_timer.stop()
+                # 加载线程无法中途取消：放弃它，完成后由后台监视自动释放引擎
+                self._abandon_local_load()
+                self._starting = False
+                self._running = False
+                self._update_ui_state()
+                self._emit_log("[INFO] 已停止等待模型加载（加载线程完成后将自动释放模型）\n")
+                return
+            # 卸载模型
+            if self._local_model_ready or get_local_engine() is not None:
+                self._unload_local_model()
+            self._running = False
+            self._update_ui_state()
+            return
         if not self._running:
+            # 启动中点停止：停止就绪轮询并清理后端线程（WS 服务可能已监听端口）
+            if self._starting:
+                _wt = getattr(self, '_wait_timer', None)
+                if _wt is not None:
+                    _wt.stop()
+                self._starting = False
+                if not stop_server_backend(self._emit_log):
+                    self._begin_stop_polling()
+                self._update_ui_state()
             return
         # 先停止实时采集
         self._stop_realtime_capture()
-        stop_server_backend(self._emit_log)
+        if not stop_server_backend(self._emit_log):
+            # 后端线程未在限时内退出（模型可能仍在加载）：
+            # 保持"停止中"状态阻止立即重启，线程退出后再收尾
+            self._begin_stop_polling()
         self._running = False
+        self._update_ui_state()
+
+    def _begin_stop_polling(self):
+        """后端服务线程未在限时内退出：进入"停止中"状态，轮询直至线程真正退出后收尾"""
+        self._stopping = True
+        if self._stop_poll_timer is None:
+            self._stop_poll_timer = QTimer(self)
+            self._stop_poll_timer.setInterval(500)
+            self._stop_poll_timer.timeout.connect(self._poll_stop_done)
+        self._stop_poll_timer.start()
+        self._update_ui_state()
+
+    def _poll_stop_done(self):
+        """轮询后端服务线程是否真正退出，退出后完成收尾清理并解除"停止中"状态"""
+        if SERVER_THREAD is not None and SERVER_THREAD.is_alive():
+            return
+        if self._stop_poll_timer is not None:
+            self._stop_poll_timer.stop()
+        finalize_server_cleanup(self._emit_log)
+        self._stopping = False
+        self._emit_log(f"[{datetime.now().strftime('%H:%M:%S')}] 服务已停止\n")
+        self._update_ui_state()
+
+    def _abandon_local_load(self):
+        """放弃正在进行的本地模型加载：记录 ready_event，
+        由 _poll_abandoned_load 在加载线程完成后释放引擎（避免模型静默驻留 GPU）"""
+        if self._local_ready_event is None:
+            return
+        self._abandoned_load = (self._local_ready_event, self._local_error_holder)
+        self._local_ready_event = None
+        self._local_error_holder = None
+        if self._abandoned_timer is None:
+            self._abandoned_timer = QTimer(self)
+            self._abandoned_timer.setInterval(1000)
+            self._abandoned_timer.timeout.connect(self._poll_abandoned_load)
+        self._abandoned_timer.start()
+
+    def _poll_abandoned_load(self):
+        """监视被放弃的本地加载线程：完成后释放引擎；若期间已开始新加载则不再干预"""
+        if self._abandoned_load is None:
+            if self._abandoned_timer is not None:
+                self._abandoned_timer.stop()
+            return
+        ready_event, error_holder = self._abandoned_load
+        if error_holder is not None and error_holder[0] is not None:
+            # 加载失败，线程即将退出且无引擎残留
+            self._abandoned_load = None
+            self._abandoned_timer.stop()
+            return
+        if not ready_event.is_set():
+            return
+        # 加载完成。若用户已发起新的加载，引擎归属新流程，此处不再释放
+        self._abandoned_load = None
+        self._abandoned_timer.stop()
+        if self._starting or self._local_ready_event is not None:
+            return
+        global _LOCAL_ENGINE
+        with _LOCAL_ENGINE_LOCK:
+            eng = _LOCAL_ENGINE
+            _LOCAL_ENGINE = None
+        if eng is not None:
+            self._emit_log(f"[{datetime.now().strftime('%H:%M:%S')}] 被放弃的加载线程已完成，正在释放模型...\n")
+            _release_asr_engine(eng)
+            self._emit_log(f"[{datetime.now().strftime('%H:%M:%S')}] 模型已释放，GPU 显存已清理\n")
+
+    # ============================================================
+    # 本地模式（批量处理本地视频/音频文件）
+    # ============================================================
+    def _browse_local_input_file(self):
+        """选择单个视频/音频文件"""
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择视频/音频文件", "",
+            "媒体文件 (*.mp4 *.mkv *.avi *.mov *.flv *.wmv *.webm *.m4v *.ts *.mpg *.mpeg "
+            "*.wav *.mp3 *.flac *.m4a *.ogg *.aac *.wma *.opus);;所有文件 (*)"
+        )
+        if path:
+            self._local_input_edit.setText(path)
+            # 输出目录默认为文件所在目录
+            if not self._local_output_edit.text():
+                self._local_output_edit.setText(str(Path(path).parent))
+
+    def _browse_local_input(self):
+        """选择文件夹"""
+        from PySide6.QtWidgets import QFileDialog
+        folder = QFileDialog.getExistingDirectory(self, "选择包含视频/音频文件的文件夹")
+        if folder:
+            self._local_input_edit.setText(folder)
+            # 输出目录默认与输入相同
+            if not self._local_output_edit.text():
+                self._local_output_edit.setText(folder)
+
+    def _browse_local_output(self):
+        from PySide6.QtWidgets import QFileDialog
+        folder = QFileDialog.getExistingDirectory(self, "选择 MD 报告输出目录")
+        if folder:
+            self._local_output_edit.setText(folder)
+
+    def _start_local_process(self):
+        """启动本地批量处理（支持单文件或文件夹）"""
+        try:
+            input_path = self._local_input_edit.text().strip()
+            if not input_path:
+                QMessageBox.warning(self, "提示", "请先选择输入文件或文件夹")
+                return
+            p = Path(input_path)
+            if not p.exists():
+                QMessageBox.warning(self, "提示", "输入路径不存在")
+                return
+            if not (p.is_file() or p.is_dir()):
+                QMessageBox.warning(self, "提示", "输入路径无效")
+                return
+
+            # 检查模型是否已加载（本地模式需先点「加载模型」）
+            engine = get_local_engine()
+            if engine is None and not self._local_model_ready:
+                QMessageBox.warning(self, "提示",
+                    "请先点击「加载模型」按钮加载 ASR 模型，再开始处理文件。")
+                return
+
+            # 输出目录：若未指定，默认取输入路径所在目录
+            output_dir = self._local_output_edit.text().strip()
+            if not output_dir:
+                output_dir = str(p.parent) if p.is_file() else input_path
+            cfg = load_config()
+            ffmpeg_path = cfg.get("local_settings", {}).get("ffmpeg_path", "")
+
+            from local_processor import LocalProcessThread
+            self._local_thread = LocalProcessThread(
+                folder=input_path,
+                output_dir=output_dir,
+                config=cfg,
+                ffmpeg_path=ffmpeg_path,
+                save_dataset=self._local_save_dataset.isChecked(),
+                engine=engine,  # 复用已加载的引擎
+                parent=self,
+            )
+            self._local_thread.progress.connect(self._on_local_progress)
+            self._local_thread.segment_progress.connect(self._on_local_segment_progress)
+            self._local_thread.file_done.connect(self._on_local_file_done)
+            self._local_thread.all_done.connect(self._on_local_all_done)
+            self._local_thread.error.connect(self._on_local_error)
+
+            self._btn_local_start.setEnabled(False)
+            # 锁定模式切换
+            for rb in (self._rb_audience, self._rb_streamer, self._rb_meeting, self._rb_local):
+                rb.setEnabled(False)
+            self._local_input_edit.setEnabled(False)
+            self._local_output_edit.setEnabled(False)
+            self._local_save_dataset.setEnabled(False)
+            self._local_seg_progress.setFormat("准备中...")
+
+            self._local_thread.start()
+            self._emit_log(f"[LOCAL] 开始处理: {input_path}\n")
+        except Exception as e:
+            import traceback
+            err = traceback.format_exc()
+            self._emit_log(f"[LOCAL] [ERROR] {err}\n")
+            QMessageBox.critical(self, "启动失败", f"启动本地处理失败:\n{e}")
+
+    def _unload_local_model(self, force=False):
+        """卸载本地模式已加载的模型，释放 GPU 显存。
+
+        参数:
+            force: True 时跳过线程检查和弹窗，用于退出/重启场景强制释放。
+                   若处理线程仍在运行，会先停止再卸载。
+        """
+        global _LOCAL_ENGINE
+        # 如果正在处理，先停止
+        if hasattr(self, '_local_thread') and self._local_thread and self._local_thread.isRunning():
+            if force:
+                # 退出/重启场景：强制停止线程，不弹窗
+                # 保存线程引用，_stop_local_process 会置 None 导致无法后续检查
+                _local_thread_ref = self._local_thread
+                self._stop_local_process()
+                # _stop_local_process 只等 3 秒，force 场景延长等待到 10 秒
+                # 避免线程仍在调用 transcribe_array 时释放模型导致崩溃
+                _extra_waited = 3.0
+                while _local_thread_ref.isRunning() and _extra_waited < 10.0:
+                    _local_thread_ref.wait(100)
+                    _extra_waited += 0.1
+                    from PySide6.QtWidgets import QApplication
+                    QApplication.processEvents()
+                if _local_thread_ref.isRunning():
+                    # 线程仍未退出，不释放模型，避免崩溃
+                    self._emit_log(f"[{datetime.now().strftime('%H:%M:%S')}] [WARN] 处理线程未退出，跳过模型释放（可能残留显存）\n")
+                    # 挂接 finished 信号：线程结束后延迟卸载模型
+                    self._pending_unload_after_finish = True
+                    return
+            else:
+                QMessageBox.warning(self, "提示", "请先等待处理完成或停止处理后再卸载模型。")
+                return
+
+        try:
+            with _LOCAL_ENGINE_LOCK:
+                eng = _LOCAL_ENGINE
+                _LOCAL_ENGINE = None
+                self._local_model_ready = False
+
+            # 用公共函数释放引擎（model.cpu → model=None → gc → cuda 清理）
+            _release_asr_engine(eng)
+
+            self._emit_log(f"[{datetime.now().strftime('%H:%M:%S')}] 模型已卸载，GPU 显存已释放\n")
+            if not force:
+                # 退出/重启场景不需要更新 UI（窗口即将销毁）
+                self._update_ui_state()
+        except Exception as e:
+            self._emit_log(f"[ERROR] 卸载模型失败: {e}\n")
+
+    def _stop_local_process(self):
+        """停止本地批量处理"""
+        if hasattr(self, '_local_thread') and self._local_thread and self._local_thread.isRunning():
+            self._local_thread.stop()
+            self._emit_log("[LOCAL] 正在停止...\n")
+            # 等待线程退出（最多3秒），避免残留状态
+            waited = 0
+            while self._local_thread.isRunning() and waited < 3.0:
+                self._local_thread.wait(100)
+                waited += 0.1
+                from PySide6.QtWidgets import QApplication
+                QApplication.processEvents()
+            if self._local_thread.isRunning():
+                # 线程未在限时内退出：保留引用并挂接 finished 信号延迟清理，
+                # 直接置 None 会导致 QThread 运行中被销毁（abort）
+                self._emit_log("[LOCAL] [WARN] 处理线程未在 3s 内退出，等待其后台结束\n")
+                self._detach_thread(self._local_thread)
+                # 不置 None：保留 self._local_thread 供 _unload_local_model / 退出清理检查
+            else:
+                self._local_thread = None
+        self._btn_local_start.setEnabled(True)
+        self._local_seg_progress.setFormat("已停止")
+        # 注意：模式按钮（_rb_audience/streamer/meeting/local）的锁定/解锁
+        # 由 _update_ui_state 根据 _running 状态统一管理，此处不解锁
+        # 避免模型仍在时用户切换模式导致 _LOCAL_ENGINE 永久泄漏
+        self._local_input_edit.setEnabled(True)
+        self._local_output_edit.setEnabled(True)
+        self._local_save_dataset.setEnabled(True)
+
+    def _on_local_progress(self, text):
+        """本地处理日志输出"""
+        self._emit_log(text)
+
+    def _on_local_segment_progress(self, current, total, filename):
+        """段进度更新：显示当前处理到第几段、总段数、所属文件名"""
+        pct = int(current * 100 / total) if total > 0 else 0
+        self._local_seg_progress.setValue(pct)
+        self._local_seg_progress.setFormat(f"段 {current}/{total} ({pct}%) - {filename}")
+
+    def _on_local_file_done(self, filename, report_path):
+        """单个文件处理完成"""
+        self._emit_log(f"[LOCAL] 完成: {filename} → {report_path}\n")
+
+    def _on_local_all_done(self, count):
+        """全部处理完成"""
+        self._emit_log(f"[LOCAL] 全部完成，共 {count} 个文件\n")
+        self._local_seg_progress.setValue(100)
+        self._local_seg_progress.setFormat(f"完成 ({count} 个文件)")
+        self._reset_local_ui_state()
+        if count > 0:
+            QMessageBox.information(self, "本地处理完成", f"共处理 {count} 个文件。\nMD 报告已保存到输出目录。")
+
+    def _on_local_error(self, err_msg):
+        """本地处理错误"""
+        self._emit_log(f"[LOCAL] [ERROR] {err_msg}\n")
+        self._local_seg_progress.setFormat("处理失败")
+        self._reset_local_ui_state()
+        QMessageBox.critical(self, "本地处理错误", err_msg)
+
+    def _reset_local_ui_state(self):
+        """恢复本地模式 UI 状态"""
+        self._btn_local_start.setEnabled(True)
+        for rb in (self._rb_audience, self._rb_streamer, self._rb_meeting, self._rb_local):
+            rb.setEnabled(True)
+        self._local_input_edit.setEnabled(True)
+        self._local_output_edit.setEnabled(True)
+        self._local_save_dataset.setEnabled(True)
         self._update_ui_state()
 
 
@@ -995,21 +1806,16 @@ class MainWindow(QMainWindow):
         return None
 
     def _start_realtime_capture(self):
-        """服务就绪后，主播/会议模式启动麦克风采集 + WS客户端"""
+        """服务就绪后，主播/会议模式启动麦克风采集 + WS客户端。
+        观众模式只启动 WS 客户端（接收字幕显示），不采集麦克风。"""
         mode = self._get_current_mode()
-        if mode == 0:
-            # 观众模式：不需要本地采集，靠浏览器油猴脚本
-            self._emit_log("[INFO] 观众模式：等待浏览器端连接\n")
-            return
 
-        mic_idx = self._get_selected_mic_index()
-        if mic_idx is None:
-            self._emit_log("[WARN] 未选择麦克风设备，无法启动本地采集\n")
-            return
-
-        # 启动 WS 客户端（接收识别结果），传递模式让服务端通知网页端禁用
-        mode_str = "streamer" if mode == 1 else "meeting"
-        self._ws_client = RealtimeWSClient("ws://localhost:8765", mode=mode_str)
+        # 启动 WS 客户端（接收识别结果），所有模式都需要
+        # 端口从配置读取，与服务端监听端口一致
+        _cfg = load_config()
+        _ws_port = _cfg.get("model_settings", {}).get("ws_port", 8765)
+        mode_str = "audience" if mode == 0 else ("streamer" if mode == 1 else "meeting")
+        self._ws_client = RealtimeWSClient(f"ws://localhost:{_ws_port}", mode=mode_str)
         self._ws_client.partial_received.connect(self._on_partial)
         self._ws_client.transcription_received.connect(self._on_transcription)
         self._ws_client.connected.connect(self._on_ws_connected)
@@ -1017,6 +1823,16 @@ class MainWindow(QMainWindow):
             lambda e: self._emit_log(f"[ERROR] WS: {e}\n")
         )
         self._ws_client.start()
+
+        # 观众模式：不启动本地麦克风采集，靠浏览器油猴脚本
+        if mode == 0:
+            self._emit_log("[INFO] 观众模式：等待浏览器端连接\n")
+            return
+
+        mic_idx = self._get_selected_mic_index()
+        if mic_idx is None:
+            self._emit_log("[WARN] 未选择麦克风设备，无法启动本地采集\n")
+            return
 
         # 启动麦克风采集
         self._mic_thread = MicCaptureThread(device_index=mic_idx)
@@ -1027,44 +1843,138 @@ class MainWindow(QMainWindow):
         )
         self._mic_thread.start()
 
+        # 会议模式：启动系统音频回环采集（半双工仲裁）
+        if mode == 2:
+            sys_dev_name = self._get_selected_sys_audio_name()
+            self._loopback_thread = LoopbackCaptureThread(device_name=sys_dev_name)
+            self._loopback_thread.audio_chunk.connect(self._on_loopback_chunk)
+            self._loopback_thread.level_update.connect(self._on_loopback_level)
+            self._loopback_thread.error_occurred.connect(
+                lambda e: self._emit_log(f"[ERROR] 系统音频: {e}\n")
+            )
+            self._loopback_thread.start()
+            # 重置半双工状态
+            self._half_duplex_sys_level = 0.0
+            self._half_duplex_sys_active = False
+            self._half_duplex_mic_muted = False
+            self._half_duplex_silence_since = 0.0
+            self._emit_log("[INFO] 会议模式：半双工已启用（远端说话时麦克风静音）\n")
+
+    def _get_selected_sys_audio_name(self):
+        """从会议模式系统音频下拉框获取设备名（用于 loopback）"""
+        text = self._meet_sys_combo.currentText()
+        if text.startswith("["):
+            # 格式 "[idx] 设备名"，提取设备名
+            try:
+                return text.split("] ", 1)[1]
+            except IndexError:
+                pass
+        return None
+
+    def _detach_thread(self, thread):
+        """wait 超时的 QThread：保留引用并挂接 finished 信号延迟释放，
+        避免 QThread 运行中被销毁导致 abort"""
+        self._detached_threads.add(thread)
+        thread.finished.connect(lambda t=thread: self._on_detached_thread_finished(t))
+        if thread.isFinished():
+            # 连接前线程已结束，finished 不会再触发，直接释放
+            self._on_detached_thread_finished(thread)
+
+    def _on_detached_thread_finished(self, thread):
+        """被挂接的线程已结束：释放引用；如有待卸载的本地模型则此时卸载"""
+        self._detached_threads.discard(thread)
+        if thread is self._local_thread:
+            self._local_thread = None
+            if self._pending_unload_after_finish:
+                self._pending_unload_after_finish = False
+                self._unload_local_model(force=True)
+
     def _stop_realtime_capture(self):
-        """停止麦克风采集 + WS客户端"""
+        """停止麦克风采集 + WS客户端（wait 超时的线程保留引用，finished 后延迟释放）"""
         if self._mic_thread is not None:
             self._mic_thread.stop()
-            self._mic_thread.wait(2000)
+            if not self._mic_thread.wait(500):
+                self._detach_thread(self._mic_thread)
             self._mic_thread = None
+        if self._loopback_thread is not None:
+            self._loopback_thread.stop()
+            if not self._loopback_thread.wait(500):
+                self._detach_thread(self._loopback_thread)
+            self._loopback_thread = None
         if self._ws_client is not None:
             self._ws_client.send_stop()
             self._ws_client.stop()
-            self._ws_client.wait(2000)
+            if not self._ws_client.wait(500):
+                self._detach_thread(self._ws_client)
             self._ws_client = None
         # 重置音量条
         self._mic_level.setValue(0)
         self._meet_level.setValue(0)
 
     def _on_mic_chunk(self, audio_data):
-        """麦克风采集回调：转发到 WS 客户端"""
+        """麦克风采集回调：转发到 WS 客户端（会议模式受半双工控制）"""
+        # 会议模式半双工：远端说话时麦克风静音，避免回声重复
+        if self._get_current_mode() == 2 and self._half_duplex_mic_muted:
+            return
         if self._ws_client is not None and self._ws_client.isRunning():
             self._ws_client.feed_audio(audio_data.tobytes())
 
+    def _on_loopback_chunk(self, audio_data):
+        """系统音频回环采集回调：转发到 WS 客户端（远端参会者声音）"""
+        # 远端说话时不静音，直接发送
+        if self._ws_client is not None and self._ws_client.isRunning():
+            self._ws_client.feed_audio(audio_data.tobytes())
+
+    def _on_loopback_level(self, level):
+        """系统音频电平更新 + 半双工仲裁"""
+        self._half_duplex_sys_level = level
+        self._meet_level.setValue(int(level * 100))
+        # 只在会议模式做半双工仲裁
+        if self._get_current_mode() != 2:
+            return
+        import time
+        now = time.time() * 1000  # ms
+        if level >= self._HALF_DUPLEX_THRESHOLD:
+            # 远端在说话 → 麦克风静音
+            if not self._half_duplex_mic_muted:
+                self._half_duplex_mic_muted = True
+            self._half_duplex_silence_since = now
+        else:
+            # 远端安静 → 持续 HOLD_MS 后恢复麦克风
+            if self._half_duplex_mic_muted:
+                if self._half_duplex_silence_since == 0:
+                    self._half_duplex_silence_since = now
+                elif now - self._half_duplex_silence_since >= self._HALF_DUPLEX_HOLD_MS:
+                    self._half_duplex_mic_muted = False
+                    self._half_duplex_silence_since = 0
+
     def _on_mic_level(self, level):
-        """音量电平更新"""
+        """音量电平更新（主播模式用 _mic_level，会议模式由 loopback 控制 _meet_level）"""
         mode = self._get_current_mode()
-        bar = self._mic_level if mode == 1 else self._meet_level
-        bar.setValue(int(level * 100))
+        if mode == 1:
+            self._mic_level.setValue(int(level * 100))
 
     def _on_ws_connected(self):
         """WS客户端连接成功：发送缓存的说话人名称"""
-        self._emit_log("[OK] WS客户端已连接，开始采集麦克风\n")
+        mode = self._get_current_mode()
+        if mode == 0:
+            # 观众模式：只接收字幕，不采集麦克风
+            self._emit_log("[OK] WS客户端已连接，接收字幕中\n")
+        else:
+            self._emit_log("[OK] WS客户端已连接，开始采集麦克风\n")
+        # 停止流程可能已把 _ws_client 置 None，使用前判空
+        ws = self._ws_client
+        if ws is None:
+            return
         if self._pending_speaker_name:
             spk_id, name = self._pending_speaker_name
-            self._ws_client.send_speaker_rename(spk_id, name)
+            ws.send_speaker_rename(spk_id, name)
             self._emit_log(f"[OK] 说话人已重命名: {spk_id} -> {name}\n")
             self._pending_speaker_name = None
         # 发送所有已保存的说话人名称
         for spk_id, name in self._speaker_names.items():
             if name:
-                self._ws_client.send_speaker_rename(spk_id, name)
+                ws.send_speaker_rename(spk_id, name)
 
     def _on_partial(self, text):
         """收到 partial 中间结果（无 speaker 信息，用白色）"""
@@ -1135,24 +2045,6 @@ class MainWindow(QMainWindow):
             # 缓存名称，服务启动后发送
             self._pending_speaker_name = (spk_id, name)
 
-    def _open_subtitle_page(self):
-        """打开字幕页设置（OBS 浏览器源配置）
-        点击后打开配置模式（?settings=1），可在网页内调整字号/说话人名/历史句数。
-        """
-        config = load_config()
-        port = config.get("model_settings", {}).get("ws_port", 8765)
-        cfg_url = f"http://localhost:{port}/subtitle?settings=1"
-        obs_url = f"http://localhost:{port}/subtitle"
-        if not self._running:
-            QMessageBox.information(self, "提示", f"请先启动服务，再打开字幕页。\n\n配置页（调字号/说话人名）：\n{cfg_url}\n\nOBS 浏览器源 URL：\n{obs_url}")
-            return
-        try:
-            import webbrowser
-            webbrowser.open(cfg_url)
-            self._emit_log(f"[INFO] 已打开字幕页配置: {cfg_url}\n[INFO] OBS 浏览器源 URL(填入OBS): {obs_url}\n")
-        except Exception as e:
-            self._emit_log(f"[ERROR] 打开字幕页失败: {e}\n[INFO] OBS 浏览器源 URL: {obs_url}\n")
-
     def _build_url_rows(self, parent_layout):
         """构建字幕页 URL 显示行（字幕页 + 设置页），含复制按钮。
         未启动时显示提示文字，启动后显示真实 URL。
@@ -1219,81 +2111,6 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1500, lambda: btn.setText(old_text))
 
     # ============================================================
-    # 测试麦克风
-    # ============================================================
-    def _test_microphone(self):
-        """测试麦克风：采集5秒音频 → 发送到WS → 显示识别结果"""
-        if self._test_mic_thread is not None or self._test_ws_client is not None:
-            self._emit_log("[INFO] 测试进行中，请等待...\n")
-            return
-
-        mic_idx = self._get_selected_mic_index()
-        if mic_idx is None:
-            QMessageBox.warning(self, "提示", "请先选择麦克风设备")
-            return
-
-        self._emit_log("[测试] 开始测试麦克风（采集5秒）...\n")
-        self._subtitle_view.set_partial("[测试中，请说话...]")
-
-        # 如果服务没启动，提示用户
-        if not self._running:
-            QMessageBox.warning(self, "提示", "请先启动服务再测试麦克风")
-            self._subtitle_view.set_partial("")
-            return
-
-        # 临时 WS 客户端（不复用主 WS 客户端，避免冲突）
-        # 实际上直接用主 WS 客户端发音频更简单，但为了隔离测试逻辑，用独立的
-        # 注意：server.py 同一时间只允许一个 recording 客户端
-        # 如果主 WS 客户端已经在 recording，测试会失败
-        # 方案：测试时用主 WS 客户端发音频（如果已连接），否则创建临时连接
-        if self._ws_client is not None and self._ws_client.isRunning():
-            # 主客户端已连接，直接用临时采集线程发音频
-            self._test_mic_thread = MicCaptureThread(device_index=mic_idx)
-            self._test_mic_thread.audio_chunk.connect(self._on_mic_chunk)
-            self._test_mic_thread.error_occurred.connect(
-                lambda e: self._emit_log(f"[测试] 麦克风错误: {e}\n")
-            )
-            self._test_mic_thread.start()
-            # 5秒后停止
-            QTimer.singleShot(5000, self._finish_test_mic)
-        else:
-            # 主客户端未连接（可能是观众模式），创建临时 WS 客户端
-            mode = self._get_current_mode()
-            mode_str = "streamer" if mode == 1 else "meeting" if mode == 2 else "audience"
-            self._test_ws_client = RealtimeWSClient("ws://localhost:8765", mode=mode_str)
-            self._test_ws_client.partial_received.connect(self._on_partial)
-            self._test_ws_client.transcription_received.connect(self._on_transcription)
-            self._test_ws_client.connected.connect(
-                lambda: self._emit_log("[测试] WS已连接，开始采集\n")
-            )
-            self._test_ws_client.error_occurred.connect(
-                lambda e: self._emit_log(f"[测试] WS错误: {e}\n")
-            )
-            self._test_ws_client.start()
-
-            self._test_mic_thread = MicCaptureThread(device_index=mic_idx)
-            self._test_mic_thread.audio_chunk.connect(
-                lambda d: self._test_ws_client.feed_audio(d.tobytes()) if self._test_ws_client else None
-            )
-            self._test_mic_thread.start()
-            QTimer.singleShot(5000, self._finish_test_mic)
-
-    def _finish_test_mic(self):
-        """结束麦克风测试"""
-        if self._test_mic_thread is not None:
-            self._test_mic_thread.stop()
-            self._test_mic_thread.wait(2000)
-            self._test_mic_thread = None
-        # 如果是临时 WS 客户端，停止它
-        if self._test_ws_client is not None:
-            self._test_ws_client.send_stop()
-            self._test_ws_client.stop()
-            self._test_ws_client.wait(2000)
-            self._test_ws_client = None
-        self._emit_log("[测试] 麦克风测试结束\n")
-        self._subtitle_view.set_partial("")
-
-    # ============================================================
     # 导出字幕
     # ============================================================
     def _export_subtitles(self):
@@ -1322,6 +2139,7 @@ class MainWindow(QMainWindow):
 
 
     def _update_ui_state(self):
+        # 按钮状态同步：启动中/停止中禁止启动，运行中/启动中允许停止
         if self._running:
             self._dot.setStyleSheet(f"background:{LIGHT['green']}")
             self._slbl.setText("\u8fd0\u884c\u4e2d")
@@ -1334,19 +2152,40 @@ class MainWindow(QMainWindow):
             self._rb_audience.setEnabled(False)
             self._rb_streamer.setEnabled(False)
             self._rb_meeting.setEnabled(False)
+            self._rb_local.setEnabled(False)
             # 启动后显示真实 URL
             self._update_url_rows(True)
         else:
+            if self._stopping:
+                # 后端线程未退出前的"停止中"状态
+                self._dot.setStyleSheet(f"background:{LIGHT['yellow']}")
+                self._slbl.setText("停止中...")
+                self._slbl.setStyleSheet(f"font-size:15px;font-weight:bold;color:{LIGHT['yellow']}")
+                self._btn_start.setText("启动服务")
+                self._btn_start.setEnabled(False)
+                self._btn_stop.setText("停止服务")
+                self._btn_stop.setEnabled(False)
+                # 解锁模式切换
+                self._rb_audience.setEnabled(True)
+                self._rb_streamer.setEnabled(True)
+                self._rb_meeting.setEnabled(True)
+                self._rb_local.setEnabled(True)
+                self._update_url_rows(False)
+                return
             self._dot.setStyleSheet(f"background:{LIGHT['text_dim']}")
             self._slbl.setText("\u672a\u542f\u52a8")
             self._slbl.setStyleSheet(f"font-size:15px;font-weight:bold;color:{LIGHT['text_dim']}")
             self._btn_start.setText("\u542f\u52a8\u670d\u52a1")
-            self._btn_start.setEnabled(True)
-            self._btn_stop.setEnabled(False)
+            # 启动中/停止中保持禁用，防止重复启动
+            self._btn_start.setEnabled(not (self._starting or self._stopping))
+            self._btn_stop.setText("\u505c\u6b62\u670d\u52a1")
+            # 启动中允许停止（本地模式加载中可中断等待）
+            self._btn_stop.setEnabled(self._starting)
             # 解锁模式切换
             self._rb_audience.setEnabled(True)
             self._rb_streamer.setEnabled(True)
             self._rb_meeting.setEnabled(True)
+            self._rb_local.setEnabled(True)
             # 未启动时显示提示文字
             self._update_url_rows(False)
 
@@ -1388,21 +2227,74 @@ class MainWindow(QMainWindow):
         from settings_dialog import SettingsDialog
         dlg = SettingsDialog(self)
         dlg.exec()
-        if dlg.needs_restart and self._running:
-            r = QMessageBox.question(self, "\u91cd\u542f\u670d\u52a1",
-                "\u914d\u7f6e\u5df2\u66f4\u6539\uff0c\u9700\u8981\u91cd\u542f\u670d\u52a1\u4ee5\u751f\u6548\u3002\n\u662f\u5426\u7acb\u5373\u91cd\u542f\uff1f",
+        if dlg.needs_restart:
+            # 配置已更改，需要重启程序（不是重启服务）
+            r = QMessageBox.question(self, "\u91cd\u542f\u7a0b\u5e8f",
+                "\u914d\u7f6e\u5df2\u66f4\u6539\uff0c\u9700\u8981\u91cd\u542f\u7a0b\u5e8f\u4ee5\u751f\u6548\u3002\n\n"
+                "\u70b9\u51fb\u300c\u662f\u300d\u5c06\uff1a\u5148\u5378\u8f7d\u6a21\u578b\u91ca\u653e GPU \u663e\u5b58\uff0c\u7136\u540e\u5173\u95ed\u7a0b\u5e8f\u5e76\u91cd\u65b0\u542f\u52a8\u3002\n"
+                "\u70b9\u51fb\u300c\u5426\u300d\u5c06\uff1a\u4fdd\u7559\u5f53\u524d\u8fd0\u884c\u72b6\u6001\uff0c\u4e0b\u6b21\u624b\u52a8\u542f\u52a8\u65f6\u751f\u6548\u3002",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if r == QMessageBox.Yes:
-                self._stop_server()
-                QTimer.singleShot(800, self._start_server)
+                self._restart_program()
         self._refresh_display()
+
+    def _restart_program(self):
+        """重启程序：先卸载模型释放 GPU 显存，再关闭程序并重新启动。"""
+        import os
+        import sys
+        from PySide6.QtCore import QProcess
+
+        # 1. 如果服务正在运行，先停止服务（会卸载模型释放 GPU 显存）
+        if self._running:
+            self._emit_log("[RESTART] 正在停止服务并卸载模型...\n")
+            # 本地模式
+            is_local = (self._get_current_mode() == 3)
+            if is_local:
+                # 停止处理（如果正在处理）
+                if hasattr(self, '_local_thread') and self._local_thread and self._local_thread.isRunning():
+                    self._stop_local_process()
+                # 卸载模型（force=True：重启场景强制释放，不弹窗）
+                if self._local_model_ready or get_local_engine() is not None:
+                    self._unload_local_model(force=True)
+                self._running = False
+            else:
+                # 实时模式：停止采集 + 停止 WS 服务 + 释放引擎
+                self._stop_realtime_capture()
+                stop_server_backend(self._emit_log)
+                self._running = False
+
+        # 2. 准备重启命令
+        python = sys.executable
+        script = os.path.abspath(__file__)
+        cwd = os.path.dirname(script)
+
+        # 3. 延迟 1 秒后启动新进程（确保 GPU 显存释放完成）
+        def _do_restart():
+            try:
+                QProcess.startDetached(python, [script], cwd)
+            except Exception as e:
+                print(f"[RESTART] 启动新进程失败: {e}", flush=True)
+            # 关闭当前程序
+            QApplication.quit()
+
+        QTimer.singleShot(1000, _do_restart)
 
 
 def main():
+    try:
+        with open(_CRASH_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now()}] 进入 main()\n")
+    except Exception:
+        pass
     app = QApplication(sys.argv)
     app.setApplicationName("ASR-Recognizer")
     w = MainWindow()
     w.show()
+    try:
+        with open(_CRASH_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now()}] 进入事件循环\n")
+    except Exception:
+        pass
     sys.exit(app.exec())
 
 

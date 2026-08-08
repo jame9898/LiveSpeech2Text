@@ -18,6 +18,11 @@ torchaudio>=2.6.0
 # --- ASR 模型识别引擎 ---
 qwen-asr>=0.0.6
 
+# --- VAD 引擎 ---
+# funasr: FSMN VAD（达摩院，中文优化），仅在设置中选择 FSMN VAD 时需要
+# Silero VAD 通过 torch.hub 自动下载，无需额外安装
+funasr>=1.1.0
+
 # --- 模型下载与管理 ---
 modelscope>=1.20.0
 
@@ -36,6 +41,8 @@ soundfile>=0.12.0
 librosa>=0.10.0
 # sounddevice: 麦克风采集（48kHz/mono/float32）+ 本地音频设备类型检测（输入/输出）
 sounddevice>=0.4.6
+# PyAudioWPatch: 会议模式 WASAPI 回环采集（系统音频/喇叭输出）
+PyAudioWPatch>=0.2.12
 
 # --- 拼音转换 ---
 pypinyin>=0.50.0

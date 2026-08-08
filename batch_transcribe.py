@@ -12,8 +12,9 @@ from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
-from core import ASREngine, load_config, resolve_device, MODELS_DIR, DICT_DIR, silence_noisy_loggers
-from vad_processor import VADProcessor
+from core import ASREngine, load_config, resolve_device, DICT_DIR
+from common_utils import load_speaker_pipeline, STRICTNESS_THRESHOLDS
+from vad_processor import VADProcessor, batch_vad, silero_vad_segment, fsmn_vad_segment
 from speaker_manager import SpeakerManager
 from pinyin_utils import PinyinCorrector
 from report_generator import (
@@ -26,73 +27,12 @@ TEMP_DIR = Path(__file__).parent / "temp"
 TEMP_DIR.mkdir(exist_ok=True)
 
 
-def load_speaker_pipeline():
-    silence_noisy_loggers()
-    try:
-        from modelscope.pipelines import pipeline
-        from modelscope.utils.constant import Tasks
-
-        cam_model_id = 'iic/speech_campplus_sv_zh-cn_16k-common'
-        cam_local = None
-        for candidate in list(MODELS_DIR.glob('**/speech_campplus_sv_zh-cn_16k-common')):
-            if candidate.is_dir() and '.___' not in str(candidate):
-                cam_local = str(candidate)
-                break
-
-        if cam_local:
-            print(f"[SPEAKER] CAM++ from cache: {cam_local}", flush=True)
-            return pipeline(task=Tasks.speaker_verification, model=cam_local)
-        print(f"[SPEAKER] CAM++ from ModelScope: {cam_model_id}", flush=True)
-        return pipeline(
-            task=Tasks.speaker_verification,
-            model=cam_model_id,
-            model_revision='v1.0.0',
-        )
-    except Exception as e:
-        print(f"[SPEAKER] CAM++ load failed: {e}", flush=True)
-        return None
-
-
-def batch_vad(audio, sr, vad):
-    """模拟流式 VAD：逐块喂入音频，收集切出的语音段。
-    返回 [(seg_audio, seg_time, seg_dur, vad_info), ...]
+async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
+                             vad_engine="silero", silero_speech_prob_threshold=0.5,
+                             fsmn_speech_noise_threshold=0.6):
+    """处理单个音频文件：VAD 切分 + ASR + 说话人分离。
+    vad_engine: "silero" / "fsmn" / "energy"，与本地模式一致（跟随全局配置）。
     """
-    chunk_size = int(sr * 0.5)
-    buf = np.array([], dtype=np.float32)
-    segments = []
-    cursor = 0.0
-    min_flush_samples = int(sr * 0.3)
-
-    for i in range(0, len(audio), chunk_size):
-        chunk = audio[i:i + chunk_size]
-        buf = np.concatenate([buf, chunk]) if len(buf) > 0 else chunk.copy()
-
-        while True:
-            seg, remaining, vad_info = vad.cut(buf, sr)
-            if seg is not None and len(seg) > 0:
-                seg_dur = len(seg) / sr
-                segments.append((seg, cursor, seg_dur, vad_info))
-                cursor += seg_dur
-                if remaining is not None:
-                    buf = remaining
-                else:
-                    buf = np.array([], dtype=np.float32)
-                    break
-            elif remaining is not None:
-                buf = remaining
-            else:
-                break
-
-    if len(buf) > min_flush_samples:
-        seg_dur = len(buf) / sr
-        vad_info = {'forced': True, 'silence': vad.vad_silence_threshold,
-                    'adaptive_coeff': 1.0, 'overlap': 1.3, 'chunk_dur': seg_dur}
-        segments.append((buf, cursor, seg_dur, vad_info))
-
-    return segments
-
-
-async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr):
     print(f"\n{'=' * 60}", flush=True)
     print(f"[BATCH] 处理: {audio_path.name}", flush=True)
     print(f"{'=' * 60}", flush=True)
@@ -103,9 +43,44 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr):
     total_dur = len(audio) / sr
     print(f"[BATCH] 音频时长: {total_dur:.1f}s, 采样率: {sr}", flush=True)
 
-    print("[BATCH] VAD 切分...", flush=True)
-    vad.reset()
-    raw_segments = batch_vad(audio, sr, vad)
+    # VAD 引擎选择与本地模式（local_processor.process_audio_file）完全一致：
+    # 全局配置 vad_engine → silero/fsmn/energy，神经网络引擎失败时回退能量阈值
+    engine_names = {"silero": "Silero", "fsmn": "FSMN", "energy": "能量阈值"}
+    print(f"[BATCH] VAD 引擎: {engine_names.get(vad_engine, vad_engine)}"
+          f"（静音>{vad.vad_silence_threshold}s 切句）", flush=True)
+    raw_segments = None
+    if vad_engine == "silero":
+        print("[BATCH] 加载 Silero VAD 模型...", flush=True)
+        try:
+            raw_segments = silero_vad_segment(
+                audio, sr,
+                vad_silence_threshold=vad.vad_silence_threshold,
+                min_speech_duration=vad.min_speech_duration,
+                force_cut_sec=vad.vad_force_cut_sec,
+                speech_prob_threshold=silero_speech_prob_threshold,
+            )
+        except Exception as e:
+            print(f"[BATCH] [WARN] Silero VAD 加载失败: {e}", flush=True)
+            print("[BATCH] [WARN] 回退到能量阈值法（RMS）", flush=True)
+            raw_segments = None
+    elif vad_engine == "fsmn":
+        print("[BATCH] 加载 FSMN VAD 模型...", flush=True)
+        try:
+            raw_segments = fsmn_vad_segment(
+                audio, sr,
+                vad_silence_threshold=vad.vad_silence_threshold,
+                min_speech_duration=vad.min_speech_duration,
+                force_cut_sec=vad.vad_force_cut_sec,
+                speech_noise_threshold=fsmn_speech_noise_threshold,
+            )
+        except Exception as e:
+            print(f"[BATCH] [WARN] FSMN VAD 加载失败: {e}", flush=True)
+            print("[BATCH] [WARN] 回退到能量阈值法（RMS）", flush=True)
+            raw_segments = None
+    if raw_segments is None:
+        print("[BATCH] 使用能量阈值法切分...", flush=True)
+        vad.reset()
+        raw_segments = batch_vad(audio, sr, vad)
     print(f"[BATCH] VAD 切出 {len(raw_segments)} 段", flush=True)
 
     if not raw_segments:
@@ -201,15 +176,23 @@ def main():
 
     settings = config.get("model_settings", {})
     vad = VADProcessor(
-        vad_silence_threshold=settings.get("vad_threshold", 0.8),
+        vad_silence_threshold=settings.get("vad_threshold", 0.5),
         vad_force_cut=settings.get("vad_force_cut", True),
         vad_force_cut_sec=settings.get("force_cut_sec", 6.0),
         min_speech_duration=settings.get("min_speech_duration", 0.12),
         max_buffer_seconds=settings.get("max_buffer_seconds", 30),
+        adaptive=False,  # 与本地模式一致：直接用用户设置的阈值，不做自适应
     )
+    vad_engine = settings.get("vad_engine", "silero")
+    silero_speech_prob_threshold = settings.get("silero_speech_prob_threshold", 0.5)
+    fsmn_speech_noise_threshold = settings.get("fsmn_speech_noise_threshold", 0.6)
 
-    print("[BATCH] 加载 CAM++ 说话人模型...", flush=True)
-    sv_pipeline = load_speaker_pipeline()
+    # 说话人模型与严格度跟随全局配置（与本地模式一致）
+    sp_model_key = settings.get("speaker_model", "cam++")
+    sp_strictness = settings.get("speaker_strictness", "strict")
+    same_threshold = STRICTNESS_THRESHOLDS.get(sp_strictness, 0.55)
+    print(f"[BATCH] 加载说话人模型 ({sp_model_key}, 严格度={sp_strictness})...", flush=True)
+    sv_pipeline = load_speaker_pipeline(sp_model_key)
     threads = settings.get("threads", 8)
     executor = ThreadPoolExecutor(max_workers=threads)
     speaker_mgr = SpeakerManager(
@@ -217,46 +200,53 @@ def main():
         executor=executor,
         dict_dir=DICT_DIR,
         temp_dir=TEMP_DIR,
+        same_threshold=same_threshold,
     )
     pinyin_corr = PinyinCorrector()
 
     async def run_all():
-        results = []
         for audio_path in audio_files:
-            segments, total_dur = await process_audio_file(
-                audio_path, engine, vad, speaker_mgr, pinyin_corr
-            )
-            results.append((audio_path, segments, total_dur))
-        return results
+            # 每个文件前重置说话人状态，避免跨文件声纹库/标签污染
+            speaker_mgr.reset_session()
+            speaker_mgr.reset_speaker_profiles()
+            try:
+                segments, total_dur = await process_audio_file(
+                    audio_path, engine, vad, speaker_mgr, pinyin_corr,
+                    vad_engine=vad_engine,
+                    silero_speech_prob_threshold=silero_speech_prob_threshold,
+                    fsmn_speech_noise_threshold=fsmn_speech_noise_threshold,
+                )
+            except Exception as e:
+                print(f"[BATCH] [ERROR] 处理失败 {audio_path.name}: {e}", flush=True)
+                continue
 
-    results = asyncio.run(run_all())
+            if not segments:
+                print(f"[BATCH] [WARN] {audio_path.name} 无有效识别内容，跳过报告生成", flush=True)
+                continue
 
-    print(f"\n{'=' * 60}", flush=True)
-    print("[BATCH] 生成报告...", flush=True)
-    print(f"{'=' * 60}", flush=True)
-    for audio_path, segments, total_dur in results:
-        if not segments:
-            print(f"[BATCH] [WARN] {audio_path.name} 无有效识别内容，跳过报告生成", flush=True)
-            continue
+            # 每完成一个文件就立即生成并落盘报告，避免后续文件异常导致已完成结果丢失
+            try:
+                display_names = speaker_mgr.get_all_display_names()
+                report = generate_comprehensive_report(
+                    segments=segments,
+                    speaker_profiles=speaker_mgr.speaker_profiles,
+                    keyword_history=[],
+                    total_audio_seconds=total_dur,
+                    asr_model_name=engine.model_name or "qwen3-asr",
+                    page_type='video',
+                    video_offset=0,
+                    display_names=display_names,
+                    page_creator=None,
+                    session_start_time=datetime.now(),
+                )
+                out_file = output_dir / (audio_path.stem + '.md')
+                out_file.write_text(report, encoding='utf-8')
+                print(f"[BATCH] 报告已保存: {out_file}", flush=True)
+                print(f"        段数: {len(segments)}, 时长: {total_dur:.1f}s", flush=True)
+            except Exception as e:
+                print(f"[BATCH] [ERROR] 报告生成失败 {audio_path.name}: {e}", flush=True)
 
-        display_names = speaker_mgr.get_all_display_names()
-        report = generate_comprehensive_report(
-            segments=segments,
-            speaker_profiles=speaker_mgr.speaker_profiles,
-            keyword_history=[],
-            total_audio_seconds=total_dur,
-            asr_model_name=engine.model_name or "qwen3-asr",
-            page_type='video',
-            video_offset=0,
-            display_names=display_names,
-            page_creator=None,
-            session_start_time=datetime.now(),
-        )
-
-        out_file = output_dir / (audio_path.stem + '.md')
-        out_file.write_text(report, encoding='utf-8')
-        print(f"[BATCH] 报告已保存: {out_file}", flush=True)
-        print(f"        段数: {len(segments)}, 时长: {total_dur:.1f}s", flush=True)
+    asyncio.run(run_all())
 
     executor.shutdown(wait=False)
     print("\n[BATCH] 全部完成", flush=True)

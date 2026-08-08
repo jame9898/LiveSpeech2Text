@@ -5,7 +5,6 @@
 """
 import numpy as np
 import soundfile as sf
-import time
 from pathlib import Path
 
 
@@ -33,12 +32,26 @@ def _pre_denoise_audio(audio_data, sr=16000):
             audio_hp[i] = alpha * audio_hp[i - 1] + alpha * (audio[i] - audio[i - 1])
         audio = audio_hp
 
-    # 2. 简易谱减法：估算噪声基底并衰减
-    # 取前 200ms 作为噪声参考（假设开头是静音/噪声段）
-    noise_samples = min(int(sr * 0.2), len(audio) // 4)
-    if noise_samples > 0:
-        noise_floor = np.mean(np.abs(audio[:noise_samples])) * 2.0
-        # 软阈值：低于噪声基底的部分衰减而非硬截断
+    # 2. 简易谱减法：用 RMS 低能量段作为噪声参考，而非盲目取前 200ms
+    # 避免说话人一开口就说话时，把语音当成噪声参考导致误衰减
+    # 把音频分成 50ms 帧，取 RMS 最低的 20% 帧作为噪声参考
+    frame_len = int(sr * 0.05)
+    n_frames = len(audio) // frame_len
+    if n_frames >= 4:
+        frame_rms = []
+        for i in range(n_frames):
+            frame = audio[i * frame_len : (i + 1) * frame_len]
+            frame_rms.append(np.sqrt(np.mean(frame ** 2) + 1e-12))
+        frame_rms = np.array(frame_rms)
+        noise_threshold = np.percentile(frame_rms, 20)
+        noise_frames = frame_rms <= noise_threshold
+        if np.any(noise_frames):
+            noise_floor = np.mean(frame_rms[noise_frames]) * 3.0
+        else:
+            noise_floor = np.mean(frame_rms) * 0.5
+    else:
+        noise_floor = np.mean(np.abs(audio)) * 0.3
+    if noise_floor > 0:
         mask = np.abs(audio) < noise_floor
         audio[mask] *= 0.3  # 衰减到 30%，保留微弱语音信号
 
@@ -56,7 +69,7 @@ class SpeakerManager:
     """说话人管理器 — 封装声纹识别、说话人命名等所有说话人相关逻辑"""
 
     def __init__(self, sv_pipeline=None, executor=None,
-                 dict_dir=None, temp_dir=None):
+                 dict_dir=None, temp_dir=None, same_threshold=None):
         self.sv_pipeline = sv_pipeline
         self.executor = executor
 
@@ -67,7 +80,10 @@ class SpeakerManager:
         self._speaker_display_names = {}
 
         self._dict_dir = dict_dir
-        self._temp_dir = temp_dir
+        # temp_dir 为 None 时回退到项目 temp 目录（参照 core.py 的 TEMP_DIR 约定），
+        # 避免系统 temp 目录在进程崩溃后残留堆积
+        self._temp_dir = Path(temp_dir) if temp_dir else Path(__file__).parent / "temp"
+        self._temp_dir.mkdir(exist_ok=True)
 
         self._pending_new = None
         self._quality_reported = False
@@ -81,6 +97,10 @@ class SpeakerManager:
         self._session_active_speakers = set()
 
         self.total_audio_seconds = 0
+
+        # 说话人严格度阈值：None=默认 0.55，由 server.py 传入
+        # 宽松=0.50（相似音色合并），标准=0.55，严格=0.62（区分度高）
+        self.same_threshold = same_threshold if same_threshold is not None else 0.55
 
     # ===== 公共属性（替代直接访问私有属性） =====
 
@@ -173,6 +193,12 @@ class SpeakerManager:
         """
         import asyncio
 
+        # 过短音频（<0.3s）直接继承上次说话人，不提取声纹
+        # 避免 pad 静音后产生噪声 embedding 污染声纹库
+        MIN_VALID_DURATION = int(16000 * 0.3)
+        if len(audio_data) < MIN_VALID_DURATION:
+            return self._last_speaker_label
+
         MIN_DURATION = int(16000 * 0.5)
         if len(audio_data) < MIN_DURATION:
             audio_data = np.pad(audio_data, (0, MIN_DURATION - len(audio_data)))
@@ -184,25 +210,29 @@ class SpeakerManager:
                     'count': 1, 'label': 'Speaker0', 'quality': 0.0,
                 })
                 self._host_speaker_label = 'Speaker0'
+                print(f"[SPEAKER] [WARN] sv_pipeline is None — 说话人模型未加载，所有段标记为 Speaker0", flush=True)
             return 'Speaker0'
 
-        timestamp = int(time.time() * 1000000)
-        temp_path = self._temp_dir / f'sp_{timestamp}.wav'
+        import uuid as _uuid
+        temp_path = self._temp_dir / f'sp_{_uuid.uuid4().hex}.wav'
         result = None
-        try:
-            # 音频预降噪：提升 CAM++ 在混音场景下的说话人区分度
-            audio_denoised = _pre_denoise_audio(audio_data, sr=16000)
-            try:
-                sf.write(str(temp_path), audio_denoised.astype(np.float32), 16000)
-            except Exception as e:
-                # 磁盘满/权限问题等导致写入失败，不能让整个 detect_speaker 崩溃
-                print(f"[SPEAKER] 音频写入失败: {e}", flush=True)
-                return self._last_speaker_label
 
+        def _denoise_write_and_infer():
+            # 降噪 + 写盘 + 声纹推理全部放到工作线程执行，
+            # 避免 _pre_denoise_audio（scipy 缺失时纯 Python 逐样本滤波）和
+            # sf.write 在协程里同步执行阻塞事件循环
+            audio_denoised = _pre_denoise_audio(audio_data, sr=16000)
+            sf.write(str(temp_path), audio_denoised.astype(np.float32), 16000)
+            return self.sv_pipeline([str(temp_path), str(temp_path)], output_emb=True)
+
+        try:
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                self.executor,
-                lambda: self.sv_pipeline([str(temp_path), str(temp_path)], output_emb=True))
+            try:
+                result = await loop.run_in_executor(self.executor, _denoise_write_and_infer)
+            except Exception as e:
+                # 磁盘满/权限问题等导致写入失败，或声纹推理异常，不能让整个 detect_speaker 崩溃
+                print(f"[SPEAKER] 音频写入或声纹提取失败: {e}", flush=True)
+                return self._last_speaker_label
         finally:
             try:
                 if temp_path.exists():
@@ -232,9 +262,11 @@ class SpeakerManager:
             return 'Speaker0'
 
         # ===== 统一标准阈值（实时区分，无宽限期） =====
-        SAME_THRESHOLD = 0.66
-        NEW_THRESHOLD = 0.36
-        REQUIRED_CONFIRMATIONS = 1  # 即时确认，首次检测即分配新标签
+        # SAME_THRESHOLD 由构造函数传入（宽松/标准/严格），默认 0.55
+        SAME_THRESHOLD = self.same_threshold
+        NEW_THRESHOLD = 0.36  # 不同人最高 0.30，0.36 以上为灰色地带
+        REQUIRED_CONFIRMATIONS = 2  # 需连续 2 次低于 NEW_THRESHOLD 才创建新说话人（防单次噪声误判）
+        MAX_PROFILES = 20  # 说话人档案数量上限，防止异常情况下 profiles 只增不减
 
         best_score = -1.0
         best_idx = -1
@@ -244,6 +276,11 @@ class SpeakerManager:
             if score > best_score:
                 best_score = score
                 best_idx = i
+
+        # 调试日志：打印每段的 best_score，便于排查说话人识别问题
+        # 阈值参考：SAME_THRESHOLD={same}, NEW_THRESHOLD=0.36
+        _matched_label = self.speaker_profiles[best_idx]['label'] if best_idx >= 0 else '?'
+        print(f"[SPEAKER] score={best_score:.3f} → {_matched_label} (profiles={len(self.speaker_profiles)}, threshold={SAME_THRESHOLD})", flush=True)
 
         if best_score >= SAME_THRESHOLD:
             self._reset_pending_speaker()
@@ -262,46 +299,76 @@ class SpeakerManager:
             if self._pending_new is None:
                 self._pending_new = {'count': 1, 'embeddings': [embedding.copy()]}
                 print(f"[SPEAKER] 候选新人(1/{REQUIRED_CONFIRMATIONS}) score={best_score:.3f}", flush=True)
+            elif float(np.dot(self._pending_new['embeddings'][0], embedding)) < SAME_THRESHOLD:
+                # 与首个 pending 样本差异过大 → 不是同一个候选人，
+                # 重置 pending，避免不同人的 embedding 被平均成混合声纹的伪说话人
+                self._pending_new = {'count': 1, 'embeddings': [embedding.copy()]}
+                print(f"[SPEAKER] 候选样本与已有候选差异过大，重置候选(1/{REQUIRED_CONFIRMATIONS}) score={best_score:.3f}", flush=True)
             else:
                 self._pending_new['count'] += 1
                 self._pending_new['embeddings'].append(embedding.copy())
-                if self._pending_new['count'] >= REQUIRED_CONFIRMATIONS:
-                    emb_list = self._pending_new['embeddings']
-                    avg_emb = np.mean(emb_list, axis=0)
-                    avg_emb = avg_emb / (np.linalg.norm(avg_emb) + 1e-8)
-                    self.last_speaker_id += 1
-                    label = f'Speaker{self.last_speaker_id}'
-                    self.speaker_profiles.append({
-                        'embedding': avg_emb,
-                        'count': len(emb_list),
-                        'label': label,
-                        'quality': 0.1,
-                    })
+                print(f"[SPEAKER] 候选新人({self._pending_new['count']}/{REQUIRED_CONFIRMATIONS}) score={best_score:.3f}", flush=True)
+
+            # 检查是否达到确认阈值（首次创建后也检查，REQUIRED_CONFIRMATIONS=1 时首次即分配）
+            if self._pending_new['count'] >= REQUIRED_CONFIRMATIONS:
+                if len(self.speaker_profiles) >= MAX_PROFILES:
+                    # 达到档案数量上限，不再创建新说话人，归入最近匹配
                     self._pending_new = None
-                    print(f"[SPEAKER] 新角色确认: {label} (来自{len(emb_list)}个样本均值)", flush=True)
-                    return label
-                else:
-                    print(f"[SPEAKER] 候选新人({self._pending_new['count']}/{REQUIRED_CONFIRMATIONS}) score={best_score:.3f}", flush=True)
+                    print(f"[SPEAKER] 说话人数量已达上限({MAX_PROFILES})，归入 {_matched_label}", flush=True)
+                    return self.speaker_profiles[best_idx]['label']
+                emb_list = self._pending_new['embeddings']
+                avg_emb = np.mean(emb_list, axis=0)
+                avg_emb = avg_emb / (np.linalg.norm(avg_emb) + 1e-8)
+                self.last_speaker_id += 1
+                label = f'Speaker{self.last_speaker_id}'
+                self.speaker_profiles.append({
+                    'embedding': avg_emb,
+                    'count': len(emb_list),
+                    'label': label,
+                    'quality': 0.1,
+                })
+                self._pending_new = None
+                print(f"[SPEAKER] 新角色确认: {label} (来自{len(emb_list)}个样本均值)", flush=True)
+                return label
             return self.speaker_profiles[best_idx]['label']
 
-        # 灰色地带 (NEW_THRESHOLD ~ SAME_THRESHOLD)：非线性软更新
-        # 三段渐进：低相似度微量试探 → 中相似度线性爬升 → 高相似度加速收敛
-        normalized = (best_score - NEW_THRESHOLD) / (SAME_THRESHOLD - NEW_THRESHOLD)
-        if normalized < 0.30:
-            weight = normalized * 0.20          # 试探性微量更新
-        elif normalized < 0.65:
-            weight = 0.06 + (normalized - 0.30) * 0.50  # 线性爬升
+        # 灰色地带 (NEW_THRESHOLD ~ SAME_THRESHOLD)：走新人判定逻辑
+        # 不再软更新到现有 profile，避免声纹被稀释成"所有人平均"导致后续无法区分
+        # （滚雪球效应：软更新让 Speaker0 越来越像通用向量，后续任何人都被归为 Speaker0）
+        if self._pending_new is None:
+            self._pending_new = {'count': 1, 'embeddings': [embedding.copy()]}
+            print(f"[SPEAKER] 候选新人(1/{REQUIRED_CONFIRMATIONS}) score={best_score:.3f} [灰色地带]", flush=True)
+        elif float(np.dot(self._pending_new['embeddings'][0], embedding)) < SAME_THRESHOLD:
+            # 与首个 pending 样本差异过大 → 不是同一个候选人，
+            # 重置 pending，避免不同人的 embedding 被平均成混合声纹的伪说话人
+            self._pending_new = {'count': 1, 'embeddings': [embedding.copy()]}
+            print(f"[SPEAKER] 候选样本与已有候选差异过大，重置候选(1/{REQUIRED_CONFIRMATIONS}) score={best_score:.3f} [灰色地带]", flush=True)
         else:
-            weight = 0.235 + (normalized - 0.65) * 0.65  # 加速收敛
-        profile = self.speaker_profiles[best_idx]
-        total_weight = profile['count'] + weight
-        profile['embedding'] = (profile['embedding'] * profile['count'] + embedding * weight) / total_weight
-        # 重新归一化：单位向量的加权平均不再是单位向量，必须重新归一化才能作为余弦相似度的输入
-        profile['embedding'] = profile['embedding'] / (np.linalg.norm(profile['embedding']) + 1e-8)
-        profile['count'] += weight
-        print(f"[SPEAKER] 灰色软更新 {profile['label']} score={best_score:.3f} weight={weight:.2f} count={profile['count']:.1f}", flush=True)
-        self._reset_pending_speaker()
-        return profile['label']
+            self._pending_new['count'] += 1
+            self._pending_new['embeddings'].append(embedding.copy())
+            print(f"[SPEAKER] 候选新人({self._pending_new['count']}/{REQUIRED_CONFIRMATIONS}) score={best_score:.3f} [灰色地带]", flush=True)
+
+        if self._pending_new['count'] >= REQUIRED_CONFIRMATIONS:
+            if len(self.speaker_profiles) >= MAX_PROFILES:
+                # 达到档案数量上限，不再创建新说话人，归入最近匹配
+                self._pending_new = None
+                print(f"[SPEAKER] 说话人数量已达上限({MAX_PROFILES})，归入 {_matched_label} [灰色地带]", flush=True)
+                return self.speaker_profiles[best_idx]['label']
+            emb_list = self._pending_new['embeddings']
+            avg_emb = np.mean(emb_list, axis=0)
+            avg_emb = avg_emb / (np.linalg.norm(avg_emb) + 1e-8)
+            self.last_speaker_id += 1
+            label = f'Speaker{self.last_speaker_id}'
+            self.speaker_profiles.append({
+                'embedding': avg_emb,
+                'count': len(emb_list),
+                'label': label,
+                'quality': 0.1,
+            })
+            self._pending_new = None
+            print(f"[SPEAKER] 新角色确认: {label} (来自{len(emb_list)}个样本均值) [灰色地带]", flush=True)
+            return label
+        return self.speaker_profiles[best_idx]['label']
 
     def _reset_pending_speaker(self):
         self._pending_new = None

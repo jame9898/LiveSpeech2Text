@@ -2,13 +2,30 @@
   "current_model": "qwen3-asr-1.7b",
   "device": "cuda",
   "model_settings": {
+    "vad_engine": "silero",
     "vad_force_cut": true,
-    "vad_threshold": 0.8,
+    "vad_threshold": 0.5,
     "force_cut_sec": 6.0,
     "max_buffer_seconds": 30,
-    "min_speech_duration": 0.12,
+    "min_speech_duration": 0.25,
+    "silero_speech_prob_threshold": 0.5,
+    "fsmn_speech_noise_threshold": 0.6,
     "threads": 8,
     "ws_port": 8765,
-    "max_new_tokens": 128
+    "max_new_tokens": 256,
+    "language_mode": "auto",
+    "speaker_model": "eres2netv2",
+    "speaker_strictness": "strict",
+    "hotwords": {
+      "enabled": false
+    }
+  },
+  "dataset_settings": {
+    "enabled": false,
+    "quality_threshold": 0.6,
+    "auto_filter": true
+  },
+  "local_settings": {
+    "ffmpeg_path": ""
   }
 }

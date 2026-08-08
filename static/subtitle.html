@@ -14,14 +14,20 @@ html, body {
 
 /* ===== 字幕显示区 ===== */
 #bar {
-    position: fixed; left: 0; right: 0; bottom: 8%;
-    text-align: center;
+    position: fixed;
+    left: 15%; right: 15%; bottom: 8%;        /* 宽度 70%，左右各留 15% */
+    text-align: left;                          /* 左对齐，文字从左往右输出 */
     padding: 8px 24px;
     font-weight: 600;
     color: #fff;
     text-shadow: 0 2px 8px rgba(0,0,0,.9), 0 0 4px rgba(0,0,0,.8);
     line-height: 1.4;
     word-break: break-all;
+    /* 单行高度：只显示当前句（逗号后内容），不累积多行 */
+    max-height: calc(1.4em + 16px);            /* 1 行 + padding */
+    overflow: hidden;
+    white-space: nowrap;                        /* 单行不换行，超出隐藏尾部 */
+    text-overflow: ellipsis;                    /* 超长时显示省略号 */
     /* 背景由 JS 动态控制（默认透明） */
 }
 .ai-badge {
@@ -35,8 +41,9 @@ html, body {
     pointer-events: none;
 }
 #history {
-    position: fixed; left: 0; right: 0; bottom: 20%;
-    text-align: center;
+    position: fixed;
+    left: 15%; right: 15%; bottom: 20%;        /* 与字幕条同宽，视觉对齐 */
+    text-align: left;                          /* 左对齐，与字幕条一致 */
     padding: 4px 24px;
     color: rgba(255,255,255,.55);
     text-shadow: 0 1px 4px rgba(0,0,0,.8);
@@ -411,16 +418,57 @@ html, body {
         return '<span class="ai-badge" id="aiBadge" style="display:' + disp + ';font-size:' + fs + 'px;">AI</span>';
     }
 
+    // 句段分隔符：中英文逗号、句号、问号、感叹号、分号、换行
+    // 只显示最后一个分隔符之后的内容，实现"逗号即清空"效果
+    // 比"清空后等下次partial"更平滑：不会出现闪烁（清空→前文重新出现）
+    var CLAUSE_PUNCT = /[，,。\.！？!?；;\n]/;
+
+    // 提取当前应显示的句段：
+    // - 最后分隔符后有内容 → 显示该内容（当前句进行中）
+    // - 最后分隔符后无内容（刚出现逗号）→ 显示整个文本（保留上一句含逗号）
+    // 这样逗号出现时不清空，等下一句第一个字出现才切换到新句，避免闪烁
+    function extractCurrentClause(text) {
+        if (!text) return '';
+        var matches = text.split(CLAUSE_PUNCT);
+        // 例: "今天天气很好，我们去公园" → ["今天天气很好", "我们去公园"] → "我们去公园"
+        // 例: "今天天气很好，" → ["今天天气很好", ""] → 最后为空，返回整个文本"今天天气很好，"
+        // 例: "今天天气" → ["今天天气"] → "今天天气"
+        var last = matches[matches.length - 1];
+        if (last && last.trim()) {
+            // 最后分隔符后有内容：显示当前句（英文标点后 trim 前导空格）
+            return last.trimStart();
+        }
+        // 最后分隔符后无内容：刚出现逗号/句号，保留整句（含标点）
+        return text;
+    }
+
     function renderBar(text, speaker) {
-        lastBarText = text;
+        // 只显示最后逗号后的内容，避免文字累积导致前面字被顶掉
+        var displayText = extractCurrentClause(text);
+        lastBarText = displayText;
         lastBarSpeaker = speaker;
-        bar.innerHTML = badgeHtml() + buildSpeakerHtml(speaker) + esc(text);
+        bar.innerHTML = badgeHtml() + buildSpeakerHtml(speaker) + esc(displayText);
+    }
+
+    // 段结束时立即清空字幕条（服务端发送空 partial 触发）
+    var sentenceClearTimer = null;
+
+    function clearBar() {
+        lastBarText = '';
+        bar.innerHTML = badgeHtml() + ' ';
+    }
+
+    // 兼容保留：transcription 最终文本也走 extractCurrentClause
+    function scheduleClearIfSentenceEnd(text) {
+        // 不再需要定时清空，extractCurrentClause 已自动处理
+        // 保留空函数避免调用处报错
     }
 
     function clearAll() {
         historyList = [];
         lastBarText = null;
         lastBarSpeaker = null;
+        if (sentenceClearTimer) { clearTimeout(sentenceClearTimer); sentenceClearTimer = null; }
         hist.innerHTML = '';
         bar.innerHTML = badgeHtml() + '等待语音...';
     }
@@ -454,8 +502,17 @@ html, body {
             ws.onmessage = function(e) {
                 try {
                     var d = JSON.parse(e.data);
-                    if (d.type === 'partial' && d.text) {
-                        renderBar(d.text, lastBarSpeaker);
+                    if (d.type === 'partial') {
+                        var ptext = d.text || '';
+                        if (ptext === '') {
+                            // 空文本 partial：段结束时服务端发送，立即清空字幕条
+                            if (sentenceClearTimer) { clearTimeout(sentenceClearTimer); sentenceClearTimer = null; }
+                            clearBar();
+                        } else {
+                            renderBar(ptext, lastBarSpeaker);
+                            // 检查是否出现句末标点，安排 300ms 后清空
+                            scheduleClearIfSentenceEnd(ptext);
+                        }
                     } else if (d.type === 'transcription') {
                         var spkId = d.speaker_label || d.speaker || '';
                         var spkName = d.display_speaker || d.speaker || spkId;
@@ -465,6 +522,8 @@ html, body {
                         }
                         renderBar(d.text, spkId);
                         addHistory(d.text, spkId);
+                        // transcription 是最终文本，也检查句末标点
+                        scheduleClearIfSentenceEnd(d.text);
                     } else if (d.type === 'speaker_renamed') {
                         // 服务端广播的重命名：更新映射并重渲染
                         if (d.old_id && d.new_label) {

@@ -1,0 +1,22 @@
+{
+  "_说明": "后训练数据集清单。每条记录对应一个音频片段及其标注。corrected_text 为人工修正后的文本，raw_text 为模型原始识别。quality 由系统自动评分（0.0~1.0）。status: pending=待修正, corrected=已修正, rejected=已弃用。",
+  "_目录结构": {
+    "BackTrain/[mode]/YYYYMMDD/[source_name]/": "音频片段（.flac）与同名文字标注（.json）一一对应存放",
+    "BackTrain/manifest.json": "本清单文件，记录所有片段的元数据与质量评分",
+    "mode": "audience(观众) / streamer(主播) / meeting(会议) / local(本地)",
+    "source_name": "来源名称=处理开始时间(YYYYMMDDHHMM)。所有模式统一，如 202607111230"
+  },
+  "_评分维度": {
+    "snr": "信噪比估计（纯净度，越高越干净）",
+    "rms": "音量电平（0.0~1.0，过低=太轻，过高=可能削波）",
+    "clipping": "削波比例（0.0~1.0，越低越好）",
+    "spectral_flatness": "频谱平坦度（越低=语音特征越明显，越高=噪声/嗡嗡声）",
+    "overall": "综合评分（0.0~1.0）"
+  },
+  "_启用方式": {
+    "设置页启用": "勾选后对所有模式生效（全局默认）",
+    "各模式UI勾选": "仅对该模式本次会话/本次处理生效（单次启用）",
+    "speaker字段": "仅记录在JSON标注里供后期筛选，不作为目录名（避免单人被误判为多人导致目录碎片）"
+  },
+  "segments": []
+}

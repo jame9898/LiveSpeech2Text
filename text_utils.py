@@ -95,11 +95,14 @@ def dedup_overlap(prev_text, new_text):
     if best_len > 0:
         return new_text[best_len:].strip()
 
-    # 模糊匹配：旧段末尾几个词是否在新段开头出现
+    # 模糊匹配：旧段末尾几个词是否在新段开头重复
+    # 只允许命中在 new_text 最开头（最多偏移 1 个字符，容忍开头标点/空格），
+    # 避免旧段尾部子串出现在新句中间时把整段新句内容误删
     prev_tail = prev_text[-15:] if len(prev_text) >= 15 else prev_text
-    if len(prev_tail) >= 4 and prev_tail in new_text[:len(new_text) // 2]:
+    if len(prev_tail) >= 4:
         idx = new_text.find(prev_tail)
-        return new_text[idx + len(prev_tail):].strip()
+        if idx == 0 or (idx == 1 and new_text[0] in ' \u3000，,。.!？?；;：:'):
+            return new_text[idx + len(prev_tail):].strip()
 
     return new_text
 
@@ -126,12 +129,19 @@ def dedup_chars(text):
     result = []
     i = 0
     while i < len(text):
-        if i + 1 < len(text) and text[i] == text[i + 1] and '\u4e00' <= text[i] <= '\u9fff':
-            result.append(text[i])
-            i += 2
-        else:
-            result.append(text[i])
-            i += 1
+        # 跳过连续重复的中文字符，只保留 1 个
+        # 用 inner while 处理三连及以上重复（"那那那那"→"那"）
+        if '\u4e00' <= text[i] <= '\u9fff':
+            j = i + 1
+            while j < len(text) and text[j] == text[i] and '\u4e00' <= text[j] <= '\u9fff':
+                j += 1
+            if j > i + 1:
+                # 连续重复：只保留 1 个
+                result.append(text[i])
+                i = j
+                continue
+        result.append(text[i])
+        i += 1
 
     deduped = ''.join(result)
     if deduped != text:
@@ -168,7 +178,7 @@ def dedup_phrase_repeats(text, char_threshold=6, phrase_threshold=4, max_pattern
                 i += count
         return ''.join(res)
 
-    # 第二步：短语模式重复
+    # 第二步：短语模式重复（迭代实现，避免病态幻觉文本触发 RecursionError）
     def _fix_pattern_repeats(s, thresh, max_len):
         n = len(s)
         min_repeat_chars = thresh * 2
@@ -190,17 +200,13 @@ def dedup_phrase_repeats(text, char_threshold=6, phrase_threshold=4, max_pattern
                         break
                 if valid:
                     result.append(pattern)
-                    result.append(_fix_pattern_repeats(s[i + thresh * k:], thresh, max_len))
-                    i = n
+                    i += thresh * k
                     found = True
                     break
-            if found:
-                break
-            else:
+            if not found:
                 result.append(s[i])
                 i += 1
-        if not found:
-            result.append(s[i:])
+        result.append(s[i:])
         return ''.join(result)
 
     text = _fix_char_repeats(text, char_threshold)

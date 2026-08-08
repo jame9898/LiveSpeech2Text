@@ -48,6 +48,16 @@ class CreatorDetector:
         """按平台 API 顺序尝试提取创作者名"""
         creator = None
 
+        # page_url 可能为 None/空串（与 parse_platform_info 一致兜底），避免 re.search 抛 TypeError
+        if not page_url:
+            return None
+
+        # 总超时预算：各平台 API 串行尝试，超预算跳过后续，避免最坏情况逐平台叠加
+        deadline = time.monotonic() + 30.0
+
+        def _expired():
+            return time.monotonic() >= deadline
+
         # ---- B站视频 API ----
         bv_match = re.search(r'(?:bilibili\.com/video/|BV)([A-Za-z0-9]{10,12})', page_url)
         if bv_match:
@@ -62,7 +72,7 @@ class CreatorDetector:
 
         # ---- B站直播 API ----
         room_match = re.search(r'live\.bilibili\.com/(?:blanc/)?(\d+)', page_url)
-        if room_match and not creator:
+        if room_match and not creator and not _expired():
             data = await loop.run_in_executor(None, self._fetch_json,
                 f'https://api.live.bilibili.com/room/v1/Room/get_info?room_id={room_match.group(1)}')
             if data and data.get('code') == 0:
@@ -73,7 +83,7 @@ class CreatorDetector:
         # 优先级：betard API > douyucdn API > HTML anchorName H3 > HTML 标题解析
         # API 返回的 nickname 字段是最可靠的（诊断实测4个房间全部正确）
         # anchorName H3 仅在 SSR 直出时存在，不可靠
-        if platform == 'douyu' and not creator:
+        if platform == 'douyu' and not creator and not _expired():
             rid = None
             rm = re.search(r'douyu\.com/(\d+)', page_url)
             if rm:
@@ -97,23 +107,25 @@ class CreatorDetector:
                             return creator
 
                 # 策略2：open.douyucdn.cn API
-                data = await loop.run_in_executor(
-                    None, self._fetch_json,
-                    f'http://open.douyucdn.cn/api/RoomApi/room/{rid}')
-                if data and data.get('error') == 0:
-                    room_data = data.get('data', {})
-                    creator = room_data.get('owner_name', '') or room_data.get('nickname', '')
-                    if creator:
-                        print(f"[CREATOR] 斗鱼 douyucdn API: {creator}", flush=True)
-                        return creator
+                if not _expired():
+                    data = await loop.run_in_executor(
+                        None, self._fetch_json,
+                        f'http://open.douyucdn.cn/api/RoomApi/room/{rid}')
+                    if data and data.get('error') == 0:
+                        room_data = data.get('data', {})
+                        creator = room_data.get('owner_name', '') or room_data.get('nickname', '')
+                        if creator:
+                            print(f"[CREATOR] 斗鱼 douyucdn API: {creator}", flush=True)
+                            return creator
 
             # 策略3+4：HTML 页面解析（anchorName H3 + 标题兜底，共用一次抓取）
-            creator = await self._detect_douyu_from_html(page_url, loop)
-            if creator:
-                return creator
+            if not _expired():
+                creator = await self._detect_douyu_from_html(page_url, loop)
+                if creator:
+                    return creator
 
         # ---- 虎牙 ----
-        if platform == 'huya' and not creator:
+        if platform == 'huya' and not creator and not _expired():
             html = await loop.run_in_executor(None, self._fetch_page, page_url)
             if html:
                 hn = re.search(r'"nickName"\s*:\s*"([^"]+)"', html) or re.search(r'"sNick"\s*:\s*"([^"]+)"', html)
@@ -131,7 +143,7 @@ class CreatorDetector:
                                     break
 
         # ---- 兜底 ----
-        if not creator:
+        if not creator and not _expired():
             html = await loop.run_in_executor(None, self._fetch_page, page_url)
             if html:
                 am = re.search(r'<meta\s+name="author"\s+content="([^"]+)"', html, re.IGNORECASE)

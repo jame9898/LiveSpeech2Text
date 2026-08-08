@@ -101,23 +101,47 @@ class PinyinCorrector:
                     if not match:
                         continue
 
+                    # 校验下标连续：匹配的中文"字"在原文中必须相邻，
+                    # 否则中间夹有标点/英文，替换会连同中间字符一起损坏
+                    idx_start = char_info[start][0]
+                    contiguous = all(
+                        char_info[start + j][0] == idx_start + j
+                        for j in range(kw_len)
+                    )
+                    if not contiguous:
+                        continue
+
                     # 拼音匹配成功，检查原文是否已经是正确关键词
                     original = ''.join(char_info[start + k][1] for k in range(kw_len))
                     if original == keyword:
                         continue  # 已经正确，不需要纠正
 
                     # 执行替换
-                    idx_start = char_info[start][0]
                     idx_end = char_info[start + kw_len - 1][0]
                     text = text[:idx_start] + keyword + text[idx_end + 1:]
                     corrections.append((original, keyword))
 
-                    # 重建 char_info（文本长度可能变化）
-                    char_info = []
-                    for i, ch in enumerate(text):
-                        if '\u4e00' <= ch <= '\u9fff':
-                            py = lazy_pinyin(ch, style=Style.NORMAL)[0]
-                            char_info.append((i, ch, py))
+                    # 增量重建 char_info（文本长度可能变化）：
+                    # 替换区间换成关键词条目（拼音直接取 kw_py），
+                    # 后续条目的原文下标整体平移，避免逐字重算拼音
+                    if len(keyword) == kw_len and all(
+                            '\u4e00' <= c <= '\u9fff' for c in keyword):
+                        delta = len(keyword) - (idx_end - idx_start + 1)
+                        new_entries = [
+                            (idx_start + k, keyword[k], kw_py[k])
+                            for k in range(kw_len)
+                        ]
+                        char_info = (char_info[:start] + new_entries + [
+                            (i + delta, ch, py)
+                            for i, ch, py in char_info[start + kw_len:]
+                        ])
+                    else:
+                        # 关键词含非中文字符等异常情况，回退为全量重建
+                        char_info = []
+                        for i, ch in enumerate(text):
+                            if '\u4e00' <= ch <= '\u9fff':
+                                py = lazy_pinyin(ch, style=Style.NORMAL)[0]
+                                char_info.append((i, ch, py))
 
                     found = True
                     break  # 跳出 for，重新开始 while（文本已变化）

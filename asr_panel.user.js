@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LiveSpeech2Text V1.0
 // @namespace    asr-panel-v3
-// @version      1.0
+// @version      1.1
 // @description  视频页面内嵌语音识别面板 — VAD断句 + 说话人分离 + 口音矫正
 // @match        *://*.bilibili.com/*
 // @match        *://*.douyu.com/*
@@ -45,6 +45,32 @@ function eHtml(s) {
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+function escapeRegex(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+// 在原始文本上做纠正替换（先正则匹配再分段 HTML 转义），
+// 避免对 eHtml 后的字符串做正则导致的 &<>" 双重转义/漏配问题
+function highlightCorrections(raw, corrections) {
+    const src = raw || '';
+    if (!corrections || !corrections.length) return eHtml(src);
+    let out = '';
+    let last = 0;
+    for (const c of corrections) {
+        const old = c[0], kw = c[1];
+        if (!old) continue;
+        const re = new RegExp(escapeRegex(old), 'g');
+        re.lastIndex = last;
+        const m = re.exec(src);
+        if (!m || m.index < last) continue;   // 只向前推进，避免覆盖已处理区间
+        if (m[0].length === 0) break;         // 零宽匹配安全退出
+        out += eHtml(src.slice(last, m.index));
+        out += '<span class="asr3-corr-new">' + eHtml(kw) + '</span>';
+        last = m.index + m[0].length;
+    }
+    out += eHtml(src.slice(last));
+    return out;
+}
+
 if (document.getElementById('asr-panel-v3')) return;
 if (unsafeWindow.self !== unsafeWindow.top) return;
 
@@ -58,11 +84,21 @@ let savedW = 420, savedH = 680;
 let heartbeatTimer = null, pingTimer = null;
 let _panelInjected = false, _eventsBound = false;
 let _lastUrl = location.href, _panelClosedByUser = false;
+// 模型就绪标志：服务端模型加载完成后才能开始录音
+// 由 welcome/model_loading/model_ready 消息更新，startRec 函数检查
+let _modelReady = false;
 let lastSpeakerId = 'Speaker0';
 let _pendingSegs = [];
+// 缓存 start 载荷：worker 断线重连成功后需要重发，否则服务端对新连接丢弃音频
+let _startPayload = null;
+// 缓存已满时丢弃最旧的一段并记日志，保留最新的识别结果
+function _pushPending(seg) {
+    if (_pendingSegs.length >= 50) { _pendingSegs.shift(); L('_pendingSegs 已满(50)，丢弃最旧的一段'); }
+    _pendingSegs.push(seg);
+}
 
 // WebSocket via Web Worker (bypasses CSP)
-const _WS_WORKER_CODE = 'const U=["ws://localhost:8765","ws://127.0.0.1:8765"];let s=null,a=0,t=null,ok=0;function c(i){if(i>=U.length){p("s",{ok:0,msg:"无法连接"});a++;t=setTimeout(function(){c(0)},Math.min(2000*Math.pow(1.5,a),30000));return}try{s=new WebSocket(U[i]);s.binaryType="arraybuffer";s.onopen=function(){ok=1;p("s",{ok:1});a=0;if(t){clearTimeout(t);t=null}};s.onmessage=function(e){p("m",e.data)};s.onclose=function(e){p("s",{ok:0,msg:"断开 ("+(e.code||"?")+")"});s=null;a++;var n=ok?0:(i+1);t=setTimeout(function(){c(n)},Math.min(2000*Math.pow(1.5,a),30000))};s.onerror=function(){p("s",{ok:0,msg:"无法连接"});if(s){s.close();s=null}}}catch(e){p("s",{ok:0,msg:"无法连接"});a++;t=setTimeout(function(){c(i+1)},Math.min(2000*Math.pow(1.5,a),30000))}}function p(y,d){try{self.postMessage({t:y,d:d})}catch(e){}}self.onmessage=function(e){var m=e.data;if(m.t==="c"){c(0)}else if(m.t==="s"){if(s&&s.readyState===1){try{s.send(m.d)}catch(e){}}}else if(m.t==="x"){if(t){clearTimeout(t);t=null}a=0;if(s){try{s.close()}catch(e){}s=null}}};';
+const _WS_WORKER_CODE = 'const U=["ws://localhost:8765","ws://127.0.0.1:8765"];let s=null,a=0,t=null,ok=0;function c(i){if(i>=U.length){p("s",{ok:0,msg:"无法连接"});a++;t=setTimeout(function(){c(0)},Math.min(1000*Math.pow(1.3,a),5000));return}try{s=new WebSocket(U[i]);s.binaryType="arraybuffer";s.onopen=function(){ok=1;p("s",{ok:1});a=0;if(t){clearTimeout(t);t=null}};s.onmessage=function(e){p("m",e.data)};s.onclose=function(e){p("s",{ok:0,msg:"断开 ("+(e.code||"?")+")"});s=null;a++;var n=ok?0:(i+1);t=setTimeout(function(){c(n)},Math.min(1000*Math.pow(1.3,a),5000))};s.onerror=function(){p("s",{ok:0,msg:"无法连接"});if(s){s.close();s=null}}}catch(e){p("s",{ok:0,msg:"无法连接"});a++;t=setTimeout(function(){c(i+1)},Math.min(1000*Math.pow(1.3,a),5000))}}function p(y,d){try{self.postMessage({t:y,d:d})}catch(e){}}self.onmessage=function(e){var m=e.data;if(m.t==="c"){if(t){clearTimeout(t);t=null}a=0;if(s){try{s.onopen=null;s.onmessage=null;s.onclose=null;s.onerror=null;s.close()}catch(x){}s=null}c(0)}else if(m.t==="s"){if(s&&s.readyState===1){try{s.send(m.d)}catch(e){}}}else if(m.t==="x"){if(t){clearTimeout(t);t=null}a=0;if(s){try{s.close()}catch(e){}s=null}}};';
 let _wsWorker = null, _wsReady = false;
 function _wsInit() {
     if (_wsWorker) return;
@@ -78,6 +114,8 @@ function _wsInit() {
                     reconnectAttempts = 0;
                     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
                     pingTimer = setInterval(function() { _wsSend(JSON.stringify({type:'ping'})); }, PING_INTERVAL);
+                    // 断线重连成功：服务端对新连接会丢弃音频，正在录音时重发 start
+                    if (isRecording && _startPayload) { L('重连成功，重发 start'); send(_startPayload); }
                 } else {
                     _wsReady = false;
                     setConn(false, String.fromCharCode(0x1F534)+' '+m.d.msg);
@@ -320,60 +358,66 @@ if (!document.getElementById('asr-style-v3')) {
     s.id = 'asr-style-v3';
     s.textContent = `
 #asr-v3{position:fixed!important;right:10px;top:10px;width:420px;height:680px;
-    background:#0d1117;border:1px solid #30363d;border-radius:12px;
-    box-shadow:0 8px 32px rgba(0,0,0,.7);z-index:2147483647!important;
+    background:rgba(13,17,23,0.55);border:1px solid rgba(48,54,61,0.6);border-radius:12px;
+    -webkit-backdrop-filter:blur(20px) saturate(160%);backdrop-filter:blur(20px) saturate(160%);
+    box-shadow:0 8px 32px rgba(0,0,0,.55);z-index:2147483647!important;
     display:flex!important;flex-direction:column;overflow:hidden;
     font:13px -apple-system,'Microsoft YaHei',sans-serif;color:#c9d1d9;
     resize:both;min-width:300px;min-height:400px;contain:layout style}
-.asr3-hdr{padding:12px 16px;background:linear-gradient(135deg,#1a1f2e,#161b22);
+.asr3-hdr{padding:12px 16px;background:rgba(22,27,34,0.45);
+    -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
     display:flex;justify-content:space-between;align-items:center;
-    cursor:move;user-select:none;border-bottom:1px solid #30363d}
+    cursor:move;user-select:none;border-bottom:1px solid rgba(48,54,61,0.5)}
 .asr3-hdr b{font-size:13px;font-weight:600;color:#c9d1d9}
 .asr3-hdr .btns{display:flex;gap:4px}
-.asr3-hdr button{background:rgba(255,255,255,.06);border:1px solid #30363d;color:#8b949e;
+.asr3-hdr button{background:rgba(255,255,255,.08);border:1px solid rgba(48,54,61,0.6);color:#8b949e;
     padding:3px 10px;border-radius:5px;cursor:pointer;font-size:12px;transition:all .15s}
-.asr3-hdr button:hover{background:rgba(255,255,255,.1);color:#c9d1d9}
+.asr3-hdr button:hover{background:rgba(255,255,255,.15);color:#c9d1d9}
 .asr3-body{flex:1;display:flex;flex-direction:column;padding:10px 12px;overflow:hidden;gap:6px}
-.asr3-bar{text-align:center;padding:5px 8px;border-radius:5px;font-size:11px;font-weight:500}
-.asr3-bt1{flex:1;padding:9px 8px;border:1px solid #30363d;border-radius:7px;color:#c9d1d9;
-    cursor:pointer;font-size:13px;font-weight:500;background:#21262d;transition:all .15s}
-.asr3-bt1:hover:not(:disabled){border-color:#58a6ff;color:#58a6ff;transform:translateY(-1px)}
+.asr3-bar{text-align:center;padding:5px 8px;border-radius:5px;font-size:11px;font-weight:500;
+    -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+.asr3-bt1{flex:1;padding:9px 8px;border:1px solid rgba(48,54,61,0.6);border-radius:7px;color:#c9d1d9;
+    cursor:pointer;font-size:13px;font-weight:500;background:rgba(33,38,45,0.5);transition:all .15s}
+.asr3-bt1:hover:not(:disabled){border-color:#58a6ff;color:#58a6ff;transform:translateY(-1px);background:rgba(33,38,45,0.7)}
 .asr3-bt1:disabled{opacity:.35;cursor:not-allowed}
-.asr3-bt2{flex:1;padding:7px;border:1px dashed #30363d;border-radius:6px;color:#8b949e;
+.asr3-bt2{flex:1;padding:7px;border:1px dashed rgba(48,54,61,0.6);border-radius:6px;color:#8b949e;
     cursor:pointer;font-size:12px;background:transparent;transition:all .15s}
 .asr3-bt2:hover:not(:disabled){border-color:#58a6ff;color:#58a6ff}
 .asr3-bt2:disabled{opacity:.35;cursor:not-allowed}
-.asr3-text-box{flex:1;background:rgba(255,255,255,.018);border:1px solid #21262d;border-radius:8px;overflow:hidden}
-.asr3-text-scroll{height:100%;overflow-y:auto;padding:8px 10px;line-height:1.65;font-size:13px;color:#b0b8c0;contain:layout style}
+.asr3-text-box{flex:1;background:rgba(255,255,255,.03);border:1px solid rgba(33,38,45,0.5);border-radius:8px;overflow:hidden;position:relative}
+.asr3-text-scroll{height:100%;overflow-y:auto;padding:8px 10px 8px 10px;line-height:1.65;font-size:13px;color:#b0b8c0;contain:layout style}
+/* partial 占位条：固定高度，absolute 定位到顶部预留区，不遮挡下方记录 */
+#asr3-partial{height:30px;box-sizing:border-box;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .asr3-text-scroll::-webkit-scrollbar{width:5px}
-.asr3-text-scroll::-webkit-scrollbar-thumb{background:#30363d;border-radius:4px}
+.asr3-text-scroll::-webkit-scrollbar-thumb{background:rgba(48,54,61,0.7);border-radius:4px}
 .asr3-seg{padding:6px 10px;margin:3px 0;border-radius:5px;border-left:3px solid #58a6ff;
-    background:rgba(88,166,255,.05);will-change:transform,opacity}
+    background:rgba(88,166,255,.07);will-change:transform,opacity}
 .asr3-sp-label{display:inline-block;font-size:11px;font-weight:600;margin-right:4px;padding:0 5px;border-radius:3px}
 .asr3-kw{display:inline-block;margin:2px 3px 2px 0;padding:1px 6px;border-radius:3px;
-    background:rgba(88,166,255,.1);color:#58a6ff;font-size:11px;border:1px solid rgba(88,166,255,.15)}
+    background:rgba(88,166,255,.12);color:#58a6ff;font-size:11px;border:1px solid rgba(88,166,255,.2)}
 .asr3-corr-new{color:#3fb950;font-weight:700}
 .asr3-corr-old{text-decoration:line-through;color:#f85149;font-size:11px;margin:0 2px}
 @keyframes asr3-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
 .asr3-in{animation:asr3-in .12s ease}
 .asr3-toast{position:fixed;bottom:80px;right:20px;padding:8px 14px;border-radius:6px;
     color:#c9d1d9;font-size:12px;z-index:999999;animation:asr3-toast-in .25s ease;
-    pointer-events:none;background:rgba(22,27,34,.96);border:1px solid #30363d;
-    backdrop-filter:blur(8px);box-shadow:0 4px 16px rgba(0,0,0,.5)}
+    pointer-events:none;background:rgba(22,27,34,.7);border:1px solid rgba(48,54,61,0.6);
+    -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);box-shadow:0 4px 16px rgba(0,0,0,.5)}
 .asr3-toast.ok{border-color:#3fb950}
 .asr3-toast.err{border-color:#f85149}
 .asr3-toast.loading{border-color:#58a6ff}
 @keyframes asr3-toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 @keyframes asr3-blink{0%,100%{opacity:1}50%{opacity:0}}
 #asr3-sub{position:fixed!important;z-index:2147483646!important;
-    background:rgba(0,0,0,.82);backdrop-filter:blur(6px);
-    border-radius:8px;padding:10px 20px;text-align:center;
+    background:rgba(0,0,0,.55);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+    border-radius:8px;padding:10px 20px;text-align:left;
     color:#fff;font-size:18px;font-weight:600;line-height:1.5;
     letter-spacing:1px;display:none;pointer-events:auto;cursor:move;
     text-shadow:0 1px 3px rgba(0,0,0,.6);
-    transition:opacity .25s;min-height:36px;user-select:none}
-.asr3-sel,.asr3-inp{border:1px solid #30363d;border-radius:5px;padding:4px 6px;font-size:11px;
-    background:#0d1117;color:#c9d1d9;outline:none;transition:border-color .15s}
+    transition:opacity .25s;min-height:36px;user-select:none;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.asr3-sel,.asr3-inp{border:1px solid rgba(48,54,61,0.6);border-radius:5px;padding:4px 6px;font-size:11px;
+    background:rgba(13,17,23,0.5);color:#c9d1d9;outline:none;transition:border-color .15s}
 .asr3-sel:focus,.asr3-inp:focus{border-color:#58a6ff}
 `;
     document.head.appendChild(s);
@@ -390,12 +434,12 @@ p.innerHTML = `<div id="asr-v3">
             <button id="asr3-close">✕</button>
         </span></div>
     <div class="asr3-body">
-        <div id="asr3-conn" class="asr3-bar" style="background:rgba(248,81,73,.1);color:#f85149">🔴 未连接</div>
-        <div id="asr3-st" class="asr3-bar" style="background:rgba(63,185,80,.06);color:#3fb950">准备就绪</div>
+        <div id="asr3-conn" class="asr3-bar" style="background:rgba(248,81,73,.18);color:#f85149">🔴 未连接</div>
+        <div id="asr3-st" class="asr3-bar" style="background:rgba(63,185,80,.12);color:#3fb950">准备就绪</div>
         <div style="display:flex;gap:5px">
-            <button id="asr3-start" class="asr3-bt1" style="background:#3fb950;border-color:#3fb950;color:#fff">▶ 标签页</button>
-            <button id="asr3-start-full" class="asr3-bt1" style="background:#58a6ff;border-color:#58a6ff;color:#fff">▶ 全屏</button>
-            <button id="asr3-stop" class="asr3-bt1" style="background:#f85149;border-color:#f85149;color:#fff" disabled>⏹ 停止</button></div>
+            <button id="asr3-start" class="asr3-bt1" style="background:rgba(63,185,80,.55);border-color:rgba(63,185,80,.7);color:#fff">▶ 标签页</button>
+            <button id="asr3-start-full" class="asr3-bt1" style="background:rgba(88,166,255,.55);border-color:rgba(88,166,255,.7);color:#fff">▶ 全屏</button>
+            <button id="asr3-stop" class="asr3-bt1" style="background:rgba(248,81,73,.55);border-color:rgba(248,81,73,.7);color:#fff" disabled>⏹ 停止</button></div>
         <div style="display:flex;gap:4px">
             <button id="asr3-clr" class="asr3-bt2">🗑 清除</button>
             <button id="asr3-rpt" class="asr3-bt2">📄 报告</button>
@@ -407,12 +451,12 @@ p.innerHTML = `<div id="asr-v3">
                 <option value="speaker">主讲人</option>
                 <option value="other">关键词</option></select>
             <input id="asr3-inp" class="asr3-inp" placeholder="输入词或短语..." style="flex:1">
-            <button id="asr3-add" style="padding:3px 8px;border:0;border-radius:5px;background:#58a6ff;color:#fff;cursor:pointer;font-size:11px;white-space:nowrap">+ 添加</button></div>
+            <button id="asr3-add" style="padding:3px 8px;border:0;border-radius:5px;background:rgba(88,166,255,.7);color:#fff;cursor:pointer;font-size:11px;white-space:nowrap">+ 添加</button></div>
         <div style="font-size:11px;color:#8b949e;display:flex;justify-content:space-between">
             <span id="asr3-tm">0.0秒</span><span id="asr3-cnt">0条 | 0字</span></div>
-        <div class="asr3-text-box" style="position:relative">
-        <div id="asr3-partial" style="display:none;position:absolute;top:0;left:0;right:0;z-index:10;padding:6px 10px;font-size:13px;color:#8b949e;font-style:italic;line-height:1.5;background:rgba(13,17,23,.92);backdrop-filter:blur(4px);border-bottom:1px solid #21262d"></div>
-        <div id="asr3-txt" class="asr3-text-scroll">
+        <div class="asr3-text-box">
+        <div id="asr3-partial" style="display:none;position:absolute;top:0;left:0;right:0;z-index:10;padding:6px 10px;font-size:13px;color:#8b949e;font-style:italic;line-height:18px;background:rgba(13,17,23,.6);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);border-bottom:1px solid rgba(33,38,45,0.5)"></div>
+        <div id="asr3-txt" class="asr3-text-scroll" style="padding-top:36px">
             <div style="text-align:center;color:#484f58;padding-top:40px">
                 <p style="font-size:28px;margin-bottom:10px">🎤</p>
                 <p>点击「开始」启动识别</p>
@@ -444,14 +488,14 @@ function _repositionSub() {
     }
     if (vp) {
         const rect = vp.getBoundingClientRect();
-        const w = Math.round(rect.width * 0.618);
+        const w = Math.round(rect.width * 0.7);
         sub.style.width = Math.max(w, 200) + 'px';
         sub.style.left = Math.round(rect.left + (rect.width - w) / 2) + 'px';
         sub.style.bottom = (window.innerHeight - rect.bottom + 60) + 'px';
         sub.style.top = 'auto';
     } else {
-        sub.style.width = Math.round(window.innerWidth * 0.5) + 'px';
-        sub.style.left = Math.round(window.innerWidth * 0.25) + 'px';
+        sub.style.width = Math.round(window.innerWidth * 0.7) + 'px';
+        sub.style.left = Math.round(window.innerWidth * 0.15) + 'px';
         sub.style.bottom = '80px';
         sub.style.top = 'auto';
     }
@@ -459,6 +503,8 @@ function _repositionSub() {
 
 function _showSubtitle(text) {
     // 仅当前可见标签页才显示字幕条，避免多页面同时显示
+    // 直接显示完整 partial 文本，由下一段 partial 自然替换
+    // 超出字幕条宽度时由 CSS（nowrap+overflow:hidden+ellipsis）尾部省略
     if (!_subVisible || document.hidden) return;
     _repositionSub();
     $('asr3-sub-txt').textContent = text;
@@ -521,7 +567,7 @@ function _ensurePanel() {
 setInterval(() => {
     if (_ensurePanel() && _pendingSegs.length > 0) {
         const segs = _pendingSegs.splice(0);
-        segs.forEach(s => addSeg(s.text,s.speaker,s.ocrFixed,s.ocrCount,s.segTime,s.segDur,s.gapAudio,s.corrections,s.isHost,s.originalText));
+        segs.forEach(s => addSeg(s.text,s.speaker,s.ocrFixed,s.ocrCount,s.segTime,s.segDur,s.gapAudio,s.corrections,s.isHost,s.originalText,s.timestamp));
     }
 }, 1000);
 
@@ -537,7 +583,7 @@ function bindEvents() {
     _eventsBound = true;
     const bind = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
 
-    bind('asr3-close', () => { _panelClosedByUser=true; cleanup(); _wsClose(); p.remove(); _pendingSegs.length = 0; });
+    bind('asr3-close', () => { _panelClosedByUser=true; _hideSubtitle(); if (isRecording) stopRec(); cleanup(); _wsClose(); if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; } p.remove(); _pendingSegs.length = 0; _panelInjected = false; });
     bind('asr3-min', () => {
         const m = $('asr-v3');
         if (!m) return;
@@ -600,6 +646,7 @@ function cleanup() {
 function connect() {
     setConn(false, '⏳ 连接中...');
     _wsInit();
+    if (!_wsWorker) { setConn(false, 'Worker 初始化失败'); return; }
     _wsWorker.postMessage({t: 'c'});
 }
 
@@ -622,8 +669,55 @@ function send(d) { _wsSend(JSON.stringify(d)); }
 function onMsg(data) {
     switch(data.type) {
         case 'welcome':
-            if (Date.now()-lastWelcomeTime>5000) $('asr3-st').textContent = '模型: '+(data.model||'?')+' | 就绪';
+            // 根据服务端 model_ready 标志设置插件状态
+            // model_ready 为 false 时模型还在加载，禁用录音按钮
+            if (data.model_ready === false) {
+                _modelReady = false;
+                const st = $('asr3-st');
+                st.style.background = 'rgba(210,153,29,.12)';
+                st.style.color = '#d2991d';
+                st.textContent = '模型还在加载中...';
+                if (!isRecording) {
+                    $('asr3-start').disabled = true; $('asr3-start-full').disabled = true;
+                    $('asr3-stop').disabled = true;
+                }
+            } else {
+                _modelReady = true;
+                if (Date.now()-lastWelcomeTime>5000) {
+                    $('asr3-st').textContent = '模型: '+(data.model||'?')+' | 已完成加载';
+                }
+                if (!isRecording) {
+                    $('asr3-start').disabled = false; $('asr3-start-full').disabled = false;
+                    $('asr3-stop').disabled = true;
+                }
+            }
             lastWelcomeTime = Date.now(); break;
+        case 'model_loading':
+            // 服务端模型加载中：禁用开始按钮，显示加载提示
+            _modelReady = false;
+            {
+                const st = $('asr3-st');
+                st.style.background = 'rgba(210,153,29,.12)';
+                st.style.color = '#d2991d';
+                st.textContent = '模型还在加载中...';
+                $('asr3-start').disabled = true; $('asr3-start-full').disabled = true;
+                $('asr3-stop').disabled = true;
+            }
+            break;
+        case 'model_ready':
+            // 服务端模型加载完成：恢复开始按钮，显示就绪
+            _modelReady = true;
+            {
+                const st = $('asr3-st');
+                st.style.background = 'rgba(63,185,80,.06)';
+                st.style.color = '#3fb950';
+                st.textContent = '模型: '+(data.model||'?')+' | 已完成加载';
+                if (!isRecording) {
+                    $('asr3-start').disabled = false; $('asr3-start-full').disabled = false;
+                    $('asr3-stop').disabled = true;
+                }
+            }
+            break;
         case 'status':
             const st = $('asr3-st');
             if (data.status==='recording') { st.style.background='rgba(248,81,73,.08)'; st.style.color='#f85149'; st.textContent='🔴 识别中...'; }
@@ -659,8 +753,8 @@ function onMsg(data) {
             if (data.keywords) updKws(data.keywords, keywordStore);
             break;
         case 'partial':
-            var p = $('asr3-partial');
-            if (p) { p.style.display = 'block'; p.innerHTML = '<span style="color:#8b949e;font-style:italic;">' + eHtml(data.text) + '</span><span class="asr3-cursor" style="display:inline-block;width:2px;height:14px;background:#58a6ff;margin-left:2px;vertical-align:middle;animation:asr3-blink 0.8s infinite"></span>'; }
+            var pPart = $('asr3-partial');
+            if (pPart) { pPart.style.display = 'block'; pPart.innerHTML = '<span style="color:#8b949e;font-style:italic;">' + eHtml(data.text) + '</span><span class="asr3-cursor" style="display:inline-block;width:2px;height:14px;background:#58a6ff;margin-left:2px;vertical-align:middle;animation:asr3-blink 0.8s infinite"></span>'; }
             _showSubtitle(data.text);
             break;
         case 'keywords_updated':
@@ -679,7 +773,11 @@ function onMsg(data) {
             $('asr3-st').textContent = '错误: '+data.message;
             $('asr3-st').style.background = 'rgba(248,81,73,.12)';
             $('asr3-st').style.color = '#f85149';
-            isRecording = false; $('asr3-start').disabled = false; $('asr3-start-full').disabled = false; $('asr3-stop').disabled = true;
+            isRecording = false; _startPayload = null;
+            // 完整释放采集资源，避免重复点开始累积泄漏
+            if (mediaStream) { mediaStream.getTracks().forEach(t=>t.stop()); mediaStream = null; }
+            if (audioCtx) { audioCtx.close(); audioCtx = null; }
+            $('asr3-start').disabled = false; $('asr3-start-full').disabled = false; $('asr3-stop').disabled = true;
             _hideSubtitle();
             break;
     }
@@ -695,11 +793,12 @@ function getSpeakerColor(speaker) {
 
 function addSeg(text, speaker, ocrFixed, ocrCount, segTime, segDur, gapAudio, corrections, isHost, originalText, timestamp) {
     if (_panelClosedByUser) return;  // 用户已关闭面板，直接丢弃，防止 _pendingSegs 无限增长
-    if (!_ensurePanel()) { if (_pendingSegs.length < 50) _pendingSegs.push({text,speaker,ocrFixed,ocrCount,segTime,segDur,gapAudio,corrections,isHost,originalText}); return; }
+    if (!_ensurePanel()) { _pushPending({text,speaker,ocrFixed,ocrCount,segTime,segDur,gapAudio,corrections,isHost,originalText,timestamp}); return; }
     const box = $('asr3-txt');
-    if (!box) { if (_pendingSegs.length < 50) _pendingSegs.push({text,speaker,ocrFixed,ocrCount,segTime,segDur,gapAudio,corrections,isHost,originalText}); return; }
+    if (!box) { _pushPending({text,speaker,ocrFixed,ocrCount,segTime,segDur,gapAudio,corrections,isHost,originalText,timestamp}); return; }
     var pp = $('asr3-partial'); if (pp) { pp.style.display = 'none'; pp.innerHTML = ''; }
-    _hideSubtitle();
+    // 不更新字幕条：保持上一段 partial 的显示，等下一段 partial 自然替换
+    // 避免"每句说完就清空"的闪烁，字幕条完全由 partial 驱动
     if (segCount === 0) box.textContent = '';
     segCount++;
 
@@ -718,7 +817,7 @@ function addSeg(text, speaker, ocrFixed, ocrCount, segTime, segDur, gapAudio, co
             const d = new Date(timestamp);
             ts.textContent = d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0')+':'+d.getSeconds().toString().padStart(2,'0');
         } catch(e) {
-            ts.textContent = 'T+'+segTime.toFixed(1)+'s';
+            ts.textContent = 'T+'+(segTime!=null?segTime.toFixed(1):'?')+'s';
         }
         div.appendChild(ts);
     }
@@ -739,14 +838,8 @@ function addSeg(text, speaker, ocrFixed, ocrCount, segTime, segDur, gapAudio, co
 
     if (corrections && corrections.length > 0) {
         console.log('[ASR] corrections:', corrections.length, 'originalText:', (originalText||'').substring(0,30), 'text:', (text||'').substring(0,30));
-        let dt = eHtml(originalText||text);
-        for (let c of corrections) {
-            const old = c[0], kw = c[1];
-            const re = new RegExp(eHtml(old).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'g');
-            dt = dt.replace(re, '<span class="asr3-corr-new">'+eHtml(kw)+'</span>');
-        }
         const ts = document.createElement('span');
-        ts.innerHTML = dt;
+        ts.innerHTML = highlightCorrections(originalText || text, corrections);
         div.appendChild(ts);
     } else {
         div.appendChild(document.createTextNode(originalText || text));
@@ -759,7 +852,12 @@ function addSeg(text, speaker, ocrFixed, ocrCount, segTime, segDur, gapAudio, co
 function showReport(txt) {
     const el = $('asr3-txt');
     if (!el) return;
-    el.innerHTML = '<div style="color:#c9d1d9;padding:4px 0;line-height:1.8;white-space:pre-wrap">'+txt+'</div>';
+    // 服务端文本不可信，用 textContent 插入，避免注入
+    el.textContent = '';
+    const d = document.createElement('div');
+    d.style.cssText = 'color:#c9d1d9;padding:4px 0;line-height:1.8;white-space:pre-wrap';
+    d.textContent = txt;
+    el.appendChild(d);
 }
 
 function downloadReport(content, filename) {
@@ -824,6 +922,7 @@ function clearUI() {
 
 async function startRec(mode) {
     if (!_wsReady) { alert('服务未连接！请启动 start.bat'); return; }
+    if (!_modelReady) { alert('模型还在加载中，请等待加载完成后再开始录音'); return; }
     try {
         const isTab = (mode === 'tab');
         const opts = isTab
@@ -843,15 +942,23 @@ async function startRec(mode) {
         proc.onaudioprocess = e => {
             if (isRecording && _wsReady) _wsSendBinary(new Float32Array(e.inputBuffer.getChannelData(0)).buffer);
         };
-        src.connect(proc); proc.connect(audioCtx.destination);
+        src.connect(proc);
+        /* 连接到 MediaStreamDestination 即可拉取音频触发 onaudioprocess；
+           不能连 audioCtx.destination，否则采集到的标签页音频会再次回放到扬声器产生回声 */
+        proc.connect(audioCtx.createMediaStreamDestination());
         isRecording = true;
-        send({type:'start'});
+        // 缓存 start 载荷，断线重连成功后重发（见 _wsInit）
+        _startPayload = {type:'start'};
+        send(_startPayload);
 
         const pu = location.href;
-        const pt = (pu.includes('live.bilibili.com')||pu.includes('douyu.com/')||pu.includes('huya.com/'))?'live':(pu.includes('bilibili.com/video/')||pu.includes('youtube.com/watch'))?'video':'web';
+        // page_type：只有直播/视频两种类型，短视频归为视频
+        const pt = (pu.includes('live.bilibili.com')||pu.includes('douyu.com/')||pu.includes('huya.com/'))?'live':'video';
         let vo = 0;
         if (pt==='video') {
             const vs = document.querySelectorAll('video');
+            // 视频页：记录当前播放位置作为偏移，并重置视频到开头重新开始
+            // （新插件会话从零开始，重新对该视频做语音识别）
             for (const v of vs) { if (v.duration&&v.currentTime>0) { vo=v.currentTime; v.currentTime=0; break; } }
         }
 
@@ -880,6 +987,7 @@ async function startRec(mode) {
 
 function stopRec() {
     isRecording = false;
+    _startPayload = null;
     send({type:'stop'});
     if (mediaStream) { mediaStream.getTracks().forEach(t=>t.stop()); mediaStream = null; }
     if (audioCtx) { audioCtx.close(); audioCtx = null; }

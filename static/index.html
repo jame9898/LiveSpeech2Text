@@ -6,9 +6,37 @@
 <title>LiveSpeech2Text V1.0</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; background: #f6f8fa; color: #1f2328; padding: 24px; max-width: 1100px; }
-h1 { font-size: 20px; margin-bottom: 6px; }
-.sub { color: #656d76; font-size: 12px; margin-bottom: 12px; }
+body {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: linear-gradient(160deg, #f6f8fa 0%, #eef1f6 100%);
+    color: #1f2328;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 24px 16px;
+}
+.app { width: 100%; max-width: 1100px; }
+/* 顶栏 */
+.app-head {
+    display: flex; justify-content: space-between; align-items: center; gap: 16px;
+    flex-wrap: wrap; margin-bottom: 16px; padding: 14px 20px;
+    background: #fff; border: 1px solid #e2e6ee; border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(31,35,40,.06);
+}
+.app-name { font-size: 20px; font-weight: 700; }
+.app-sub { font-size: 12px; color: #656d76; margin-top: 2px; }
+/* 主体卡片 */
+.app-card {
+    background: #fff; border: 1px solid #e2e6ee; border-radius: 12px;
+    padding: 16px 20px; box-shadow: 0 1px 3px rgba(31,35,40,.06);
+}
+/* 输入框（含聚焦光圈） */
+.inp {
+    border: 1px solid #d0d7de; border-radius: 8px; padding: 7px 10px;
+    font-size: 12px; background: #fff; color: #1f2328; outline: none;
+    transition: border-color .15s, box-shadow .15s;
+}
+.inp:focus { border-color: #0969da; box-shadow: 0 0 0 3px rgba(9,105,218,.15); }
 .ctrl-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
 .status-wrap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
 .status-badge { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: bold; }
@@ -32,9 +60,8 @@ h1 { font-size: 20px; margin-bottom: 6px; }
 .btn.launch { background: #1a7f37; border-color: #1a7f37; color: #fff; font-weight: 600; }
 .btn.launch:hover:not(:disabled) { background: #14682c; border-color: #14682c; color: #fff; }
 .kw-line { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
-.kw-line select { border: 1px solid #d0d7de; border-radius: 5px; padding: 5px 8px; font-size: 12px; background: #fff; color: #1f2328; outline: none; }
-.kw-line input { flex: 1; border: 1px solid #d0d7de; border-radius: 5px; padding: 5px 10px; font-size: 12px; background: #fff; color: #1f2328; outline: none; transition: border-color .15s; }
-.kw-line input:focus { border-color: #0969da; }
+.kw-line select { border: 1px solid #d0d7de; border-radius: 6px; padding: 6px 8px; font-size: 12px; background: #fff; color: #1f2328; outline: none; }
+.kw-line input { flex: 1; }
 .kw-box { min-height: 22px; max-height: 60px; overflow-y: auto; font-size: 11px; line-height: 1.8; display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 10px; }
 .kw-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; border: 1px solid rgba(9,105,218,.15); }
 .kw-tag.speaker { background: rgba(63,185,80,.1); color: #1a7f37; border-color: rgba(63,185,80,.25); }
@@ -63,53 +90,71 @@ h1 { font-size: 20px; margin-bottom: 6px; }
 #transcripts .empty-state { text-align: center; color: #656d76; padding: 40px 0; }
 #transcripts .empty-state .icon { font-size: 32px; margin-bottom: 10px; }
 @keyframes connecting-pulse { 0%,100%{background:rgba(9,105,218,.05)} 50%{background:rgba(9,105,218,.12)} }
+
+/* ===== 面板美化（覆盖细节） ===== */
+.btn { border-radius: 8px; padding: 9px 18px; box-shadow: 0 1px 2px rgba(31,35,40,.05); }
+.btn:active { transform: translateY(1px); box-shadow: none; }
+.status-wrap { gap: 8px; }
+.kw-line select { border-radius: 6px; padding: 6px 8px; }
+#transcripts { border-radius: 8px; }
+.stats {
+    background: #f6f8fa; border: 1px solid #e2e6ee; border-radius: 8px;
+    padding: 8px 12px; font-size: 12px; color: #656d76; margin-top: 10px;
+}
 </style>
 </head>
 <body>
-<h1>LiveSpeech2Text V1.0</h1>
-<p class="sub">WebSocket ws://{host}:{port} &mdash; 无需插件，独立控制</p>
+<div class="app">
+    <header class="app-head">
+        <div class="app-title">
+            <div class="app-name">LiveSpeech2Text</div>
+            <div class="app-sub">实时语音识别 · 控制面板</div>
+        </div>
+        <div class="status-wrap">
+            <span id="connStatus" class="status-badge offline">未连接</span>
+            <span id="recStatus" class="status-badge ready">准备就绪</span>
+            <span id="modelInfo" class="status-badge model" style="display:none"></span>
+        </div>
+    </header>
 
-<div class="status-wrap">
-    <span id="connStatus" class="status-badge offline">未连接</span>
-    <span id="recStatus" class="status-badge ready">准备就绪</span>
-    <span id="modelInfo" class="status-badge model" style="display:none"></span>
-</div>
+    <section class="app-card">
+        <div class="page-info" style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+            <input id="pageUrl" class="inp" placeholder="视频/直播页面URL（选填）" style="flex:1;min-width:200px">
+            <input id="pageCreator" class="inp" placeholder="UP主/创作者名（选填）" style="width:160px">
+            <span id="pagePlatform" style="font-size:11px;color:#656d76;white-space:nowrap"></span>
+        </div>
 
-<div class="page-info" style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
-    <input id="pageUrl" placeholder="视频/直播页面URL（选填）" style="flex:1;min-width:200px;border:1px solid #d0d7de;border-radius:5px;padding:5px 10px;font-size:12px;background:#fff;color:#1f2328;outline:none">
-    <input id="pageCreator" placeholder="UP主/创作者名（选填）" style="width:160px;border:1px solid #d0d7de;border-radius:5px;padding:5px 10px;font-size:12px;background:#fff;color:#1f2328;outline:none">
-    <span id="pagePlatform" style="font-size:11px;color:#656d76;white-space:nowrap"></span>
-</div>
+        <div class="ctrl-bar">
+            <button id="btnStart" class="btn primary">▶ 标签页</button>
+            <button id="btnStartFull" class="btn" style="background:#58a6ff;border-color:#58a6ff;color:#fff">▶ 全屏</button>
+            <button id="btnStop" class="btn danger" disabled>⏹ 停止</button>
+            <button id="btnClear" class="btn">🗑 清除</button>
+            <button id="btnReport" class="btn">📄 报告</button>
+            <button id="btnSave" class="btn">💾 保存</button>
+            <button id="btnLog" class="btn">📋 日志</button>
+            <button id="btnLaunch" class="btn launch" title="一键启动/打开本地服务">🟢 启动服务</button>
+        </div>
 
-<div class="ctrl-bar">
-    <button id="btnStart" class="btn primary">▶ 标签页</button>
-    <button id="btnStartFull" class="btn" style="background:#58a6ff;border-color:#58a6ff;color:#fff">▶ 全屏</button>
-    <button id="btnStop" class="btn danger" disabled>⏹ 停止</button>
-    <button id="btnClear" class="btn">🗑 清除</button>
-    <button id="btnReport" class="btn">📄 报告</button>
-    <button id="btnSave" class="btn">💾 保存</button>
-    <button id="btnLog" class="btn">📋 日志</button>
-    <button id="btnLaunch" class="btn launch" title="一键启动/打开本地服务">🟢 启动服务</button>
-</div>
+        <div class="kw-line">
+            <select id="kwCat">
+                <option value="speaker">主讲人</option>
+                <option value="other">关键词</option>
+            </select>
+            <input id="kwInput" class="inp" placeholder="输入词或短语，回车添加...">
+            <button id="btnAddKw" class="btn accent">+ 添加</button>
+        </div>
 
-<div class="kw-line">
-    <select id="kwCat">
-        <option value="speaker">主讲人</option>
-        <option value="other">关键词</option>
-    </select>
-    <input id="kwInput" placeholder="输入词或短语，回车添加...">
-    <button id="btnAddKw" class="btn accent">+ 添加</button>
-</div>
+        <div class="kw-box" id="keywordsBox"></div>
 
-<div class="kw-box" id="keywordsBox"></div>
+        <div id="transcripts">
+            <div id="partialArea"></div>
+            <div class="empty-state"><div class="icon">🎤</div>点击「▶ 标签页」或「▶ 全屏」开始识别<br><span style="font-size:11px">选择"整个屏幕"以共享音频</span></div>
+        </div>
 
-<div id="transcripts">
-    <div id="partialArea"></div>
-    <div class="empty-state"><div class="icon">🎤</div>点击「▶ 标签页」或「▶ 全屏」开始识别<br><span style="font-size:11px">选择"整个屏幕"以共享音频</span></div>
-</div>
-
-<div class="stats">
-    时长: <b id="statDur">0.0</b>秒 &nbsp;|&nbsp; 句数: <b id="statCnt">0</b>条 &nbsp;|&nbsp; 字数: <b id="statChar">0</b>字
+        <div class="stats">
+            时长: <b id="statDur">0.0</b>秒 &nbsp;|&nbsp; 句数: <b id="statCnt">0</b>条 &nbsp;|&nbsp; 字数: <b id="statChar">0</b>字
+        </div>
+    </section>
 </div>
 
 <script>
@@ -230,6 +275,31 @@ function connect() {
 function send(d) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(d)); }
 
 function eHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function escapeRegex(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+// 在原始文本上做纠正替换（先正则匹配再分段 HTML 转义），
+// 避免对 eHtml 后的字符串做正则导致的 &<>" 双重转义/漏配问题
+function highlightCorrections(raw, corrections) {
+    var src = raw || '';
+    if (!corrections || !corrections.length) return eHtml(src);
+    var out = '', last = 0, i;
+    for (i = 0; i < corrections.length; i++) {
+        var old = corrections[i][0], kw = corrections[i][1];
+        if (!old) continue;
+        var re = new RegExp(escapeRegex(old), 'g');
+        re.lastIndex = last;
+        var m = re.exec(src);
+        if (!m || m.index < last) continue;
+        if (m[0].length === 0) break;
+        out += eHtml(src.slice(last, m.index));
+        out += '<span class="corr-new">' + eHtml(kw) + '</span>';
+        last = m.index + m[0].length;
+    }
+    out += eHtml(src.slice(last));
+    return out;
+}
 
 function parsePageInfo() {
     var url = (pageUrl.value || '').trim();
@@ -402,14 +472,8 @@ function addSeg(d) {
 
     // 纠正显示：old → new
     if (d.corrections && d.corrections.length > 0) {
-        var txt = eHtml(d.original_text || d.text);
-        for (var ci = 0; ci < d.corrections.length; ci++) {
-            var c = d.corrections[ci], old = c[0], kw = c[1];
-            var re = new RegExp(eHtml(old).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
-            txt = txt.replace(re, '<span class="corr-new">' + eHtml(kw) + '</span>');
-        }
         var ts2 = document.createElement('span');
-        ts2.innerHTML = txt;
+        ts2.innerHTML = highlightCorrections(d.original_text || d.text, d.corrections);
         div.appendChild(ts2);
     } else if (d.text) {
         div.appendChild(document.createTextNode(d.original_text || d.text));
@@ -550,7 +614,9 @@ async function doStartRec(mode) {
             }
         };
         src.connect(proc);
-        proc.connect(audioCtx.destination);
+        /* 连接到 MediaStreamDestination 即可拉取音频触发 onaudioprocess；
+           不能连 audioCtx.destination，否则采集到的标签页音频会再次回放到扬声器产生回声 */
+        proc.connect(audioCtx.createMediaStreamDestination());
         isRecording = true;
         segCount = 0;
 
