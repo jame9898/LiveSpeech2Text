@@ -79,6 +79,20 @@ PROJECT_RULES.md
 ROADMAP.md
 
 # ========================
+# 后训练数据集（语音+文本，含个人声纹，严禁上传）
+# 仅保留目录结构与 manifest 模板，实际音频与标注不入库
+# 三级目录：BackTrain/[mode]/YYYYMMDD/[speaker]/seg_xxx.flac + seg_xxx.json
+# ========================
+BackTrain/audience/
+BackTrain/streamer/
+BackTrain/meeting/
+BackTrain/local/
+BackTrain/manifest.json
+*.flac
+!BackTrain/.gitkeep
+!BackTrain/manifest.example.json
+
+# ========================
 # 本地脚本（不入库）
 # ========================
 push.bat
