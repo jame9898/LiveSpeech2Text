@@ -159,7 +159,7 @@ def main():
 
 def verify_core_imports():
     import importlib.util
-    core = ["torch", "qwen_asr", "soundfile", "sounddevice", "funasr", "PySide6", "modelscope", "addict", "datasets", "torchvision"]
+    core = ["torch", "qwen_asr", "soundfile", "sounddevice", "funasr", "PySide6", "modelscope", "addict", "datasets", "torchvision", "simplejson", "sortedcontainers"]
     return [m for m in core if importlib.util.find_spec(m) is None]
 
 

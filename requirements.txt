@@ -15,6 +15,9 @@ torch==2.12.0
 torchaudio==2.11.0
 # torchvision: CAM++/ERes2Net 说话人模型硬依赖（modelscope pipeline 顶层导入，缺失直接加载失败）
 torchvision==0.27.0
+# modelscope 说话人 pipeline 硬依赖（干净环境实测确认，缺失即加载失败）
+simplejson==4.1.1
+sortedcontainers==2.4.0
 
 # --- ASR 模型识别引擎 ---
 qwen-asr==0.0.6
