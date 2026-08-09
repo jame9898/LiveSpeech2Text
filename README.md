@@ -24,23 +24,26 @@
 ## 快速开始
 
 ```bash
-# 1. 克隆仓库（GitHub 或 Gitee，二选一）
+# 1. 克隆仓库（GitHub 或 Gitee）
 git clone https://github.com/jame9898/LiveSpeech2Text
 # 或 Gitee 镜像
 git clone https://gitee.com/linhanduzikai/LiveSpeech2Text
-cd LiveSpeech2Text
 
-# 2. 安装依赖（CPU 专用）
-python -m venv venv && venv\Scripts\activate
+# 2. 虚拟环境
+cd LiveSpeech2Text
+python -m venv venv 
+venv\Scripts\activate
+
+# 3. 安装依赖（CPU 专用）
 pip install -r requirements.txt
 # 或（GPU + CUDA 专用）
 pip install -r requirements-gpu.txt
 
-# 3. 下载模型（自动保存到 models/）
+# 4. 下载模型（自动保存到 models/）
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', cache_dir='models')"
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common', cache_dir='models')"
 
-# 4. 启动桌面面板
+# 5. 启动桌面面板
 python app.py
 ```
 
@@ -50,7 +53,10 @@ python app.py
 
 ```bash
 git pull
-pip install -r requirements.txt   # CPU 专用（GPU + CUDA 用 requirements-gpu.txt）
+python -m venv venv # 虚拟环境下（非虚拟环境可跳过）
+venv\Scripts\activate  # 虚拟环境下（非虚拟环境可跳过）
+pip install -r requirements.txt   # CPU 专用
+pip install -r requirements-gpu.txt # GPU + CUDA 专用  
 ```
 
 ## 卸载
