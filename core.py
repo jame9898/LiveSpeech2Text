@@ -457,6 +457,19 @@ class ASREngine:
             dtype = torch.float16 if has_cuda else torch.float32
             device_map = "cuda" if has_cuda else "cpu"
             print(f"[LOAD] Qwen3-ASR device={device_map} dtype={'float16' if has_cuda else 'float32'}", flush=True)
+            if not has_cuda:
+                # CPU 推理线程数：默认物理核数（超线程对串行 LLM 推理有争抢，反而降速）
+                # 可用 config model_settings.cpu_threads 覆盖（0 = 自动）
+                cpu_threads = int(self._settings.get("cpu_threads", 0) or 0)
+                if cpu_threads <= 0:
+                    try:
+                        import psutil
+                        cpu_threads = psutil.cpu_count(logical=False) or (os.cpu_count() or 4)
+                    except Exception:
+                        cpu_threads = max(1, (os.cpu_count() or 4) // 2)
+                cpu_threads = max(1, cpu_threads)
+                torch.set_num_threads(cpu_threads)
+                print(f"[LOAD] CPU 推理线程数: {torch.get_num_threads()}", flush=True)
 
             print("[LOAD] Qwen3-ASR step1: importing qwen_asr...", flush=True)
             from qwen_asr import Qwen3ASRModel
@@ -646,6 +659,76 @@ class ASREngine:
         elapsed = time.time() - start
         print(f"[OK] Streaming transcription done ({len(result)} chars, {elapsed:.1f}s)", flush=True)
         return result
+
+    def transcribe_batch(self, audio_arrays, sr=16000):
+        """批量转录（本地模式）：一次模型调用处理多个音频段，CPU 上显著加速。
+
+        段内过短/低能量的样本直接跳过（返回空字符串）。
+        批量失败时自动回退逐段转录，保证不丢结果。
+        """
+        import numpy as np
+
+        if self.model is None:
+            raise RuntimeError("ASR model not loaded")
+
+        arrays = []
+        for a in audio_arrays:
+            arr = np.asarray(a, dtype=np.float32)
+            if arr.ndim > 1:
+                arr = np.mean(arr, axis=1)
+            # RMS 预检：低能量/空样本直接返回空（与 transcribe_array 一致）
+            rms = float(np.sqrt(np.mean(arr ** 2))) if len(arr) > 0 else 0.0
+            if len(arr) == 0 or rms < 0.005:
+                arrays.append(None)
+                continue
+            # 频谱平坦度预检：区分语音与音乐/噪声
+            if len(arr) >= 512:
+                spectrum = np.fft.rfft(arr * np.hanning(len(arr)))
+                power = np.abs(spectrum) ** 2 + 1e-12
+                sf = float(np.exp(np.mean(np.log(power))) / np.mean(power))
+                if sf > 0.45:
+                    arrays.append(None)
+                    continue
+            arrays.append((arr, 16000))
+
+        results = [""] * len(arrays)
+        batch = [(i, a) for i, a in enumerate(arrays) if a is not None]
+        if not batch:
+            return results
+
+        with self._model_lock:
+            # 锁内再检查一次：与 transcribe_array 相同的窗口保护
+            if self.model is None:
+                raise RuntimeError("ASR model not loaded")
+            _ctx = self.get_hotwords_context()
+            try:
+                outs = self.model.transcribe(
+                    audio=[a for _, a in batch],
+                    context=_ctx,
+                    language=None,
+                )
+            except Exception as e:
+                print(f"[ASR] 批量转录失败，回退逐段: {e}", flush=True)
+                outs = []
+                for _, (arr, _sr) in batch:
+                    try:
+                        r = self.model.transcribe(
+                            audio=(arr, 16000), context=_ctx, language=None)
+                        outs.append(r[0] if r else None)
+                    except Exception as e2:
+                        print(f"[ASR] 逐段回退失败: {e2}", flush=True)
+                        outs.append(None)
+            lang_mode = self._settings.get("language_mode", "auto")
+            for (i, _), out in zip(batch, outs):
+                try:
+                    text = out.text.strip() if out is not None else ""
+                except (AttributeError, IndexError, TypeError):
+                    text = ""
+                if lang_mode != "auto" and text:
+                    text = filter_non_chinese(text, mode=lang_mode)
+                results[i] = text
+        return results
+
 
     def _transcribe_qwen(self, audio_path):
         """Qwen3-ASR 官方 qwen-asr 转录"""

@@ -245,6 +245,34 @@
             "tariff", "关税", "trade war", "贸易战",
             "IPO", "上市", "startup", "初创公司"
           ]
+        },
+        "AIInfra": {
+          "_desc": "AI 基础设施 / 超节点 / 算力集群",
+          "exclusive": [
+            "超节点", "SuperNode", "超级节点",
+            "Scale Up", "Scale Out", "scale-up", "scale-out",
+            "液冷", "风冷", "液体冷却", "Liquid Cooling", "冷板",
+            "磐久", "盘九",
+            "寒武纪", "Cambricon",
+            "摩尔线程", "Moore Threads",
+            "沐曦", "MetaX",
+            "曦智科技", "Lightelligence",
+            "天数智芯", "Iluvatar",
+            "中科曙光", "曙光", "海光", "Hygon", "信创",
+            "壁仞", "Biren",
+            "CloudMatrix", "CloudMatrix 384",
+            "Atlas", "Atlas 950", "SuperPoD", "SuperPOD",
+            "GB200", "GB300", "B200", "B300",
+            "NVLink", "NVLink Switch", "NV Switch",
+            "InfiniBand", "IB",
+            "H3C", "华三", "Ruijie", "锐捷"
+          ],
+          "related": [
+            "GPU", "CUDA", "AI芯片", "数据中心", "Data Center",
+            "功耗", "散热", "供电", "800VDC",
+            "交换机", "Switch", "铜缆", "光互联", "光模块",
+            "训练", "推理", "集群", "算力"
+          ]
         }
       }
     }

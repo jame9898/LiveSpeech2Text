@@ -260,9 +260,56 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
     _MIN_ASR_SAMPLES = int(16000 * 0.2)
     _total_segs = len(raw_segments)
     _fname = Path(audio_path).name
+
+    # === 批量转录 ===
+    # CPU 上逐段 ASR 单次推理 2-5s（编解码模型固定开销大）；将时长相近的段
+    # 合并为一个 batch 一次推理，可数倍提速。qwen-asr 内部按组内最长段
+    # padding，故按长度分组避免浪费。分组规则：组内最长/最短 <= 3 倍，
+    # 且组总样本量受限（约 4 个 30s 段，控制内存）。
+    _MAX_BATCH_SAMPLES = int(16000 * 30 * 4)
+    asr_groups = []  # 每项: [段索引...]
+    _cur_group = []
+    _cur_len = 0
+    _cur_max = 0
     for idx, (seg_audio, seg_time, seg_dur, vad_info) in enumerate(raw_segments):
-        # 每段 VAD/ASR 迭代前检查取消标志，可中断处尽快退出
-        # （VAD 切分与单次 ASR 调用本身不可中断，在迭代边界检查）
+        n = len(seg_audio)
+        if n < _MIN_ASR_SAMPLES:
+            _log(f"[LOCAL] [SKIP] 段 {idx + 1} 过短({n/16000:.2f}s)，跳过")
+            continue
+        if (_cur_group and (n > _cur_max * 3 or n * 3 < _cur_max
+                            or _cur_len + n > _MAX_BATCH_SAMPLES)):
+            asr_groups.append(_cur_group)
+            _cur_group, _cur_len, _cur_max = [], 0, 0
+        _cur_group.append(idx)
+        _cur_len += n
+        _cur_max = max(_cur_max, n)
+    if _cur_group:
+        asr_groups.append(_cur_group)
+    if asr_groups:
+        _log(f"[LOCAL] ASR 批量转录: {len(asr_groups)} 组 / {sum(len(g) for g in asr_groups)} 段")
+
+    _seg_texts = {}  # 段索引 -> ASR 文本
+    for gi, group in enumerate(asr_groups):
+        # 每组 ASR 前检查取消标志（批量调用本身不可中断，在组间检查）
+        if _stopped():
+            _log("[LOCAL] 用户已取消，中断当前文件处理")
+            # 数据集会话可能已开启，需正确关闭
+            if save_dataset and dataset_mgr and dataset_mgr.enabled:
+                dataset_mgr.end_session()
+            return [], total_dur
+        group_audio = [raw_segments[i][0] for i in group]
+        try:
+            group_texts = engine.transcribe_batch(group_audio, sr=16000)
+        except Exception as e:
+            _log(f"[LOCAL] [WARN] 第 {gi + 1} 组批量 ASR 失败: {e}")
+            group_texts = [""] * len(group)
+        for i, text in zip(group, group_texts):
+            text = (text or "").strip()
+            if text:
+                _seg_texts[i] = text
+
+    for idx, (seg_audio, seg_time, seg_dur, vad_info) in enumerate(raw_segments):
+        # 每段 VAD/说话人/数据集迭代前检查取消标志，可中断处尽快退出
         if _stopped():
             _log("[LOCAL] 用户已取消，中断当前文件处理")
             # 数据集会话可能已开启，需正确关闭
@@ -275,16 +322,8 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
                 seg_progress_cb(idx + 1, _total_segs, _fname)
             except Exception:
                 pass
-        if len(seg_audio) < _MIN_ASR_SAMPLES:
-            _log(f"[LOCAL] [SKIP] 段 {idx + 1} 过短({len(seg_audio)/16000:.2f}s)，跳过")
-            continue
-        try:
-            text = engine.transcribe_array(seg_audio, sr=16000)
-        except Exception as e:
-            _log(f"[LOCAL] [WARN] 段 {idx + 1} ASR 失败: {e}")
-            text = ""
 
-        text = (text or "").strip()
+        text = _seg_texts.get(idx, "")
         if not text:
             continue
 

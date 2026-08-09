@@ -21,7 +21,7 @@ from datetime import datetime
 STATUS_PAGE = Path(__file__).parent / "static" / "index.html"
 SUBTITLE_PAGE = Path(__file__).parent / "static" / "subtitle.html"
 from concurrent.futures import ThreadPoolExecutor
-from core import DICT_DIR
+from core import DICT_DIR, resolve_device
 from common_utils import (
     resample_audio, SPEAKER_MODEL_MAP, STRICTNESS_THRESHOLDS, load_speaker_pipeline,
 )
@@ -172,10 +172,27 @@ class RealtimeASRServer:
         print(f"[VAD] vad_force_cut={self.vad_force_cut}", flush=True)
 
         # 流式模式（伪流式：短chunk快速partial + 整句final修正）
+        # CPU 模式下 Qwen3-ASR 单次推理 2-5s：若保持 GPU 的 0.3s 刷新频率，
+        # partial 会在 executor 队列大量堆积、挤占 finalize，反而拖慢最终字幕
+        # partial 参数可在 config model_settings 中覆盖（partial_interval /
+        # partial_min_sec / partial_max_sec），默认按设备自适应
+        eng_dev = getattr(self.asr_engine, '_device', None)
+        self._is_cpu = (eng_dev == 'cpu') or resolve_device(self._config) == 'cpu'
+        ms_cfg = self._config.get("model_settings", {})
         self._stream_last_partial = ""
         self._stream_partial_time = 0
-        self._stream_partial_interval = 0.3  # partial 触发间隔（低延迟：0.3s）
+        self._stream_partial_interval = float(ms_cfg.get(
+            "partial_interval", 1.0 if self._is_cpu else 0.3))
+        self._partial_min_sec = float(ms_cfg.get(
+            "partial_min_sec", 0.5 if self._is_cpu else 0.3))
+        self._partial_max_sec = float(ms_cfg.get(
+            "partial_max_sec", 2.0 if self._is_cpu else 3.0))
         self._partial_in_flight = False
+        # 说话人声纹检测冷却：CPU 模式下 CAM++/ERes2Net 单次推理 1-3s，
+        # 冷却期内继承上一说话人，避免每段都跑检测拖慢字幕输出
+        self._last_speaker_detect_time = 0.0
+        self._speaker_detect_cooldown = float(ms_cfg.get(
+            "speaker_detect_cooldown", 3.0 if self._is_cpu else 0.0))
 
         # 分片有序提交（解决并发 _finalize_segment 乱序问题）
         self._seg_emit_lock = asyncio.Lock()
@@ -613,6 +630,8 @@ class RealtimeASRServer:
         # 首帧加速：interval - offset 后触发第一次 partial
         # offset = 0.15 → 首次在 0.15s 后触发（interval 0.3s - 0.15s = 0.15s）
         self._stream_partial_time = time.time() - self._stream_partial_interval + 0.15
+        # 声纹检测冷却重置：新会话立即做一次检测，避免继承旧会话说话人
+        self._last_speaker_detect_time = 0.0
 
         # 分片有序提交队列重置（避免旧会话残留 seq 污染新会话）
         self._next_seg_seq = 0
@@ -674,10 +693,10 @@ class RealtimeASRServer:
                 self._stream_partial_time = now
                 self._flush_audio_chunks()
                 buf = self._audio_buf
-                if len(buf) / 16000 >= 0.3 and not self._partial_in_flight:
-                    # partial 用从段开始到现在的完整音频做 ASR（最多 3 秒防过长）
-                    # 句子超过 3s 时取最后 3s，finalize 会用完整段修正
-                    max_partial_samples = int(3.0 * self.target_sample_rate)
+                if len(buf) / 16000 >= self._partial_min_sec and not self._partial_in_flight:
+                    # partial 用从段开始到现在的完整音频做 ASR（CPU 模式最多 2s 防推理过久，
+                    # GPU 模式最多 3s 保证字幕完整；超长时取末尾窗口，finalize 用完整段修正）
+                    max_partial_samples = int(self._partial_max_sec * self.target_sample_rate)
                     if len(buf) > max_partial_samples:
                         buf = buf[-max_partial_samples:]
                     # 同步置位标志，防止 event loop 调度下一个 process_audio 时重复创建 partial task
@@ -939,6 +958,7 @@ class RealtimeASRServer:
                     if need_detect:
                         try:
                             speaker_label = await self.speaker_manager.detect_speaker(audio)
+                            self._last_speaker_detect_time = time.time()
                             self.speaker_manager.last_speaker_label = speaker_label
                         except Exception as e:
                             print(f"    [SPEAKER] 声纹检测失败，继承上一说话人: {e}", flush=True)
@@ -997,6 +1017,12 @@ class RealtimeASRServer:
                 print(f"    [SPEAKER] 低能量片段(RMS={rms:.4f})继承说话人: "
                       f"{self.speaker_manager.last_speaker_label}", flush=True)
                 return False, self.speaker_manager.last_speaker_label
+            # CPU 模式冷却：声纹检测较重，冷却期内继承上一说话人
+            # （冷却时间配置见 __init__，仅 CPU 模式默认开启）
+            if self._speaker_detect_cooldown > 0:
+                now = time.time()
+                if now - self._last_speaker_detect_time < self._speaker_detect_cooldown:
+                    return False, self.speaker_manager.last_speaker_label
         return True, None
 
     async def _emit_segment(self, audio_data, text, kw_applied=False, speaker_label=None,

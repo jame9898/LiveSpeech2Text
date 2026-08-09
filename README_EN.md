@@ -5,7 +5,7 @@ A Chinese real-time speech recognition tool based on **Qwen3-ASR**. Audio is cap
 ## Features
 
 - **Four modes**: Audience (web audio), Streamer (microphone), Meeting (microphone + system audio), Local (batch audio/video files)
-- **Real-time subtitles**: 0.3s low-latency preview bar + final text at VAD segment ends; OBS browser source supported
+- **Real-time subtitles**: live preview bar (0.3s on GPU, adaptive throttling on CPU) + final text at VAD segment ends; OBS browser source supported
 - **Speaker diarization**: CAM++ / ERes2NetV2 voiceprint recognition
 - **Keyword correction**: pinyin-based homophone error correction, add/remove keywords on the fly
 
@@ -107,7 +107,7 @@ Tampermonkey plugin: delete the `LiveSpeech2Text V1.0` script in the Tampermonke
 
 **Model loading failed** — Check the `models/` directory; download using the Quick Start step 3 commands.
 
-**CPU mode is slow** — Use an NVIDIA GPU with 1.7B + CUDA for a significant speedup.
+**CPU mode is slow** — Optimized: automatic batch transcription for local mode (measured ~6x speedup), adaptive partial throttling and speaker detection cooldown in realtime mode, physical-core thread count for torch. An NVIDIA GPU is still recommended for best performance.
 
 **Speaker always shows Speaker0** — Voice samples must accumulate before speakers are distinguished; sentences with fewer than 3 Chinese characters inherit the previous sentence's speaker.
 
