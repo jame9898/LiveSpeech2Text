@@ -37,14 +37,22 @@ pip install -r requirements.txt
 pip install -r requirements-gpu.txt
 
 # 3. Download models (auto-saved to models/)
+# China: ModelScope
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', cache_dir='models')"
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common', cache_dir='models')"
+# 1.7B offers higher accuracy; requires a GPU and more RAM:
+python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', cache_dir='models')"
+
+# Overseas: Hugging Face (use project-compatible directory names, auto-discovered)
+# python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', local_dir='models/hub/models/Qwen/Qwen3-ASR-0___6B')"
+# python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', local_dir='models/hub/models/Qwen/Qwen3-ASR-1___7B')"
+# Model pages: https://huggingface.co/Qwen/Qwen3-ASR-0.6B | https://huggingface.co/Qwen/Qwen3-ASR-1.7B
 
 # 4. Launch the desktop panel
 python app.py
 ```
 
-> You can also double-click `start.bat` (uses system Python). The 1.7B model offers higher accuracy but requires a GPU and more RAM: `snapshot_download('Qwen/Qwen3-ASR-1.7B', cache_dir='models')`.
+> You can also double-click `start.bat` (uses system Python).
 
 **Updating**: after `git pull`, dependencies may have changed — reinstall them:
 

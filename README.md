@@ -40,14 +40,22 @@ pip install -r requirements.txt
 pip install -r requirements-gpu.txt
 
 # 4. 下载模型（自动保存到 models/）
+# 国内用户：魔搭 ModelScope
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', cache_dir='models')"
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common', cache_dir='models')"
+# 1.7B 精度更高，需 GPU 和更多内存：
+python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', cache_dir='models')"
+
+# 海外用户：Hugging Face（目录名与项目约定一致，下载后程序可自动发现）
+# python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', local_dir='models/hub/models/Qwen/Qwen3-ASR-0___6B')"
+# python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', local_dir='models/hub/models/Qwen/Qwen3-ASR-1___7B')"
+# 模型页面：https://huggingface.co/Qwen/Qwen3-ASR-0.6B | https://huggingface.co/Qwen/Qwen3-ASR-1.7B
 
 # 5. 启动桌面面板
 python app.py
 ```
 
-> 也可以双击 `start.bat`（使用系统 Python 环境）。1.7B 模型精度更高但需 GPU 和更多内存：`snapshot_download('Qwen/Qwen3-ASR-1.7B', cache_dir='models')`。
+> 也可以双击 `start.bat`（使用系统 Python 环境）。
 
 **更新代码**：`git pull` 后依赖可能变化，需重新安装：
 
