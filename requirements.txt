@@ -26,6 +26,8 @@ funasr==1.3.0
 modelscope==1.37.1
 # modelscope 1.39+ 运行期缺失 addict，固定依赖以避免加载说话人模型失败
 addict==2.4.0
+# modelscope 说话人 pipeline 运行期导入 datasets（隐藏依赖，缺失会导致 CAM++ 加载失败）
+datasets==4.8.5
 
 # --- transformers 生态（qwen-asr 依赖）---
 transformers==4.57.6
