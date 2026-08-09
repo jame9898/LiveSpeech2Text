@@ -37,16 +37,19 @@ pip install -r requirements.txt
 pip install -r requirements-gpu.txt
 
 # 3. Download models (auto-saved to models/)
-# China: ModelScope
+# qwen3-ASR models: ModelScope
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', cache_dir='models')"
-python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common', cache_dir='models')"
-# 1.7B offers higher accuracy; requires a GPU and more RAM:
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', cache_dir='models')"
 
-# Overseas: Hugging Face (use project-compatible directory names, auto-discovered)
-# python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', local_dir='models/hub/models/Qwen/Qwen3-ASR-0___6B')"
-# python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', local_dir='models/hub/models/Qwen/Qwen3-ASR-1___7B')"
+# qwen3-ASR models: Hugging Face (project-compatible directory names, auto-discovered)
+python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', local_dir='models/hub/models/Qwen/Qwen3-ASR-0___6B')"
+python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', local_dir='models/hub/models/Qwen/Qwen3-ASR-1___7B')"
 # Model pages: https://huggingface.co/Qwen/Qwen3-ASR-0.6B | https://huggingface.co/Qwen/Qwen3-ASR-1.7B
+
+# Speaker models (optional, select in Settings; CAM++ is default, ERes2NetV2 is more accurate, ERes2Net base is the 3D-Speaker version):
+python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common', cache_dir='models')"
+python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_eres2netv2_sv_zh-cn_16k-common', cache_dir='models')"
+python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_eres2net_base_sv_zh-cn_3dspeaker_16k', cache_dir='models')"
 
 # 4. Launch the desktop panel
 python app.py
