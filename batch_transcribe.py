@@ -6,6 +6,7 @@
 
 import sys
 import asyncio
+import time
 import numpy as np
 import librosa
 from pathlib import Path
@@ -14,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from core import ASREngine, load_config, resolve_device, DICT_DIR
 from common_utils import load_speaker_pipeline, STRICTNESS_THRESHOLDS
+from perf_utils import gpu_info, format_elapsed
 from vad_processor import VADProcessor, batch_vad, silero_vad_segment, fsmn_vad_segment
 from speaker_manager import SpeakerManager
 from pinyin_utils import PinyinCorrector
@@ -165,6 +167,8 @@ def main():
     config = load_config()
     device = resolve_device(config)
     print(f"[BATCH] 加载 ASR 引擎 (device={device})...", flush=True)
+    print(f"[BATCH] GPU: {gpu_info() or '未检测到 NVIDIA GPU（CPU 推理）'}", flush=True)
+    _t0 = time.perf_counter()
     engine = ASREngine(device=device, config=config)
     pref = config.get("current_model", "auto")
     if pref == "auto":
@@ -249,7 +253,7 @@ def main():
     asyncio.run(run_all())
 
     executor.shutdown(wait=False)
-    print("\n[BATCH] 全部完成", flush=True)
+    print(f"\n[BATCH] 全部完成, 总耗时: {format_elapsed(time.perf_counter() - _t0)}", flush=True)
 
 
 if __name__ == "__main__":

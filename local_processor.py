@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from PySide6.QtCore import QThread, Signal
 
 from core import ASREngine, load_config, resolve_device, MODELS_DIR, DICT_DIR
 from common_utils import StdoutRedirect, STRICTNESS_THRESHOLDS, load_speaker_pipeline
+from perf_utils import PerfMonitor, gpu_info, format_elapsed
 from vad_processor import VADProcessor, silero_vad_segment, fsmn_vad_segment, batch_vad
 from speaker_manager import SpeakerManager
 from pinyin_utils import PinyinCorrector
@@ -177,9 +179,14 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
     _log(f"\n{'=' * 50}")
     _log(f"[LOCAL] 处理: {Path(audio_path).name}")
 
+    perf = PerfMonitor(log_cb=None, label="LOCAL")  # 阶段计时，自己 _log 输出
+    _log(f"[LOCAL] GPU: {gpu_info() or '未检测到 NVIDIA GPU（CPU 推理）'}")
+
     import librosa
+    perf.start("音频加载")
     audio, sr = librosa.load(str(audio_path), sr=16000, mono=True)
     audio = audio.astype(np.float32)
+    perf.stop("音频加载")
     total_dur = len(audio) / sr
     _log(f"[LOCAL] 时长: {total_dur:.1f}s")
 
@@ -205,6 +212,7 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
     _log(f"[LOCAL] VAD 引擎: {engine_name}（静音>{vad_silence}s 切句，最短{min_speech}s，最长{force_cut}s）")
 
     raw_segments = None
+    perf.start("VAD")
     if vad_engine == "silero":
         _log("[LOCAL] 正在加载 Silero VAD 模型...")
         try:
@@ -244,6 +252,7 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
         _log("[LOCAL] 使用能量阈值法切分...")
         vad.reset()
         raw_segments = batch_vad(audio, sr, vad)
+    perf.stop("VAD")
 
     _log(f"[LOCAL] VAD 切出 {len(raw_segments)} 段")
 
@@ -289,6 +298,7 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
         _log(f"[LOCAL] ASR 批量转录: {len(asr_groups)} 组 / {sum(len(g) for g in asr_groups)} 段")
 
     _seg_texts = {}  # 段索引 -> ASR 文本
+    perf.start("ASR 转录")
     for gi, group in enumerate(asr_groups):
         # 每组 ASR 前检查取消标志（批量调用本身不可中断，在组间检查）
         if _stopped():
@@ -307,6 +317,7 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
             text = (text or "").strip()
             if text:
                 _seg_texts[i] = text
+    perf.stop("ASR 转录")
 
     for idx, (seg_audio, seg_time, seg_dur, vad_info) in enumerate(raw_segments):
         # 每段 VAD/说话人/数据集迭代前检查取消标志，可中断处尽快退出
@@ -330,6 +341,7 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
         raw_text = text  # 保存原始 ASR 输出，供拼音纠正后对比
         text, corrections = pinyin_corr.correct_with_keywords(text)
 
+        perf.start("说话人")
         try:
             if len(seg_audio) < int(16000 * 0.8):
                 speaker_label = speaker_mgr.last_speaker_label
@@ -338,6 +350,7 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
                 speaker_mgr.last_speaker_label = speaker_label
         except Exception:
             speaker_label = speaker_mgr.last_speaker_label
+        perf.stop("说话人")
 
         seg_entry = {
             'text': text,
@@ -383,6 +396,13 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
     # 后训练数据集：结束会话，写入完整连续录音 + 分段索引
     if save_dataset and dataset_mgr and dataset_mgr.enabled:
         dataset_mgr.end_session()
+
+    # 性能小结：总耗时 / 各阶段耗时与占比 / 实时率 / GPU 状态
+    _log(perf.summary(extra={
+        "实时率": f"{total_dur / perf.total():.2f}x" if perf.total() > 0 else "-",
+        "音频时长": f"{total_dur:.1f}s",
+        "段数": len(segments),
+    }))
 
     return segments, total_dur
 
@@ -438,6 +458,7 @@ class LocalProcessThread(QThread):
     def _run_impl_inner(self):
         # 处理开始时间，作为后训练数据集第三级目录名（YYYYMMDDHHMM，与其他模式统一）
         source_name = datetime.now().strftime("%Y%m%d%H%M")
+        _t_all_start = time.perf_counter()
 
         # 1. 扫描文件（支持单文件或文件夹）
         input_path = Path(self.folder)
@@ -643,6 +664,7 @@ class LocalProcessThread(QThread):
                     continue
 
                 # 生成报告
+                _t_report = time.perf_counter()
                 display_names = speaker_mgr.get_all_display_names()
                 report = generate_comprehensive_report(
                     segments=segments,
@@ -660,6 +682,8 @@ class LocalProcessThread(QThread):
 
                 out_file = self.output_dir / (media_path.stem + '.md')
                 out_file.write_text(report, encoding='utf-8')
+                _report_elapsed = time.perf_counter() - _t_report
+                self.progress.emit(f"[LOCAL] 报告生成: {format_elapsed(_report_elapsed)}\n")
                 self.progress.emit(f"[LOCAL] 报告已保存: {out_file}\n")
                 self.file_done.emit(media_path.name, str(out_file))
                 done_count += 1
@@ -674,7 +698,9 @@ class LocalProcessThread(QThread):
                     print(f"[LOCAL] 引擎释放失败: {e}", flush=True)
             executor.shutdown(wait=False)
 
+        _t_all = time.perf_counter() - _t_all_start
         self.progress.emit(f"\n[LOCAL] 全部完成，共处理 {done_count}/{total} 个文件\n")
+        self.progress.emit(f"[LOCAL] 本次任务总耗时: {format_elapsed(_t_all)}（含模型加载/ffmpeg 提取/报告生成）\n")
         if self.save_dataset and dataset_mgr.enabled:
             stats = dataset_mgr.get_stats()
             self.progress.emit(f"[LOCAL] 数据集: 总计 {stats['total']} 段, 平均质量 {stats['avg_quality']}\n")
