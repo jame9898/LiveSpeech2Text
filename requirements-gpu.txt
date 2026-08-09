@@ -36,6 +36,11 @@ addict==2.4.0
 # modelscope 说话人 pipeline 运行期导入 datasets（隐藏依赖，缺失会导致 CAM++ 加载失败）
 datasets==4.8.5
 
+# --- 性能监测（可选，缺失时自动回退 nvidia-smi，不影响功能）---
+# pynvml: NVIDIA 官方 GPU 监测库，直读驱动，无子进程/无控制台窗口
+# 版本需匹配驱动（开发机驱动 610.x -> 13.610.43）
+nvidia-ml-py==13.610.43
+
 # --- transformers 生态（qwen-asr 依赖）---
 transformers==4.57.6
 accelerate==1.12.0
