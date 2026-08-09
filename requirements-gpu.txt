@@ -15,6 +15,8 @@
 # 版本已锁定为开发机（Python 3.12 + RTX 4070）验证通过的组合
 torch==2.12.0
 torchaudio==2.11.0
+# torchvision: CAM++/ERes2Net 说话人模型硬依赖（modelscope pipeline 顶层导入，缺失直接加载失败）
+torchvision==0.27.0
 
 # --- ASR 模型识别引擎 ---
 qwen-asr==0.0.6
