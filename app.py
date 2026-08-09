@@ -1293,10 +1293,16 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _append_log(self, text):
         # 过滤掉识别文字相关的日志（这些已显示在字幕展示区，不重复在控制台显示）
+        # 注意：不能过滤全部 [SPEAKER] 行，否则会吞掉说话人模型加载失败的错误详情
         _FILTERS = (
             "Streaming transcription done",
             "[SEG]",
-            "[SPEAKER]",
+            "[SPEAKER] score=",
+            "[SPEAKER] 声纹成熟度",
+            "[SPEAKER] 候选新人",
+            "[SPEAKER] 候选样本",
+            "[SPEAKER] 新角色确认",
+            "[SPEAKER] 创建 Speaker0",
             "ASR \u65e0\u6587\u672c",
             "[\u8bc6\u522b]",
         )

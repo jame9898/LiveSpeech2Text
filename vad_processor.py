@@ -31,9 +31,14 @@ def load_silero_vad(models_dir=None):
     """加载 Silero VAD 模型（带本地缓存）。
     返回 (model, utils)，utils[0] = get_speech_timestamps。
 
-    修复：torch.hub.load 在 Windows 中文路径下会因混合分隔符（/ 和 \\）
+    修复1：torch.hub.load 在 Windows 中文路径下会因混合分隔符（/ 和 \\）
     导致 PyTorch C++ 层 fopen 失败。改为先用 torch.hub 下载代码仓库，
     再手动用 os.path.normpath 规范化路径后加载 JIT 模型。
+
+    修复2：GitHub zipball 中的 silero_vad.jit 是 Git LFS 指针（约 130 字节），
+    解压后无法直接加载；且 torch.hub 解压后的目录名可能不固定。
+    本函数在 jit 文件缺失或大小异常（LFS 指针）时，直接从 GitHub raw
+    下载真实模型文件（2.3MB），并兼容目录名差异。
     """
     global _SILERO_MODEL, _SILERO_UTILS
     with _SILERO_LOAD_LOCK:
@@ -52,6 +57,11 @@ def load_silero_vad(models_dir=None):
         repo_local_dir = os.path.join(models_dir, "snakers4_silero-vad_master")
         jit_model_path = os.path.join(repo_local_dir, "src", "silero_vad", "data", "silero_vad.jit")
 
+        # 兼容目录名差异：GitHub zipball 解压后可能是 snakers4-silero-vad-master 等
+        if not os.path.isfile(jit_model_path):
+            repo_local_dir = _resolve_silero_repo_dir(models_dir, repo_local_dir)
+            jit_model_path = os.path.join(repo_local_dir, "src", "silero_vad", "data", "silero_vad.jit")
+
         # 如果本地缓存不存在，先用 torch.hub.load 下载（允许它失败，只关心下载）
         if not os.path.isfile(jit_model_path):
             try:
@@ -61,8 +71,23 @@ def load_silero_vad(models_dir=None):
                     trust_repo=True,
                     onnx=False,
                 )
-            except Exception:
-                pass  # 下载阶段可能因路径问题失败，但文件可能已下载
+            except Exception as e:
+                print(f"[VAD] torch.hub 下载 Silero 仓库失败（尝试手动补全）: {e}", flush=True)
+
+        # 目录名再次解析（torch.hub 解压后可能用不同命名）
+        if not os.path.isfile(jit_model_path):
+            repo_local_dir = _resolve_silero_repo_dir(models_dir, repo_local_dir)
+            jit_model_path = os.path.join(repo_local_dir, "src", "silero_vad", "data", "silero_vad.jit")
+
+        # zipball 中的 silero_vad.jit 是 Git LFS 指针（~130B），须下载真实文件（~2.3MB）
+        if os.path.isfile(jit_model_path) and os.path.getsize(jit_model_path) < 1024:
+            print("[VAD] 检测到 LFS 指针文件，下载真实 Silero VAD 模型...", flush=True)
+            os.remove(jit_model_path)
+        if not os.path.isfile(jit_model_path):
+            try:
+                _download_silero_jit(jit_model_path)
+            except Exception as e:
+                print(f"[VAD] 下载 Silero VAD 模型失败: {e}", flush=True)
 
         # 验证模型文件存在
         if not os.path.isfile(jit_model_path):
@@ -96,6 +121,48 @@ def load_silero_vad(models_dir=None):
         _SILERO_MODEL = model
         _SILERO_UTILS = utils
         return _SILERO_MODEL, _SILERO_UTILS
+
+
+def _resolve_silero_repo_dir(models_dir, expected_dir):
+    """在 models_dir 下查找含 hubconf.py 的 Silero 仓库目录（兼容解压命名差异）。"""
+    import os
+    from pathlib import Path
+    expected = os.path.normpath(expected_dir)
+    for child in Path(models_dir).iterdir():
+        if not child.is_dir():
+            continue
+        if (child / "hubconf.py").is_file():
+            found = str(child)
+            if os.path.normpath(found) != expected:
+                try:
+                    os.rename(found, expected)
+                    print(f"[VAD] Silero 目录已重命名: {found} -> {expected}", flush=True)
+                    return expected
+                except OSError:
+                    return found
+            return found
+    return expected_dir
+
+
+def _download_silero_jit(jit_model_path):
+    """从 GitHub raw 下载真实 Silero VAD JIT 模型（zipball 中仅为 LFS 指针）。
+
+    官方文件: https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.jit
+    LFS 文件经 raw 链接会重定向到真实内容（约 2.3MB），非 LFS 指针。
+    """
+    import os
+    import urllib.request
+    from pathlib import Path
+    jit_path = Path(jit_model_path)
+    jit_path.parent.mkdir(parents=True, exist_ok=True)
+    url = "https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.jit"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=120) as resp, open(jit_path, "wb") as f:
+        f.write(resp.read())
+    size = jit_path.stat().st_size
+    if size < 1024:
+        raise RuntimeError(f"下载的 Silero VAD 模型异常（{size} 字节）: {url}")
+    print(f"[VAD] Silero VAD 模型下载完成: {jit_path} ({size} 字节)", flush=True)
 
 
 def silero_vad_segment(audio, sr, vad_silence_threshold=0.8,
