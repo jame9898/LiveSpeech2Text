@@ -365,11 +365,17 @@ class ASREngine:
         elif preferred in ('qwen3-asr',):
             return self._try_load('_load_qwen3_asr', 'Qwen3-ASR')
         else:
-            # auto: try 0.6B first (faster), then 1.7B
-            if self._try_load('_load_qwen3_asr', 'Qwen3-ASR', size='0.6B'):
-                return True
-            if self._try_load('_load_qwen3_asr', 'Qwen3-ASR', size='1.7B'):
-                return True
+            # auto: 按设备选择——GPU 优先 1.7B（高精度），CPU 优先 0.6B（省内存、更快）
+            if resolve_device(self._config) == "cuda":
+                if self._try_load('_load_qwen3_asr', 'Qwen3-ASR', size='1.7B'):
+                    return True
+                if self._try_load('_load_qwen3_asr', 'Qwen3-ASR', size='0.6B'):
+                    return True
+            else:
+                if self._try_load('_load_qwen3_asr', 'Qwen3-ASR', size='0.6B'):
+                    return True
+                if self._try_load('_load_qwen3_asr', 'Qwen3-ASR', size='1.7B'):
+                    return True
             return False
 
     def _try_load(self, method_name, display_name, **kwargs):

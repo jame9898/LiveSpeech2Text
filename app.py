@@ -664,13 +664,22 @@ def stop_server_backend(log_cb):
     return True
 
 
+def _mem_kind():
+    """按当前实际设备返回资源文案：GPU 机器 → 'GPU 显存'，CPU 机器 → '内存'。"""
+    try:
+        from core import resolve_device
+        return "GPU 显存" if resolve_device() == "cuda" else "内存"
+    except Exception:
+        return "GPU 显存"
+
+
 def finalize_server_cleanup(log_cb):
-    """服务线程真正退出后的收尾：释放 ASR 引擎和 GPU 显存、清空全局引用。"""
+    """服务线程真正退出后的收尾：释放 ASR 引擎、清空全局引用。"""
     global SERVER_THREAD
     SERVER_THREAD = None
     from server import _global_server as _gs_ref
     _eng_to_release = getattr(_gs_ref, 'asr_engine', None) if _gs_ref is not None else None
-    # 释放 ASR 引擎和 GPU 显存
+    # 释放 ASR 引擎（GPU 显存 / CPU 内存）
     _release_asr_engine(_eng_to_release)
     # 清除 _global_server 引用，避免残留
     if _gs_ref is not None:
@@ -681,7 +690,7 @@ def finalize_server_cleanup(log_cb):
     import server as _server_mod
     _server_mod._global_server = None
     if _eng_to_release is not None:
-        log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 模型已释放，GPU 显存已清理\n")
+        log_cb(f"[{datetime.now().strftime('%H:%M:%S')}] 模型已释放，{_mem_kind()}已清理\n")
 
 
 class MainWindow(QMainWindow):
@@ -1112,6 +1121,8 @@ class MainWindow(QMainWindow):
         self._gpu_txt.setFixedWidth(150)
         gpu_row.addWidget(self._gpu_txt)
         pfl.addLayout(gpu_row)
+        # CPU 环境（无 NVIDIA GPU）时整行隐藏
+        self._gpu_row_widgets = (self._gpu_lbl, self._gpu_bar, self._gpu_txt)
 
         # CPU 行
         cpu_row = QHBoxLayout()
@@ -1302,7 +1313,7 @@ class MainWindow(QMainWindow):
         if self._running or self._starting or self._stopping:
             r = QMessageBox.question(self, "\u786e\u8ba4\u9000\u51fa",
                 "\u670d\u52a1\u6b63\u5728\u8fd0\u884c\u4e2d\uff0c\u786e\u5b9a\u8981\u9000\u51fa\u5417\uff1f\n\n"
-                "\u70b9\u51fb\u300c\u662f\u300d\u5c06\u5148\u5378\u8f7d\u6a21\u578b\u91ca\u653e GPU \u663e\u5b58\uff0c\u7136\u540e\u5173\u95ed\u7a0b\u5e8f\u3002",
+                f"\u70b9\u51fb\u300c\u662f\u300d\u5c06\u5148\u5378\u8f7d\u6a21\u578b\u91ca\u653e{_mem_kind()}\uff0c\u7136\u540e\u5173\u95ed\u7a0b\u5e8f\u3002",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if r == QMessageBox.No:
                 event.ignore()
@@ -1646,7 +1657,7 @@ class MainWindow(QMainWindow):
         if eng is not None:
             self._emit_log(f"[{datetime.now().strftime('%H:%M:%S')}] 被放弃的加载线程已完成，正在释放模型...\n")
             _release_asr_engine(eng)
-            self._emit_log(f"[{datetime.now().strftime('%H:%M:%S')}] 模型已释放，GPU 显存已清理\n")
+            self._emit_log(f"[{datetime.now().strftime('%H:%M:%S')}] 模型已释放，{_mem_kind()}已清理\n")
 
     # ============================================================
     # 本地模式（批量处理本地视频/音频文件）
@@ -1748,7 +1759,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "启动失败", f"启动本地处理失败:\n{e}")
 
     def _unload_local_model(self, force=False):
-        """卸载本地模式已加载的模型，释放 GPU 显存。
+        """卸载本地模式已加载的模型，释放 GPU 显存/内存。
 
         参数:
             force: True 时跳过线程检查和弹窗，用于退出/重启场景强制释放。
@@ -1772,7 +1783,7 @@ class MainWindow(QMainWindow):
                     QApplication.processEvents()
                 if _local_thread_ref.isRunning():
                     # 线程仍未退出，不释放模型，避免崩溃
-                    self._emit_log(f"[{datetime.now().strftime('%H:%M:%S')}] [WARN] 处理线程未退出，跳过模型释放（可能残留显存）\n")
+                    self._emit_log(f"[{datetime.now().strftime('%H:%M:%S')}] [WARN] 处理线程未退出，跳过模型释放（可能残留模型资源）\n")
                     # 挂接 finished 信号：线程结束后延迟卸载模型
                     self._pending_unload_after_finish = True
                     return
@@ -1789,7 +1800,7 @@ class MainWindow(QMainWindow):
             # 用公共函数释放引擎（model.cpu → model=None → gc → cuda 清理）
             _release_asr_engine(eng)
 
-            self._emit_log(f"[{datetime.now().strftime('%H:%M:%S')}] 模型已卸载，GPU 显存已释放\n")
+            self._emit_log(f"[{datetime.now().strftime('%H:%M:%S')}] 模型已卸载，{_mem_kind()}已释放\n")
             if not force:
                 # 退出/重启场景不需要更新 UI（窗口即将销毁）
                 self._update_ui_state()
@@ -2306,11 +2317,19 @@ class MainWindow(QMainWindow):
             print(f"[UI] _refresh_status error: {e}", flush=True)
 
     def _refresh_perf_panel(self):
-        """每秒刷新性能监测面板：GPU/CPU 利用率进度条 + 显存/温度详情（无 GPU 时降级显示 CPU/内存）"""
+        """每秒刷新性能监测面板：GPU/CPU 利用率进度条 + 显存/温度详情（无 GPU 时隐藏 GPU 行，仅显示 CPU/内存）"""
         try:
+            # 首次探测可能撞上启动期 torch 预导入高峰而失败，每秒重试一次直至成功
+            if self._perf_gpu_name is None:
+                _gi = gpu_info()
+                if _gi:
+                    self._perf_gpu_name = _gi.split("|")[0].strip()
+            has_gpu = self._perf_gpu_name is not None
+            for w in self._gpu_row_widgets:
+                w.setVisible(has_gpu)
             snap = self._perf_sampler.snapshot()
             gpu, cpu, mem = snap if snap else (None, None, None)
-            if gpu:
+            if gpu and has_gpu:
                 util, mem_used, mem_total, temp = gpu
                 self._gpu_bar.setValue(int(round(util)))
                 self._gpu_txt.setText(f"{util:.0f}% | {mem_used:.1f}/{mem_total:.1f}GB | {temp:.0f}\u00b0C")
@@ -2339,7 +2358,7 @@ class MainWindow(QMainWindow):
             # 配置已更改，需要重启程序（不是重启服务）
             r = QMessageBox.question(self, "\u91cd\u542f\u7a0b\u5e8f",
                 "\u914d\u7f6e\u5df2\u66f4\u6539\uff0c\u9700\u8981\u91cd\u542f\u7a0b\u5e8f\u4ee5\u751f\u6548\u3002\n\n"
-                "\u70b9\u51fb\u300c\u662f\u300d\u5c06\uff1a\u5148\u5378\u8f7d\u6a21\u578b\u91ca\u653e GPU \u663e\u5b58\uff0c\u7136\u540e\u5173\u95ed\u7a0b\u5e8f\u5e76\u91cd\u65b0\u542f\u52a8\u3002\n"
+                f"\u70b9\u51fb\u300c\u662f\u300d\u5c06\uff1a\u5148\u5378\u8f7d\u6a21\u578b\u91ca\u653e{_mem_kind()}\uff0c\u7136\u540e\u5173\u95ed\u7a0b\u5e8f\u5e76\u91cd\u65b0\u542f\u52a8\u3002\n"
                 "\u70b9\u51fb\u300c\u5426\u300d\u5c06\uff1a\u4fdd\u7559\u5f53\u524d\u8fd0\u884c\u72b6\u6001\uff0c\u4e0b\u6b21\u624b\u52a8\u542f\u52a8\u65f6\u751f\u6548\u3002",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if r == QMessageBox.Yes:
@@ -2347,12 +2366,12 @@ class MainWindow(QMainWindow):
         self._refresh_display()
 
     def _restart_program(self):
-        """重启程序：先卸载模型释放 GPU 显存，再关闭程序并重新启动。"""
+        """重启程序：先卸载模型释放 GPU 显存/内存，再关闭程序并重新启动。"""
         import os
         import sys
         from PySide6.QtCore import QProcess
 
-        # 1. 如果服务正在运行，先停止服务（会卸载模型释放 GPU 显存）
+        # 1. 如果服务正在运行，先停止服务（会卸载模型释放资源）
         if self._running:
             self._emit_log("[RESTART] 正在停止服务并卸载模型...\n")
             # 本地模式
@@ -2376,7 +2395,7 @@ class MainWindow(QMainWindow):
         script = os.path.abspath(__file__)
         cwd = os.path.dirname(script)
 
-        # 3. 延迟 1 秒后启动新进程（确保 GPU 显存释放完成）
+        # 3. 延迟 1 秒后启动新进程（确保模型资源释放完成）
         def _do_restart():
             try:
                 QProcess.startDetached(python, [script], cwd)

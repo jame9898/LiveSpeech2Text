@@ -110,6 +110,23 @@ class SettingsDialog(QDialog):
         r2.addWidget(self._spn_threads)
         gl.addLayout(r2)
         layout.addWidget(g)
+        # 实际检测结果提示：auto 会解析成什么设备一目了然
+        from core import resolve_device
+        _det_dev = resolve_device(self._config)
+        _det_lbl = QLabel()
+        _det_lbl.setStyleSheet("color: #656d76; font-size: 11px")
+        if _det_dev == "cuda":
+            try:
+                import torch
+                _gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else ""
+            except Exception:
+                _gpu_name = ""
+            _det_lbl.setText(
+                f"当前检测：NVIDIA GPU（{_gpu_name}）→ 实际使用 cuda" if _gpu_name
+                else "当前检测：NVIDIA GPU → 实际使用 cuda")
+        else:
+            _det_lbl.setText("当前检测：未发现 NVIDIA GPU → 实际使用 cpu（模型默认选 0.6B 轻量版）")
+        layout.addWidget(_det_lbl)
         layout.addStretch()
         tabs.addTab(w, "设备")
 
