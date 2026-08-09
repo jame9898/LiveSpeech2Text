@@ -31,7 +31,7 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from core import ASREngine, load_config, resolve_device, MODELS_DIR, DICT_DIR
-from common_utils import StdoutRedirect, STRICTNESS_THRESHOLDS, load_speaker_pipeline
+from common_utils import StdoutRedirect, STRICTNESS_THRESHOLDS, load_speaker_pipeline, load_audio_fast
 from perf_utils import PerfMonitor, gpu_info, format_elapsed
 from vad_processor import VADProcessor, silero_vad_segment, fsmn_vad_segment, batch_vad
 from speaker_manager import SpeakerManager
@@ -51,6 +51,11 @@ TEMP_DIR.mkdir(exist_ok=True)
 # 保证重定向与恢复在锁内配对执行，避免与项目内其他同类重定向
 # （fsmn_vad_segment、load_fsmn_vad、说话人模型加载）并发时错位嵌套
 _stdout_redirect_lock = threading.Lock()
+
+# ASR 批量分组参数：组总样本上限（默认约 4 个 30s 段）与组内最长/最短段长度比
+# GPU 推理可调大 batch 提升吞吐；CPU 建议维持默认防止显存/内存峰值
+_ASR_MAX_BATCH_SAMPLES = int(16000 * 30 * 4)
+_ASR_MAX_LEN_RATIO = 3.0
 
 # 支持的视频/音频扩展名
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".webm", ".m4v", ".ts", ".mpg", ".mpeg"}
@@ -184,8 +189,7 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
 
     import librosa
     perf.start("音频加载")
-    audio, sr = librosa.load(str(audio_path), sr=16000, mono=True)
-    audio = audio.astype(np.float32)
+    audio, sr = load_audio_fast(str(audio_path), target_sr=16000)
     perf.stop("音频加载")
     total_dur = len(audio) / sr
     _log(f"[LOCAL] 时长: {total_dur:.1f}s")
@@ -273,9 +277,12 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
     # === 批量转录 ===
     # CPU 上逐段 ASR 单次推理 2-5s（编解码模型固定开销大）；将时长相近的段
     # 合并为一个 batch 一次推理，可数倍提速。qwen-asr 内部按组内最长段
-    # padding，故按长度分组避免浪费。分组规则：组内最长/最短 <= 3 倍，
-    # 且组总样本量受限（约 4 个 30s 段，控制内存）。
-    _MAX_BATCH_SAMPLES = int(16000 * 30 * 4)
+    # padding，故按长度分组避免浪费。分组规则：组内最长/最短 <= 长度比，
+    # 且组总样本量受限（控制内存）。实测（RTX 4070 SUPER + 60s 音频）：
+    # GPU 用 8x30s/6x 比 4x30s/3x 快约 27%；CPU 保持 4x30s/3x 防内存峰值。
+    _is_gpu = getattr(engine, '_device', None) == 'cuda'
+    _MAX_BATCH_SAMPLES = _ASR_MAX_BATCH_SAMPLES if not _is_gpu else int(16000 * 30 * 8)
+    _MAX_LEN_RATIO = _ASR_MAX_LEN_RATIO if not _is_gpu else 6.0
     asr_groups = []  # 每项: [段索引...]
     _cur_group = []
     _cur_len = 0
@@ -285,7 +292,7 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
         if n < _MIN_ASR_SAMPLES:
             _log(f"[LOCAL] [SKIP] 段 {idx + 1} 过短({n/16000:.2f}s)，跳过")
             continue
-        if (_cur_group and (n > _cur_max * 3 or n * 3 < _cur_max
+        if (_cur_group and (n > _cur_max * _MAX_LEN_RATIO or n * _MAX_LEN_RATIO < _cur_max
                             or _cur_len + n > _MAX_BATCH_SAMPLES)):
             asr_groups.append(_cur_group)
             _cur_group, _cur_len, _cur_max = [], 0, 0

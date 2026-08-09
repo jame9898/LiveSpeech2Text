@@ -14,7 +14,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 from core import ASREngine, load_config, resolve_device, DICT_DIR
-from common_utils import load_speaker_pipeline, STRICTNESS_THRESHOLDS
+from common_utils import load_speaker_pipeline, STRICTNESS_THRESHOLDS, load_audio_fast
 from perf_utils import gpu_info, format_elapsed
 from vad_processor import VADProcessor, batch_vad, silero_vad_segment, fsmn_vad_segment
 from speaker_manager import SpeakerManager
@@ -40,8 +40,7 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
     print(f"{'=' * 60}", flush=True)
 
     print("[BATCH] 读取音频...", flush=True)
-    audio, sr = librosa.load(str(audio_path), sr=16000, mono=True)
-    audio = audio.astype(np.float32)
+    audio, sr = load_audio_fast(str(audio_path), target_sr=16000)
     total_dur = len(audio) / sr
     print(f"[BATCH] 音频时长: {total_dur:.1f}s, 采样率: {sr}", flush=True)
 

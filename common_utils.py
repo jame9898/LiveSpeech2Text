@@ -108,6 +108,29 @@ def resample_audio(audio_data, from_rate, to_rate):
         return np.interp(out_idx, src_idx, audio_data.astype(np.float64)).astype(np.float32)
 
 
+def load_audio_fast(path, target_sr=16000):
+    """快速加载音频为 target_sr mono float32（本地模式/批处理/说话人特征共用）。
+
+    用 soundfile 直读（libsndfile 1.2+ 原生支持 wav/mp3/flac/ogg/m4a 等），
+    再以 scipy.resample_poly 抗混叠重采样——比 librosa.load 快数倍
+    （librosa 额外做 audioread 探测/格式嗅探/多回调）。
+    立体声自动取均值合并为单声道。失败时回退 librosa.load（保持原行为）。
+    """
+    try:
+        import soundfile as sf
+        audio, sr = sf.read(str(path), dtype="float32", always_2d=False)
+        if audio.ndim > 1:  # 立体声/多声道 → 均值合并
+            audio = audio.mean(axis=1)
+        audio = np.asarray(audio, dtype=np.float32)
+        if sr != target_sr:
+            audio = resample_audio(audio, sr, target_sr)
+        return audio, target_sr
+    except Exception:
+        import librosa
+        audio, sr = librosa.load(str(path), sr=target_sr, mono=True)
+        return audio.astype(np.float32), target_sr
+
+
 def _patch_sv_model_config(model_dir):
     """修补说话人模型的 configuration.json（modelscope 兼容性修复）。
 
