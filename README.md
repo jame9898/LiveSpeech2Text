@@ -29,17 +29,19 @@ git clone https://github.com/jame9898/LiveSpeech2Text
 # 或 Gitee 镜像
 git clone https://gitee.com/linhanduzikai/LiveSpeech2Text
 
-# 2. 虚拟环境
+# 2. 进入文件夹
 cd LiveSpeech2Text
+
+# 3. 虚拟环境（建议使用；如使用系统环境，可跳过这一步）
 python -m venv venv 
 venv\Scripts\activate
 
-# 3. 安装依赖（CPU 专用）
+# 4. 安装依赖（CPU 专用）
 pip install -r requirements.txt
 # 或（GPU + CUDA 专用）
 pip install -r requirements-gpu.txt
 
-# 4. 下载模型（自动保存到 models/）
+# 5. 下载模型（自动保存到 models/）
 # 国内用户：魔搭 ModelScope
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', cache_dir='models')"
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common', cache_dir='models')"
@@ -47,11 +49,11 @@ python -c "from modelscope.hub.snapshot_download import snapshot_download; snaps
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', cache_dir='models')"
 
 # 海外用户：Hugging Face（目录名与项目约定一致，下载后程序可自动发现）
-# python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', local_dir='models/hub/models/Qwen/Qwen3-ASR-0___6B')"
-# python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', local_dir='models/hub/models/Qwen/Qwen3-ASR-1___7B')"
+python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', local_dir='models/hub/models/Qwen/Qwen3-ASR-0___6B')"
+python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', local_dir='models/hub/models/Qwen/Qwen3-ASR-1___7B')"
 # 模型页面：https://huggingface.co/Qwen/Qwen3-ASR-0.6B | https://huggingface.co/Qwen/Qwen3-ASR-1.7B
 
-# 5. 启动桌面面板
+# 6. 启动桌面面板
 python app.py
 ```
 
