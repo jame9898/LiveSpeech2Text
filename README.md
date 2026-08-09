@@ -36,10 +36,12 @@ cd LiveSpeech2Text
 python -m venv venv 
 venv\Scripts\activate
 
-# 4. 安装依赖（CPU 专用）
-pip install -r requirements.txt
+# 4. 安装依赖（自动测速选择最快镜像源，CPU 专用）
+python install.py
 # 或（GPU + CUDA 专用）
-pip install -r requirements-gpu.txt
+python install.py --gpu
+# 或手动指定镜像源（跳过自动测速）：
+# python install.py --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 5. 下载模型（自动保存到 models/）
 # 国内用户：魔搭 ModelScope
@@ -59,14 +61,16 @@ python app.py
 
 > 也可以双击 `start.bat`（使用系统 Python 环境）。
 
+**安装慢或超时？** `install.py` 会自动对官方 PyPI、清华、阿里云、腾讯云、中科大镜像测速（约 5 秒），选择最快的源下载，国内外网络均可自适应；国内用户通常会命中阿里云/清华镜像。也可直接使用原始方式 `pip install -r requirements.txt`（需自行配置国内镜像，否则可能因访问 PyPI 官方源过慢而超时）。
+
 **更新代码**：`git pull` 后依赖可能变化，需重新安装：
 
 ```bash
 git pull
 python -m venv venv # 虚拟环境下（非虚拟环境可跳过）
 venv\Scripts\activate  # 虚拟环境下（非虚拟环境可跳过）
-pip install -r requirements.txt   # CPU 专用
-pip install -r requirements-gpu.txt # GPU + CUDA 专用  
+python install.py   # CPU 专用
+python install.py --gpu # GPU + CUDA 专用  
 ```
 
 ## 卸载
