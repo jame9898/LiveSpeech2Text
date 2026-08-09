@@ -128,13 +128,34 @@ Tampermonkey 插件：在浏览器 Tampermonkey 管理面板中删除 `LiveSpeec
 
 ## 常见问题
 
-**模型加载失败** — 检查 `models/` 目录，按「快速开始」第 3 步命令下载。
+### 环境与依赖
+
+**`python install.py` 后说话人模型（CAM++/ERes2Net）加载失败** — 多为 modelscope 的隐藏依赖缺失。本项目已把实测确认的硬依赖全部锁定进 `requirements.txt`（含 addict / datasets / torchvision / simplejson / sortedcontainers 等）。`git pull` 后**必须重新运行 `python install.py`**；`install.py` 结尾会打印核心包验证清单，可对照 `pip list` 排查是否漏装。
+
+**Silero VAD 加载失败** — 程序启动时会自动从 GitHub 直下真实模型文件修复（GitHub zipball 里的 .jit 只是 LFS 指针）；仍失败说明无法访问 `raw.githubusercontent.com`，可在设置中切换 FSMN VAD。
+
+**pip 安装超时/慢** — `install.py` 会自动对官方 PyPI、清华、阿里云、腾讯云、中科大镜像测速（约 5 秒）并选用最快源；也可 `python install.py --index-url <镜像地址>` 手动指定。
+
+**模型下载中断** — 重跑「快速开始」中对应的下载命令即可断点续传，无需删缓存。
+
+**报错 `No module named 'xxx'`** — 依次执行 `git pull` → `python install.py` → 重启；若仍缺失，对照 `install.py` 的验证清单与 `pip list` 找出差异。
+
+### 使用问题
+
+**说话人一直显示 Speaker0** — 先在日志里找 `[SPEAKER] ... load failed`：有则说明说话人模型未加载，按上方依赖问题处理；无则需积累一定语音样本后才区分说话人，少于 3 个中文字的短句自动继承上一句说话人。
 
 **CPU 模式识别慢** — 已优化：本地批处理自动批量转录（实测约 6 倍提速）、实时模式 partial 自适应节流、说话人检测冷却、torch 物理核线程。追求最佳性能仍建议使用 NVIDIA GPU。
 
-**说话人一直显示 Speaker0** — 需积累一定语音样本后才会区分说话人；少于 3 个中文字的短句自动继承上一句说话人。
-
 **OBS 字幕不生效** — 必须使用设置页生成的「已含配置」URL（带 `#` 后缀），见 [docs/OBS_SUBTITLE.md](docs/OBS_SUBTITLE.md)。
+
+### 用 AI 工具排查故障（推荐）
+
+遇到报错时，建议直接交给 AI 工具（opencode、Claude、ChatGPT 等）排查，比搜索引擎更快：
+
+1. **贴全日志**：把完整日志（含 `[SPEAKER]`、`[LOAD]`、`Traceback` 行）复制给 AI，不要只贴最后一行
+2. **附带环境信息**：`python --version` 与 `pip list`（或 `python install.py` 验证清单输出）
+3. **说明复现步骤**：做什么操作触发的（启动 app.py / 本地模式 / 实时模式）
+4. 本项目修复过的同类环境问题（modelscope 隐藏依赖、Silero LFS 指针等）均可直接套用此流程
 
 ## 许可证
 
