@@ -32,7 +32,7 @@ from PySide6.QtCore import QThread, Signal
 
 from core import ASREngine, load_config, resolve_device, MODELS_DIR, DICT_DIR
 from common_utils import StdoutRedirect, STRICTNESS_THRESHOLDS, load_speaker_pipeline, load_audio_fast
-from perf_utils import PerfMonitor, gpu_info, format_elapsed
+from perf_utils import PerfMonitor, PerfSampler, gpu_info, format_elapsed
 from vad_processor import VADProcessor, silero_vad_segment, fsmn_vad_segment, batch_vad
 from speaker_manager import SpeakerManager
 from pinyin_utils import PinyinCorrector
@@ -185,16 +185,49 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
     _log(f"[LOCAL] 处理: {Path(audio_path).name}")
 
     perf = PerfMonitor(log_cb=None, label="LOCAL")  # 阶段计时，自己 _log 输出
-    _log(f"[LOCAL] GPU: {gpu_info() or '未检测到 NVIDIA GPU（CPU 推理）'}")
+    sampler = PerfSampler(interval=1.0)  # 后台实时采样 GPU/CPU（均值/峰值）
+    sampler.start()
+    try:
+        return await _process_audio_file_inner(
+            audio_path, engine, vad, speaker_mgr, pinyin_corr,
+            dataset_mgr=dataset_mgr, save_dataset=save_dataset, log_cb=log_cb,
+            source_name=source_name, seg_progress_cb=seg_progress_cb,
+            vad_engine=vad_engine,
+            silero_speech_prob_threshold=silero_speech_prob_threshold,
+            fsmn_speech_noise_threshold=fsmn_speech_noise_threshold,
+            should_stop=should_stop, perf=perf, sampler=sampler,
+        )
+    finally:
+        sampler.stop()
+        _log(sampler.summary(label="LOCAL"))
 
-    import librosa
+
+async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin_corr,
+                                    dataset_mgr=None, save_dataset=False, log_cb=None,
+                                    source_name=None, seg_progress_cb=None, vad_engine="silero",
+                                    silero_speech_prob_threshold=0.5,
+                                    fsmn_speech_noise_threshold=0.6,
+                                    should_stop=None, perf=None, sampler=None):
+    """process_audio_file 的内部实现（perf 阶段计时与 sampler 实时采样由外层托管）。"""
+    def _log(msg):
+        if log_cb:
+            log_cb(msg + "\n")
+        else:
+            print(msg, flush=True)
+
+    def _stopped():
+        return should_stop is not None and should_stop()
+
+    _log(f"[LOCAL] GPU: {gpu_info() or '未检测到 NVIDIA GPU（CPU 推理）'}")
+    _log(f"[LOCAL] 实时负载: {sampler.status_line() if sampler else 'N/A'}")
+
     perf.start("音频加载")
     audio, sr = load_audio_fast(str(audio_path), target_sr=16000)
     perf.stop("音频加载")
     total_dur = len(audio) / sr
     _log(f"[LOCAL] 时长: {total_dur:.1f}s")
 
-    # librosa.load 本身不可中断，加载完成后立即检查取消标志
+    # 音频加载本身不可中断，加载完成后立即检查取消标志
     # （此时数据集会话尚未开始，无需 end_session 清理）
     if _stopped():
         _log("[LOCAL] 用户已取消，中断当前文件处理")
@@ -409,6 +442,7 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
         "实时率": f"{total_dur / perf.total():.2f}x" if perf.total() > 0 else "-",
         "音频时长": f"{total_dur:.1f}s",
         "段数": len(segments),
+        "GPU/CPU 实时负载": sampler.status_line() if sampler else "N/A",
     }))
 
     return segments, total_dur

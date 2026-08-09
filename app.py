@@ -85,6 +85,7 @@ from realtime_panel import (
     SubtitleListView,
     MicCaptureThread, LoopbackCaptureThread, RealtimeWSClient, format_wall_time,
 )
+from perf_utils import PerfSampler, gpu_info
 
 LIGHT = {
     "bg":           "#ffffff",
@@ -715,6 +716,18 @@ class MainWindow(QMainWindow):
         self._status_timer.timeout.connect(self._refresh_status)
         self._status_timer.start()
 
+        # 性能监测：后台采样器 + 每 1s 刷新面板（无 GPU 时自动降级为 CPU/内存显示）
+        self._perf_sampler = PerfSampler(interval=1.0)
+        self._perf_sampler.start()
+        self._perf_gpu_name = None
+        _gi = gpu_info()
+        if _gi:
+            self._perf_gpu_name = _gi.split("|")[0].strip()
+        self._perf_timer = QTimer()
+        self._perf_timer.setInterval(1000)
+        self._perf_timer.timeout.connect(self._refresh_perf_panel)
+        self._perf_timer.start()
+
         self.log_signal.connect(self._append_log)
 
         self._build_ui()
@@ -1068,6 +1081,63 @@ class MainWindow(QMainWindow):
         self._log.document().setMaximumBlockCount(6000)
         self._log.setMaximumHeight(160)
         rl.addWidget(self._log)
+
+        # ====== 性能监测面板（控制台上方，实时采样 GPU/CPU 负载） ======
+        self._perf_box = QGroupBox("\u6027\u80fd\u76d1\u6d4b")
+        self._perf_box.setStyleSheet(
+            "QGroupBox { font-size: 11px; font-weight: bold; border: 1px solid "
+            f"{LIGHT['border']}; border-radius: 6px; margin-top: 6px; padding-top: 4px; }} "
+            f"QGroupBox::title {{ subcontrol-origin: margin; left: 8px; }} "
+            "QLabel { font-size: 11px; color: " + LIGHT['text_dim'] + "; }"
+        )
+        pfl = QVBoxLayout(self._perf_box)
+        pfl.setContentsMargins(10, 6, 10, 6)
+        pfl.setSpacing(4)
+
+        # GPU 行：标签 + 进度条 + 数值
+        gpu_row = QHBoxLayout()
+        self._gpu_lbl = QLabel("GPU \u5229\u7528\u7387")
+        self._gpu_lbl.setFixedWidth(72)
+        gpu_row.addWidget(self._gpu_lbl)
+        self._gpu_bar = QProgressBar()
+        self._gpu_bar.setRange(0, 100)
+        self._gpu_bar.setFixedHeight(12)
+        self._gpu_bar.setTextVisible(False)
+        self._gpu_bar.setStyleSheet(
+            "QProgressBar { background: #e1e4e8; border-radius: 5px; }"
+            "QProgressBar::chunk { background: #8250df; border-radius: 5px; }"
+        )
+        gpu_row.addWidget(self._gpu_bar, 1)
+        self._gpu_txt = QLabel("-")
+        self._gpu_txt.setFixedWidth(150)
+        gpu_row.addWidget(self._gpu_txt)
+        pfl.addLayout(gpu_row)
+
+        # CPU 行
+        cpu_row = QHBoxLayout()
+        self._cpu_lbl = QLabel("CPU \u5229\u7528\u7387")
+        self._cpu_lbl.setFixedWidth(72)
+        cpu_row.addWidget(self._cpu_lbl)
+        self._cpu_bar = QProgressBar()
+        self._cpu_bar.setRange(0, 100)
+        self._cpu_bar.setFixedHeight(12)
+        self._cpu_bar.setTextVisible(False)
+        self._cpu_bar.setStyleSheet(
+            "QProgressBar { background: #e1e4e8; border-radius: 5px; }"
+            "QProgressBar::chunk { background: #0969da; border-radius: 5px; }"
+        )
+        cpu_row.addWidget(self._cpu_bar, 1)
+        self._cpu_txt = QLabel("-")
+        self._cpu_txt.setFixedWidth(150)
+        cpu_row.addWidget(self._cpu_txt)
+        pfl.addLayout(cpu_row)
+
+        # 详情行：设备名 / 显存 / 温度
+        self._perf_detail = QLabel("\u8bbe\u5907: -")
+        self._perf_detail.setWordWrap(True)
+        pfl.addWidget(self._perf_detail)
+        rl.addWidget(self._perf_box)
+        # ====== 性能监测面板结束 ======
 
         # 实时采集/WS 客户端成员（主播/会议模式使用）
         self._mic_thread = None
@@ -1666,6 +1736,10 @@ class MainWindow(QMainWindow):
             self._local_seg_progress.setFormat("准备中...")
 
             self._local_thread.start()
+            # 重置性能采样统计，让面板数值覆盖本次处理
+            self._perf_sampler.stop()
+            self._perf_sampler = PerfSampler(interval=1.0)
+            self._perf_sampler.start()
             self._emit_log(f"[LOCAL] 开始处理: {input_path}\n")
         except Exception as e:
             import traceback
@@ -1768,6 +1842,8 @@ class MainWindow(QMainWindow):
     def _on_local_all_done(self, count):
         """全部处理完成"""
         self._emit_log(f"[LOCAL] 全部完成，共 {count} 个文件\n")
+        # 整次任务的完整性能汇总（含 GPU/CPU 均值峰值）
+        self._emit_log(self._perf_sampler.summary(label="LOCAL-TASK") + "\n")
         self._local_seg_progress.setValue(100)
         self._local_seg_progress.setFormat(f"完成 ({count} 个文件)")
         self._reset_local_ui_state()
@@ -2228,6 +2304,32 @@ class MainWindow(QMainWindow):
                     self._selbl.setText(f"\u8bc6\u522b: {len(srv.segments)} \u53e5")
         except Exception as e:
             print(f"[UI] _refresh_status error: {e}", flush=True)
+
+    def _refresh_perf_panel(self):
+        """每秒刷新性能监测面板：GPU/CPU 利用率进度条 + 显存/温度详情（无 GPU 时降级显示 CPU/内存）"""
+        try:
+            snap = self._perf_sampler.snapshot()
+            gpu, cpu, mem = snap if snap else (None, None, None)
+            if gpu:
+                util, mem_used, mem_total, temp = gpu
+                self._gpu_bar.setValue(int(round(util)))
+                self._gpu_txt.setText(f"{util:.0f}% | {mem_used:.1f}/{mem_total:.1f}GB | {temp:.0f}\u00b0C")
+                self._gpu_txt.setToolTip(f"\u663e\u5b58: {mem_used:.1f}/{mem_total:.1f}GB")
+            else:
+                self._gpu_bar.setValue(0)
+                self._gpu_txt.setText("-")
+            if cpu is not None:
+                self._cpu_bar.setValue(int(round(cpu)))
+                self._cpu_txt.setText(f"{cpu:.0f}%")
+            else:
+                self._cpu_bar.setValue(0)
+                self._cpu_txt.setText("-")
+            detail = f"\u8bbe\u5907: {self._perf_gpu_name or '\u672a\u68c0\u6d4b\u5230 NVIDIA GPU\uff08CPU \u63a8\u7406\uff09'}"
+            if mem:
+                detail += f" | \u5185\u5b58 {mem[0]:.1f}/{mem[1]:.1f}GB"
+            self._perf_detail.setText(detail)
+        except Exception as e:
+            print(f"[UI] _refresh_perf_panel error: {e}", flush=True)
 
     def _open_settings(self):
         from settings_dialog import SettingsDialog
