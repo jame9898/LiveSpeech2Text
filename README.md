@@ -44,19 +44,19 @@ python install.py --gpu
 # python install.py --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 5. 下载模型（自动保存到 models/）
-# 国内用户：魔搭 ModelScope
+# qwen3-ASR模型 下载平台：魔搭 ModelScope 
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', cache_dir='models')"
-python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common', cache_dir='models')"
-# 说话人模型（可选，在设置中选择使用；CAM++ 为默认，ERes2NetV2 精度更高，ERes2Net base 为 3D-Speaker 版本）：
-python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_eres2netv2_sv_zh-cn_16k-common', cache_dir='models')"
-python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_eres2net_base_sv_zh-cn_3dspeaker_16k', cache_dir='models')"
-# 1.7B 精度更高，需 GPU 和更多内存：
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', cache_dir='models')"
 
-# 海外用户：Hugging Face（目录名与项目约定一致，下载后程序可自动发现）
+# qwen3-ASR模型 下载平台：Hugging Face（目录名与项目约定一致，下载后程序可自动发现）
 python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', local_dir='models/hub/models/Qwen/Qwen3-ASR-0___6B')"
 python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', local_dir='models/hub/models/Qwen/Qwen3-ASR-1___7B')"
 # 模型页面：https://huggingface.co/Qwen/Qwen3-ASR-0.6B | https://huggingface.co/Qwen/Qwen3-ASR-1.7B
+
+# 说话人模型（可选，在设置中选择使用；CAM++ 为默认，ERes2NetV2 精度更高，ERes2Net base 为 3D-Speaker 版本）：
+python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_campplus_sv_zh-cn_16k-common', cache_dir='models')"
+python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_eres2netv2_sv_zh-cn_16k-common', cache_dir='models')"
+python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_eres2net_base_sv_zh-cn_3dspeaker_16k', cache_dir='models')"
 
 # 6. 启动桌面面板
 python app.py
