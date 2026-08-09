@@ -16,10 +16,29 @@ Developed and tested on Windows 11. Other systems are not verified.
 | Item | Requirement |
 |---|---|
 | OS | Windows 11 64-bit |
-| Python | 3.10 ~ 3.12 |
+| Python | 3.10 ~ 3.12 (3.12.x recommended) |
 | RAM | 8 GB+ (1.7B model requires 6GB+) |
 | Storage usage | ~6 GB (including model downloads) |
 | GPU | CPU works; GPU acceleration requires NVIDIA + CUDA |
+
+## Development Test Environment
+
+All dependency versions are pinned to the combinations verified on the development machine below (see `requirements.txt` / `requirements-gpu.txt`). Match these to avoid irreproducible version-drift issues:
+
+| Item | Dev machine actual config |
+|---|---|
+| OS | Windows 11 64-bit |
+| Python | 3.12.8 |
+| GPU | NVIDIA GeForce RTX 4070 SUPER (12 GB, driver 610.74, compute capability 8.9) |
+| CUDA | 12.6 (cu126 wheels) |
+| torch / torchaudio / torchvision | 2.12.0+cu126 / 2.11.0+cu126 / 0.27.0+cu126 |
+| modelscope | 1.37.1 |
+| funasr | 1.3.0 |
+| qwen-asr | 0.0.6 |
+| datasets / addict | 4.8.5 / 2.4.0 |
+| PySide6 | 6.11.1 |
+
+> CPU dev machine: same version combination, except the torch trio are CPU wheels (`torch==2.12.0`, `torchaudio==2.11.0`, `torchvision==0.27.0`, no `+cu126` suffix).
 
 ## Quick Start
 

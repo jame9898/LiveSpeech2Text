@@ -16,10 +16,29 @@
 | 项目 | 要求 |
 |---|---|
 | 操作系统 | Windows 11 64-bit |
-| Python | 3.10 ~ 3.12 |
+| Python | 3.10 ~ 3.12（推荐 3.12.x） |
 | 内存 | 8 GB 以上（1.7B 模型需 6GB+） |
 | 文件占用空间 | 约 6 GB（含模型下载） |
 | 显卡 | CPU 可用；GPU 加速需 NVIDIA + CUDA |
+
+## 开发测试环境
+
+项目依赖版本均已锁定为下列开发环境实测通过的组合（见 `requirements.txt` / `requirements-gpu.txt`），请尽量对齐，避免版本漂移导致不可复现的问题：
+
+| 项目 | 开发机实际配置 |
+|---|---|
+| 操作系统 | Windows 11 64-bit |
+| Python | 3.12.8 |
+| 显卡 | NVIDIA GeForce RTX 4070 SUPER（12 GB，驱动 610.74，算力 8.9） |
+| CUDA | 12.6（cu126 轮子） |
+| torch / torchaudio / torchvision | 2.12.0+cu126 / 2.11.0+cu126 / 0.27.0+cu126 |
+| modelscope | 1.37.1 |
+| funasr | 1.3.0 |
+| qwen-asr | 0.0.6 |
+| datasets / addict | 4.8.5 / 2.4.0 |
+| PySide6 | 6.11.1 |
+
+> CPU 版开发机：相同版本组合，仅 torch 三件套为 CPU 轮子（`torch==2.12.0`、`torchaudio==2.11.0`、`torchvision==0.27.0`，无 `+cu126` 后缀）。
 
 ## 快速开始
 
