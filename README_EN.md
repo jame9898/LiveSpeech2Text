@@ -28,15 +28,22 @@ Developed and tested on Windows 11. Other systems are not verified.
 git clone https://github.com/jame9898/LiveSpeech2Text
 # or Gitee mirror
 git clone https://gitee.com/linhanduzikai/LiveSpeech2Text
+
+# 2. Enter the folder
 cd LiveSpeech2Text
 
-# 2. Install dependencies (CPU only)
-python -m venv venv && venv\Scripts\activate
-pip install -r requirements.txt
-# or (GPU + CUDA only)
-pip install -r requirements-gpu.txt
+# 3. Virtual environment (recommended; skip if using the system environment)
+python -m venv venv
+venv\Scripts\activate
 
-# 3. Download models (auto-saved to models/)
+# 4. Install dependencies (auto-benchmarks mirrors and picks the fastest, CPU only)
+python install.py
+# or (GPU + CUDA only)
+python install.py --gpu
+# or specify a mirror manually (skips auto-benchmark):
+# python install.py --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 5. Download models (auto-saved to models/)
 # qwen3-ASR models: ModelScope
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-0.6B', cache_dir='models')"
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('Qwen/Qwen3-ASR-1.7B', cache_dir='models')"
@@ -51,17 +58,22 @@ python -c "from modelscope.hub.snapshot_download import snapshot_download; snaps
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_eres2netv2_sv_zh-cn_16k-common', cache_dir='models')"
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_eres2net_base_sv_zh-cn_3dspeaker_16k', cache_dir='models')"
 
-# 4. Launch the desktop panel
+# 6. Launch the desktop panel
 python app.py
 ```
 
 > You can also double-click `start.bat` (uses system Python).
 
+**Install slow or timing out?** `install.py` auto-benchmarks official PyPI, Tsinghua, Aliyun, Tencent, and USTC mirrors (~5s) and picks the fastest source, adapting to networks both in and out of China; domestic users usually hit the Aliyun/Tsinghua mirror. You can also fall back to `pip install -r requirements.txt` directly (you need to configure a domestic mirror yourself, otherwise the official PyPI may be too slow and time out).
+
 **Updating**: after `git pull`, dependencies may have changed — reinstall them:
 
 ```bash
 git pull
-pip install -r requirements.txt   # CPU only (GPU + CUDA: requirements-gpu.txt)
+python -m venv venv  # if using a virtual environment (skip otherwise)
+venv\Scripts\activate  # if using a virtual environment (skip otherwise)
+python install.py   # CPU only
+python install.py --gpu # GPU + CUDA only
 ```
 
 ## Uninstall
