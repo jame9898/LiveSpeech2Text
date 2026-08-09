@@ -176,15 +176,15 @@ def load_speaker_pipeline(speaker_model_key="cam++"):
 
         if sp_local:
             print(f"[SPEAKER] {model_info['label']} from cache: {sp_local}", flush=True)
-            # modelscope 兼容性修复：ERes2Net 系列模型配置缺 embed_dim 导致加载失败
-            _patch_sv_model_config(sp_local)
-            return pipeline(task=Tasks.speaker_verification, model=sp_local)
-        print(f"[SPEAKER] Downloading {model_info['label']} from ModelScope...", flush=True)
-        return pipeline(
-            task=Tasks.speaker_verification,
-            model=model_info["id"],
-            model_revision='v1.0.0',
-        )
+        else:
+            # 下载到项目 models/ 目录（与 README 下载命令一致），
+            # 之后统一走本地修补 + pipeline 路径，避免 modelscope 缓存目录无法修补配置
+            print(f"[SPEAKER] Downloading {model_info['label']} from ModelScope...", flush=True)
+            from modelscope.hub.snapshot_download import snapshot_download
+            sp_local = snapshot_download(model_id=model_info["id"], cache_dir=str(MODELS_DIR))
+        # modelscope 兼容性修复：ERes2Net 系列模型配置缺 embed_dim 导致加载失败
+        _patch_sv_model_config(sp_local)
+        return pipeline(task=Tasks.speaker_verification, model=sp_local)
     except Exception as e:
         print(f"[SPEAKER] {model_info['label']} load failed: {e}", flush=True)
         return None
