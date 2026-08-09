@@ -134,10 +134,33 @@ def main():
         except OSError:
             pass
     if ret != 0:
-        print("\n[提示] 安装中断（多为网络波动）。pip 已有缓存，直接重新运行本脚本即可续传。", flush=True)
-    else:
-        print("\n[完成] 依赖安装成功。启动: python app.py（或双击 start.bat）", flush=True)
-    sys.exit(ret)
+        print("\n[提示] 安装中断（多为网络波动/窗口关闭）。pip 已有缓存，直接重新运行本脚本即可续传。", flush=True)
+        sys.exit(ret)
+
+    missing = verify_core_imports()
+    if missing:
+        print(f"\n[提示] 检测到 {len(missing)} 个核心包未安装成功，自动重试第 1 次...", flush=True)
+        ret = subprocess.call(cmd)
+        if tmp_file and os.path.exists(tmp_file):
+            try:
+                os.remove(tmp_file)
+            except OSError:
+                pass
+        if ret != 0:
+            sys.exit(ret)
+        missing = verify_core_imports()
+        if missing:
+            print(f"\n[错误] 仍缺少: {', '.join(missing)}。请重新运行 python install.py 再试。", flush=True)
+            sys.exit(1)
+
+    print("\n[完成] 核心依赖验证通过。启动: python app.py（或双击 start.bat）", flush=True)
+    sys.exit(0)
+
+
+def verify_core_imports():
+    import importlib.util
+    core = ["torch", "qwen_asr", "soundfile", "sounddevice", "funasr", "PySide6"]
+    return [m for m in core if importlib.util.find_spec(m) is None]
 
 
 if __name__ == "__main__":
