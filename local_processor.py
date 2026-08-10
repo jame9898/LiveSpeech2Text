@@ -513,7 +513,7 @@ class LocalProcessThread(QThread):
     file_progress = Signal(int, int)    # (当前文件序号, 总文件数)
     segment_progress = Signal(int, int, str)  # (当前段号, 总段数, 文件名)
     stage_progress = Signal(str, float)  # (阶段名, 阶段内完成比例 0~1)：vad/asr/speaker/segments
-    perf_report = Signal(str)       # 性能报告文本（每次任务生成，用于导出累计）
+    perf_report = Signal(str, str)  # (文件名, 性能报告文本) 每次任务生成，用于导出累计
     file_done = Signal(str, str)    # (文件名, 报告路径) 单个文件完成
     all_done = Signal(int)          # 处理完成的文件数
     error = Signal(str)             # 致命错误
@@ -741,7 +741,7 @@ class LocalProcessThread(QThread):
                             fsmn_speech_noise_threshold=model_settings.get("fsmn_speech_noise_threshold", 0.6),
                             should_stop=lambda: not self._running,
                             stage_progress_cb=lambda stage, frac: self.stage_progress.emit(stage, frac),
-                            perf_report_cb=lambda text: self.perf_report.emit(text),
+                            perf_report_cb=lambda text, fname=media_path.name: self.perf_report.emit(fname, text),
                         )
                     )
                 except Exception as e:

@@ -1907,10 +1907,10 @@ class MainWindow(QMainWindow):
         if count > 0:
             QMessageBox.information(self, "本地处理完成", f"共处理 {count} 个文件。\nMD 报告已保存到输出目录。")
 
-    def _on_local_perf_report(self, text):
+    def _on_local_perf_report(self, filename, text):
         """本地模式每次任务的性能报告（内存累计，供导出按钮写文件）"""
         self._perf_reports.append(
-            f"[任务 {len(self._perf_reports) + 1}] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{text}")
+            f"[任务 {len(self._perf_reports) + 1}] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 文件: {filename}\n{text}")
 
     def _export_perf_data(self):
         """导出性能数据为文本文件：带时间戳的采样记录（CSV）+ 累计性能报告。
