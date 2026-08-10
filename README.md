@@ -81,7 +81,7 @@ python -c "from modelscope.hub.snapshot_download import snapshot_download; snaps
 python app.py
 ```
 
-> 也可以双击 `start.bat`（使用系统 Python 环境）。
+> 也可以双击 `start.vbs`（无命令行窗口启动，优先使用项目虚拟环境，其次系统 Python 环境）。
 
 **安装慢或超时？** `install.py` 会自动对官方 PyPI、清华、阿里云、腾讯云、中科大镜像测速（约 5 秒），选择最快的源下载，国内外网络均可自适应；国内用户通常会命中阿里云/清华镜像。也可直接使用原始方式 `pip install -r requirements.txt`（需自行配置国内镜像，否则可能因访问 PyPI 官方源过慢而超时）。
 
