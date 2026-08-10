@@ -153,8 +153,57 @@ def main():
             print(f"\n[错误] 仍缺少: {', '.join(missing)}。请重新运行 python install.py 再试。", flush=True)
             sys.exit(1)
 
-    print("\n[完成] 核心依赖验证通过。启动: python app.py（或双击 start.bat）", flush=True)
+    fix_nagisa_cn_path()
+
+    print("\n[完成] 核心依赖验证通过。启动: python app.py（或双击 start.vbs）", flush=True)
     sys.exit(0)
+
+
+def fix_nagisa_cn_path():
+    """nagisa（qwen-asr 依赖）的 dynet（C++）无法打开含中文等非 ASCII 字符的文件路径：
+    项目部署在中文目录时 import nagisa 会 RuntimeError（Could not read model），
+    导致 qwen_asr 加载失败。检测到该情况时，把 nagisa 包复制到无中文路径
+    （%LOCALAPPDATA%/nagisa_nocn），移除原包并用 site-packages 的 .pth 重定向。
+    路径本身无中文或 nagisa 可正常导入时不干预。
+    """
+    try:
+        import site
+        import shutil
+        import importlib.util
+        spec = importlib.util.find_spec("nagisa")
+        if spec is None or spec.origin is None:
+            return
+        base = os.path.dirname(os.path.dirname(spec.origin))  # site-packages/nagisa 包目录
+        if all(ord(c) < 128 for c in base):
+            return  # 路径无非 ASCII，无需处理
+        try:
+            import nagisa  # noqa: F401  # 能正常导入则不干预
+            return
+        except Exception:
+            pass
+        dst_root = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "nagisa_nocn")
+        dst_pkg = os.path.join(dst_root, "nagisa")
+        if not os.path.isfile(os.path.join(dst_pkg, "data", "nagisa_v001.model")):
+            shutil.rmtree(dst_root, ignore_errors=True)
+            os.makedirs(dst_root, exist_ok=True)
+            shutil.copytree(base, dst_pkg)
+        site_pkgs = site.getsitepackages()[0]
+        for name in ("nagisa", "nagisa-0.2.11.dist-info"):
+            p = os.path.join(site_pkgs, name)
+            if os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)
+        for f in os.listdir(site_pkgs):
+            if f.startswith("nagisa_utils") and f.endswith(".pyd"):
+                try:
+                    os.remove(os.path.join(site_pkgs, f))
+                except OSError:
+                    pass
+        pth = os.path.join(site_pkgs, "nagisa_nocn.pth")
+        with open(pth, "w", encoding="utf-8") as fh:
+            fh.write(dst_root)
+        print(f"\n[修复] nagisa 已重定向到无中文路径: {dst_root}（qwen-asr 依赖兼容）", flush=True)
+    except Exception as e:
+        print(f"[提示] nagisa 路径修复失败（项目在中文目录时 qwen_asr 可能加载失败）: {e}", flush=True)
 
 
 def verify_core_imports():
