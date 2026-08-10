@@ -66,10 +66,6 @@ _DEFAULT_CONFIG = {
         "language_mode": "auto",
         "speaker_model": "cam++",
         "speaker_strictness": "strict",
-        # CPU 推理 int8 量化（仅 CPU 生效）：实测（i5-1135G7 含 VNNI 的 CPU 与开发机均验证）
-        # torchao int8 weight-only 反量化开销 > 带宽收益，反而变慢约 70%，因此默认关闭。
-        # True=强制启用（自行验证性能）/ False 或 "auto"=关闭（auto 保留语义但不再自动启用）。
-        "cpu_quantize": False,
         "hotwords": {
             "enabled": False,
             "lib_path": "dict/hotwords.json",
@@ -538,29 +534,6 @@ class ASREngine:
                     size_info = model_variant[1] if model_variant else "?"
                     self.model_name = f"qwen3-asr-{size_info}"
                     print(f"[OK] Qwen3-ASR {size_info} loaded on {device_map}")
-                    # CPU int8 量化：权重瘦身 4 倍，缓解内存带宽瓶颈（CPU 推理的最大瓶颈）。
-                    # 配置 cpu_quantize: True=强制启用 / False=强制关闭 / 其他值或缺失=自动：
-                    #   检测 CPU 指令集能力，支持 AVX512（含 VNNI 的 11 代酷睿+）自动启用，
-                    #   否则跳过（无 VNNI 时反量化开销反而变慢）。
-                    # 注意：from_pretrained 可能替换 sys.stdout 导致本段日志丢失，
-                    # 因此状态写入 self._quantize_state，由 finally 恢复 stdout 后补打。
-                    self._quantize_state = "未执行（非 CPU 模式）"
-                    if not has_cuda:
-                        _cq = self._settings.get("cpu_quantize", False)
-                        _cq_enable = isinstance(_cq, bool) and _cq
-                        if not _cq_enable:
-                            self._quantize_state = (
-                                "int8 量化关闭（默认：实测 torchao int8 在 CPU 上反量化开销大于收益，"
-                                "反而变慢；如需测试请在设置中启用）")
-                        if _cq_enable:
-                            try:
-                                from torchao.quantization import quantize_, Int8WeightOnlyConfig
-                                _tq = time.time()
-                                quantize_(self.model.model, Int8WeightOnlyConfig())
-                                self._quantize_state = (
-                                    f"int8 量化完成（{time.time() - _tq:.1f}s，权重减 4 倍）")
-                            except Exception as e:
-                                self._quantize_state = f"int8 量化失败，继续 fp32 运行: {e}"
                 return True
             finally:
                 # 还原 stdout/stderr，保证 app.py 的 LR 日志重定向继续工作
@@ -572,13 +545,6 @@ class ASREngine:
                     _devnull_stdout.close()
                 if _devnull_stderr is not None:
                     _devnull_stderr.close()
-                # stdout 已恢复：补打量化状态（from_pretrained 后打印可能被三方库吞掉）
-                try:
-                    _qs = getattr(self, "_quantize_state", None)
-                    if _qs:
-                        print(f"[LOAD] {_qs}", flush=True)
-                except Exception:
-                    pass
         except Exception as e:
             print(f"[WARN] Qwen3-ASR failed: {e}")
             import traceback
