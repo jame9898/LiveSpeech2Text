@@ -109,6 +109,15 @@ class SettingsDialog(QDialog):
         self._spn_threads.setValue(self._settings.get("threads", 4))
         r2.addWidget(self._spn_threads)
         gl.addLayout(r2)
+        # CPU int8 量化（仅 CPU 生效；支持 VNNI 指令集的 CPU 可提速，无 VNNI 可能变慢）
+        self._chk_cpu_quantize = QCheckBox("CPU int8 量化（仅 CPU 模式；权重减 4 倍，支持 VNNI 的 CPU 提速明显）")
+        self._chk_cpu_quantize.setChecked(self._settings.get("cpu_quantize", False))
+        self._chk_cpu_quantize.setToolTip(
+            "用 torchao int8 weight-only 量化 ASR 模型权重（2.4GB→0.6GB）。\n"
+            "内存带宽是 CPU 推理瓶颈，权重变小后每 token 读取量降 4 倍。\n"
+            "仅对支持 VNNI/AVX512 指令集的较新 CPU（11代酷睿及以后）有效；\n"
+            "老 CPU 无 VNNI 时反量化开销可能反而变慢，如实测变慢请关闭。")
+        gl.addWidget(self._chk_cpu_quantize)
         layout.addWidget(g)
         # 实际检测结果提示：auto 会解析成什么设备一目了然
         from core import resolve_device
@@ -468,6 +477,7 @@ class SettingsDialog(QDialog):
             "silero_speech_prob_threshold": round(self._silero_prob_slider.value() / 100, 2),
             "fsmn_speech_noise_threshold": round(self._fsmn_noise_slider.value() / 100, 2),
             "threads": self._spn_threads.value(),
+            "cpu_quantize": self._chk_cpu_quantize.isChecked(),
             "ws_port": self._spn_ws.value(),
             "max_new_tokens": self._spn_max_tokens.value(),
             "language_mode": self._cmb_language_mode.currentData(),
