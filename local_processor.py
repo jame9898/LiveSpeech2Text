@@ -32,7 +32,7 @@ from PySide6.QtCore import QThread, Signal
 
 from core import ASREngine, load_config, resolve_device, MODELS_DIR, DICT_DIR
 from common_utils import StdoutRedirect, STRICTNESS_THRESHOLDS, load_speaker_pipeline, load_audio_fast
-from perf_utils import PerfMonitor, PerfSampler, gpu_info, format_elapsed
+from perf_utils import PerfMonitor, format_elapsed
 from vad_processor import VADProcessor, silero_vad_segment, fsmn_vad_segment, batch_vad
 from speaker_manager import SpeakerManager
 from pinyin_utils import PinyinCorrector
@@ -190,23 +190,18 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
     _log(f"\n{'=' * 50}")
     _log(f"[LOCAL] 处理: {Path(audio_path).name}")
 
-    perf = PerfMonitor(log_cb=None, label="LOCAL")  # 阶段计时，自己 _log 输出
-    sampler = PerfSampler(interval=1.0)  # 后台实时采样 GPU/CPU（均值/峰值）
-    sampler.start()
-    try:
-        return await _process_audio_file_inner(
-            audio_path, engine, vad, speaker_mgr, pinyin_corr,
-            dataset_mgr=dataset_mgr, save_dataset=save_dataset, log_cb=log_cb,
-            source_name=source_name, seg_progress_cb=seg_progress_cb,
-            vad_engine=vad_engine,
-            silero_speech_prob_threshold=silero_speech_prob_threshold,
-            fsmn_speech_noise_threshold=fsmn_speech_noise_threshold,
-            should_stop=should_stop, perf=perf, sampler=sampler,
-            stage_progress_cb=stage_progress_cb,
-            perf_report_cb=perf_report_cb,
-        )
-    finally:
-        sampler.stop()
+    perf = PerfMonitor(log_cb=None, label="LOCAL")  # 阶段计时（性能参数仅进导出文件）
+    return await _process_audio_file_inner(
+        audio_path, engine, vad, speaker_mgr, pinyin_corr,
+        dataset_mgr=dataset_mgr, save_dataset=save_dataset, log_cb=log_cb,
+        source_name=source_name, seg_progress_cb=seg_progress_cb,
+        vad_engine=vad_engine,
+        silero_speech_prob_threshold=silero_speech_prob_threshold,
+        fsmn_speech_noise_threshold=fsmn_speech_noise_threshold,
+        should_stop=should_stop, perf=perf,
+        stage_progress_cb=stage_progress_cb,
+        perf_report_cb=perf_report_cb,
+    )
 
 
 async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin_corr,
@@ -214,9 +209,9 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
                                     source_name=None, seg_progress_cb=None, vad_engine="silero",
                                     silero_speech_prob_threshold=0.5,
                                     fsmn_speech_noise_threshold=0.6,
-                                    should_stop=None, perf=None, sampler=None,
+                                    should_stop=None, perf=None,
                                     stage_progress_cb=None, perf_report_cb=None):
-    """process_audio_file 的内部实现（perf 阶段计时与 sampler 实时采样由外层托管）。"""
+    """process_audio_file 的内部实现（perf 阶段计时由外层托管）。"""
     def _log(msg):
         if log_cb:
             log_cb(msg + "\n")
@@ -232,8 +227,6 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
 
     def _stopped():
         return should_stop is not None and should_stop()
-
-    _log(f"[LOCAL] GPU: {gpu_info() or '未检测到 NVIDIA GPU（CPU 推理）'}")
 
     perf.start("音频加载")
     audio, sr = load_audio_fast(str(audio_path), target_sr=16000)
@@ -490,7 +483,8 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
     if save_dataset and dataset_mgr and dataset_mgr.enabled:
         dataset_mgr.end_session()
 
-    # 性能小结：总耗时 / 各阶段耗时与占比 / 实时率 / GPU 状态（默认始终生成，并回调给上层累计导出）
+    # 性能小结：总耗时 / 各阶段耗时与占比 / 实时率 / GPU 状态。
+    # 控制台不再输出（性能参数仅进导出文件），默认每次任务生成并回调给上层内存累计。
     _report_parts = [perf.summary(extra={
         "实时率": f"{total_dur / perf.total():.2f}x" if perf.total() > 0 else "-",
         "音频时长": f"{total_dur:.1f}s",
@@ -504,11 +498,9 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
                 "\n".join(f"[LOCAL] {_vline}" for _vline in _ver.splitlines()))
     except Exception:
         pass
-    _report_text = "\n".join(_report_parts)
-    _log(_report_text)
     if perf_report_cb:
         try:
-            perf_report_cb(_report_text)
+            perf_report_cb("\n".join(_report_parts))
         except Exception:
             pass
 
