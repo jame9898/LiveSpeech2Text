@@ -13,9 +13,6 @@
 # 版本已锁定为开发机（Python 3.12 + CPU）验证通过的组合
 torch==2.12.0
 torchaudio==2.11.0
-# torchao: CPU int8 量化（设置→设备→CPU int8 量化；支持 AVX512/VNNI 的 CPU 自动启用，
-# 缺失时自动回退 fp32 并给出日志提示）
-torchao==0.18.0
 # torchvision: CAM++/ERes2Net 说话人模型硬依赖（modelscope pipeline 顶层导入，缺失直接加载失败）
 torchvision==0.27.0
 # modelscope 说话人 pipeline 硬依赖（干净环境实测确认，缺失即加载失败）

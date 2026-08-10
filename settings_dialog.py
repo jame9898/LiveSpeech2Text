@@ -117,7 +117,8 @@ class SettingsDialog(QDialog):
             "用 torchao int8 weight-only 量化 ASR 模型权重（2.4GB→0.6GB）。\n"
             "实测（i5-1135G7 含 VNNI 的 CPU 与多台机器验证）：反量化开销大于内存带宽收益，\n"
             "推理反而变慢约 70%，因此默认关闭。\n"
-            "如需自行验证可勾选启用（加载日志会显示量化状态），变慢请取消勾选恢复 fp32。")
+            "如需自行验证可勾选启用（需先 pip install torchao；加载日志会显示量化状态），\n"
+            "变慢请取消勾选恢复 fp32。")
         gl.addWidget(self._chk_cpu_quantize)
         layout.addWidget(g)
         # 实际检测结果提示：auto 会解析成什么设备一目了然
