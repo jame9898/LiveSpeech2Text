@@ -66,10 +66,10 @@ _DEFAULT_CONFIG = {
         "language_mode": "auto",
         "speaker_model": "cam++",
         "speaker_strictness": "strict",
-        # CPU 推理 int8 量化（仅 CPU 生效）：权重 2.4GB→0.6GB，内存带宽瓶颈下可提速。
-        # True=强制启用 / False=强制关闭 / 缺失或 "auto"=按 CPU 指令集自动（支持 AVX512/VNNI 才启用，
-        # 否则跳过——无 VNNI 时反量化开销可能反而变慢）。
-        "cpu_quantize": "auto",
+        # CPU 推理 int8 量化（仅 CPU 生效）：实测（i5-1135G7 含 VNNI 的 CPU 与开发机均验证）
+        # torchao int8 weight-only 反量化开销 > 带宽收益，反而变慢约 70%，因此默认关闭。
+        # True=强制启用（自行验证性能）/ False 或 "auto"=关闭（auto 保留语义但不再自动启用）。
+        "cpu_quantize": False,
         "hotwords": {
             "enabled": False,
             "lib_path": "dict/hotwords.json",
@@ -546,20 +546,12 @@ class ASREngine:
                     # 因此状态写入 self._quantize_state，由 finally 恢复 stdout 后补打。
                     self._quantize_state = "未执行（非 CPU 模式）"
                     if not has_cuda:
-                        _cq = self._settings.get("cpu_quantize", "auto")
-                        _cq_enable = False
-                        if isinstance(_cq, bool):
-                            _cq_enable = _cq
-                            self._quantize_state = f"int8 配置 {'强制启用' if _cq_enable else '已关闭'}"
-                        else:
-                            try:
-                                _cap = str(torch._C._get_cpu_capability() or "")
-                                _cq_enable = (_cap == "AVX512")
-                                self._quantize_state = (
-                                    f"CPU 指令集能力 {_cap} → int8 量化"
-                                    f"{'自动启用' if _cq_enable else '跳过（无 AVX512/VNNI）'}")
-                            except Exception:
-                                self._quantize_state = "CPU 指令集能力检测失败，int8 量化跳过"
+                        _cq = self._settings.get("cpu_quantize", False)
+                        _cq_enable = isinstance(_cq, bool) and _cq
+                        if not _cq_enable:
+                            self._quantize_state = (
+                                "int8 量化关闭（默认：实测 torchao int8 在 CPU 上反量化开销大于收益，"
+                                "反而变慢；如需测试请在设置中启用）")
                         if _cq_enable:
                             try:
                                 from torchao.quantization import quantize_, Int8WeightOnlyConfig

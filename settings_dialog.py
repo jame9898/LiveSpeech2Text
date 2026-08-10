@@ -109,16 +109,15 @@ class SettingsDialog(QDialog):
         self._spn_threads.setValue(self._settings.get("threads", 4))
         r2.addWidget(self._spn_threads)
         gl.addLayout(r2)
-        # CPU int8 量化（仅 CPU 生效；勾选=启用并自动适配——支持 AVX512/VNNI 的 CPU 自动量化提速，不支持的自动跳过）
-        self._chk_cpu_quantize = QCheckBox("CPU int8 量化（仅 CPU 模式；权重减 4 倍，支持 AVX512/VNNI 的 CPU 自动启用）")
-        _cq_default = self._settings.get("cpu_quantize", "auto")
-        self._chk_cpu_quantize.setChecked(_cq_default is not False)
+        # CPU int8 量化（仅 CPU 生效；实测 torchao int8 在 CPU 上反量化开销大于收益、反而变慢，默认关闭）
+        self._chk_cpu_quantize = QCheckBox("CPU int8 量化（仅 CPU 模式；实验性，默认关闭）")
+        _cq_default = self._settings.get("cpu_quantize", False)
+        self._chk_cpu_quantize.setChecked(_cq_default is True)
         self._chk_cpu_quantize.setToolTip(
             "用 torchao int8 weight-only 量化 ASR 模型权重（2.4GB→0.6GB）。\n"
-            "内存带宽是 CPU 推理瓶颈，权重变小后每 token 读取量降 4 倍。\n"
-            "勾选后自动检测 CPU：支持 AVX512/VNNI（11 代酷睿及以后）才实际量化，\n"
-            "老 CPU 无 VNNI 时自动跳过（反量化开销可能反而变慢）。\n"
-            "默认勾选；如实测变慢可取消勾选强制 fp32。")
+            "实测（i5-1135G7 含 VNNI 的 CPU 与多台机器验证）：反量化开销大于内存带宽收益，\n"
+            "推理反而变慢约 70%，因此默认关闭。\n"
+            "如需自行验证可勾选启用（加载日志会显示量化状态），变慢请取消勾选恢复 fp32。")
         gl.addWidget(self._chk_cpu_quantize)
         layout.addWidget(g)
         # 实际检测结果提示：auto 会解析成什么设备一目了然
@@ -479,7 +478,7 @@ class SettingsDialog(QDialog):
             "silero_speech_prob_threshold": round(self._silero_prob_slider.value() / 100, 2),
             "fsmn_speech_noise_threshold": round(self._fsmn_noise_slider.value() / 100, 2),
             "threads": self._spn_threads.value(),
-            "cpu_quantize": "auto" if self._chk_cpu_quantize.isChecked() else False,
+            "cpu_quantize": self._chk_cpu_quantize.isChecked(),
             "ws_port": self._spn_ws.value(),
             "max_new_tokens": self._spn_max_tokens.value(),
             "language_mode": self._cmb_language_mode.currentData(),
