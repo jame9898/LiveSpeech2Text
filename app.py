@@ -729,6 +729,8 @@ class MainWindow(QMainWindow):
         self._perf_sampler = PerfSampler(interval=1.0)
         self._perf_sampler.start()
         self._perf_gpu_name = None
+        # 累计性能报告（本地模式每次任务生成，供导出按钮写文件；不导出则关闭程序后丢弃）
+        self._perf_reports = []
         _gi = gpu_info()
         if _gi:
             self._perf_gpu_name = _gi.split("|")[0].strip()
@@ -1102,6 +1104,25 @@ class MainWindow(QMainWindow):
         pfl = QVBoxLayout(self._perf_box)
         pfl.setContentsMargins(10, 6, 10, 6)
         pfl.setSpacing(4)
+
+        # 顶部行：右对齐导出按钮（导出带时间戳的 CPU/GPU/内存/温度采样记录 + 累计性能报告）
+        top_row = QHBoxLayout()
+        top_row.addStretch()
+        self._btn_perf_export = QPushButton("导出")
+        self._btn_perf_export.setFixedSize(56, 22)
+        self._btn_perf_export.setStyleSheet(
+            "QPushButton { font-size: 11px; border: 1px solid " + LIGHT['border'] +
+            "; border-radius: 4px; background: transparent; padding: 0 6px; }"
+            "QPushButton:hover { background: #eaeef2; }"
+        )
+        self._btn_perf_export.setToolTip(
+            "导出性能数据为文本文件：\n"
+            "1) 带时间戳的 GPU/CPU 利用率、显存、内存、温度采样记录（CSV 格式，\n"
+            "   可用 Excel/脚本生成类似任务管理器的折线图）\n"
+            "2) 本次程序运行期间累计的性能报告（阶段耗时/实时率/版本信息）")
+        self._btn_perf_export.clicked.connect(self._export_perf_data)
+        top_row.addWidget(self._btn_perf_export)
+        pfl.addLayout(top_row)
 
         # GPU 行：标签 + 进度条 + 数值
         gpu_row = QHBoxLayout()
@@ -1734,6 +1755,7 @@ class MainWindow(QMainWindow):
             self._local_thread.progress.connect(self._on_local_progress)
             self._local_thread.segment_progress.connect(self._on_local_segment_progress)
             self._local_thread.stage_progress.connect(self._on_local_stage_progress)
+            self._local_thread.perf_report.connect(self._on_local_perf_report)
             self._local_thread.file_done.connect(self._on_local_file_done)
             self._local_thread.all_done.connect(self._on_local_all_done)
             self._local_thread.error.connect(self._on_local_error)
@@ -1748,9 +1770,8 @@ class MainWindow(QMainWindow):
             self._local_seg_progress.setFormat("准备中...")
 
             self._local_thread.start()
-            # 重置性能采样统计，让面板数值覆盖本次处理
+            # 采样器不重建（保留跨任务累计的带时间戳采样记录），仅重置会话采样统计
             self._perf_sampler.stop()
-            self._perf_sampler = PerfSampler(interval=1.0)
             self._perf_sampler.start()
             self._emit_log(f"[LOCAL] 开始处理: {input_path}\n")
         except Exception as e:
@@ -1879,22 +1900,54 @@ class MainWindow(QMainWindow):
     def _on_local_all_done(self, count):
         """全部处理完成"""
         self._emit_log(f"[LOCAL] 全部完成，共 {count} 个文件\n")
-        # 整次任务的完整性能汇总（含 GPU/CPU 均值峰值），默认关闭（设置→本地模式→勾选后输出）
-        if load_config().get("local_settings", {}).get("perf_report_enabled", False):
-            self._emit_log(self._perf_sampler.summary(label="LOCAL-TASK") + "\n")
-            try:
-                from perf_utils import version_info
-                _ver = version_info()
-                if _ver:
-                    for _vline in _ver.splitlines():
-                        self._emit_log(f"[LOCAL-TASK] {_vline}\n")
-            except Exception:
-                pass
+        # 采样指标不再输出到控制台（可点性能面板「导出」按钮写入文件，含时间戳便于画折线图）
         self._local_seg_progress.setValue(100)
         self._local_seg_progress.setFormat(f"完成 ({count} 个文件)")
         self._reset_local_ui_state()
         if count > 0:
             QMessageBox.information(self, "本地处理完成", f"共处理 {count} 个文件。\nMD 报告已保存到输出目录。")
+
+    def _on_local_perf_report(self, text):
+        """本地模式每次任务的性能报告（内存累计，供导出按钮写文件）"""
+        self._perf_reports.append(
+            f"[任务 {len(self._perf_reports) + 1}] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{text}")
+
+    def _export_perf_data(self):
+        """导出性能数据为文本文件：带时间戳的采样记录（CSV）+ 累计性能报告。
+        不导出则数据仅存于内存，关闭程序后自动丢弃。"""
+        try:
+            from perf_utils import format_elapsed
+            csv_text, n_samples = self._perf_sampler.export_text()
+            _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_name = f"perf_export_{_ts}.txt"
+            path, _ = QFileDialog.getSaveFileName(
+                self, "导出性能数据", default_name, "文本文件 (*.txt);;CSV 文件 (*.csv);;所有文件 (*)")
+            if not path:
+                return
+            lines = []
+            lines.append("=" * 60)
+            lines.append("在线实时语音识别 - 性能数据导出")
+            lines.append(f"导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            lines.append(f"采样点数: {n_samples}")
+            lines.append("=" * 60)
+            lines.append("")
+            if self._perf_reports:
+                lines.append(f"--- 性能报告（累计 {len(self._perf_reports)} 次任务）---")
+                for r in self._perf_reports:
+                    lines.append("")
+                    lines.append(r)
+            else:
+                lines.append("--- 性能报告（无，尚未进行本地处理）---")
+            lines.append("")
+            lines.append("--- 性能采样记录（带时间戳，CSV 格式）---")
+            lines.append("列说明: timestamp, GPU利用率%, 显存GB, 显存总量GB, GPU温度℃, "
+                         "CPU利用率%, 内存GB, 内存总量GB")
+            lines.append(csv_text)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            self._emit_log(f"[PERF] 性能数据已导出: {path}（{n_samples} 个采样点）\n")
+        except Exception as e:
+            self._emit_log(f"[PERF] 导出失败: {e}\n")
 
     def _on_local_error(self, err_msg):
         """本地处理错误"""

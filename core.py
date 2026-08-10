@@ -80,8 +80,6 @@ _DEFAULT_CONFIG = {
     },
     "local_settings": {
         "ffmpeg_path": "",
-        # 处理完成后是否输出性能报告（阶段耗时/采样汇总/版本信息），默认关闭
-        "perf_report_enabled": False,
     }
 }
 

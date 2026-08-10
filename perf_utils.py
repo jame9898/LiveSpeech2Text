@@ -210,6 +210,8 @@ class PerfSampler:
         self._mem_used = []
         self._t0 = None
         self._total = 0.0
+        # 带时间戳的完整采样记录（导出用，跨会话累计，上限 50000 条≈14 小时 @1s）
+        self._records = []
 
     def start(self):
         if self._running:
@@ -243,6 +245,10 @@ class PerfSampler:
                     self._mem_used.append(mem[0])
                 self._latest = self._compose(gpu, cpu, mem)
                 self._latest_snap = (gpu, cpu, mem)
+                self._records.append(
+                    (time.strftime("%Y-%m-%d %H:%M:%S"), gpu, cpu, mem))
+                if len(self._records) > 50000:
+                    del self._records[: len(self._records) - 50000]
             time.sleep(self._interval)
 
     def _compose(self, gpu, cpu, mem):
@@ -281,6 +287,28 @@ class PerfSampler:
         if cpu_avg is not None:
             lines.append(f"[{label}] CPU 利用率 平均 {cpu_avg:.0f}% / 峰值 {cpu_max:.0f}%")
         return "\n".join(lines) if lines else f"[{label}] 无采样数据"
+
+    def export_text(self):
+        """导出带时间戳的完整采样记录（CSV 文本，便于 Excel/脚本画折线图）。
+
+        列：时间戳, GPU利用率%, 显存GB, 显存总量GB, GPU温度℃, CPU利用率%, 内存GB, 内存总量GB
+        无 GPU 时 GPU 列留空。
+        """
+        with self._lock:
+            lines = [
+                "timestamp,gpu_util_pct,gpu_mem_used_gb,gpu_mem_total_gb,"
+                "gpu_temp_c,cpu_util_pct,mem_used_gb,mem_total_gb"
+            ]
+            for ts, gpu, cpu, mem in self._records:
+                if gpu:
+                    g = f"{gpu[0]:.1f},{gpu[1]:.2f},{gpu[2]:.2f},{gpu[3]:.0f}"
+                else:
+                    g = ",,,"
+                c = f"{cpu:.1f}" if cpu is not None else ""
+                m = f"{mem[0]:.2f},{mem[1]:.2f}" if mem else ","
+                lines.append(f"{ts},{g},{c},{m}")
+            n = len(self._records)
+        return "\n".join(lines), n
 
 
 def format_elapsed(seconds):

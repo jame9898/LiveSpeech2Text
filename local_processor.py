@@ -165,8 +165,8 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
                               source_name=None, seg_progress_cb=None, vad_engine="silero",
                               silero_speech_prob_threshold=0.5,
                               fsmn_speech_noise_threshold=0.6,
-                              should_stop=None, perf_report_enabled=False,
-                              stage_progress_cb=None):
+                              should_stop=None, stage_progress_cb=None,
+                              perf_report_cb=None):
     """处理单个音频文件：VAD 切分 + ASR + 说话人分离 + 可选存储数据集。
     source_name: 后训练数据集第三级目录名（本地模式默认用音频文件名 stem）。
     seg_progress_cb: 段进度回调 fn(idx, total, filename)，None 时不回调。
@@ -174,8 +174,8 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
     silero_speech_prob_threshold: Silero VAD 语音概率阈值（0~1）。
     fsmn_speech_noise_threshold: FSMN VAD 语音噪声阈值（0~1）。
     should_stop: 可选取消回调 fn() -> bool，返回 True 时在可中断处尽快退出。
-    perf_report_enabled: 为 True 时输出完整性能报告（阶段耗时/采样汇总/版本信息）。
     stage_progress_cb: 阶段进度回调 fn(stage, fraction)，stage 为 "vad"/"asr"/"speaker"/"segments"。
+    perf_report_cb: 性能报告回调 fn(text)，每次任务结束生成性能报告时调用（用于导出累计）。
     返回 (segments, total_dur)
     """
     def _log(msg):
@@ -202,13 +202,11 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
             silero_speech_prob_threshold=silero_speech_prob_threshold,
             fsmn_speech_noise_threshold=fsmn_speech_noise_threshold,
             should_stop=should_stop, perf=perf, sampler=sampler,
-            perf_report_enabled=perf_report_enabled,
             stage_progress_cb=stage_progress_cb,
+            perf_report_cb=perf_report_cb,
         )
     finally:
         sampler.stop()
-        if perf_report_enabled:
-            _log(sampler.summary(label="LOCAL"))
 
 
 async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin_corr,
@@ -217,7 +215,7 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
                                     silero_speech_prob_threshold=0.5,
                                     fsmn_speech_noise_threshold=0.6,
                                     should_stop=None, perf=None, sampler=None,
-                                    perf_report_enabled=False, stage_progress_cb=None):
+                                    stage_progress_cb=None, perf_report_cb=None):
     """process_audio_file 的内部实现（perf 阶段计时与 sampler 实时采样由外层托管）。"""
     def _log(msg):
         if log_cb:
@@ -236,7 +234,6 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
         return should_stop is not None and should_stop()
 
     _log(f"[LOCAL] GPU: {gpu_info() or '未检测到 NVIDIA GPU（CPU 推理）'}")
-    _log(f"[LOCAL] 实时负载: {sampler.status_line() if sampler else 'N/A'}")
 
     perf.start("音频加载")
     audio, sr = load_audio_fast(str(audio_path), target_sr=16000)
@@ -493,20 +490,25 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
     if save_dataset and dataset_mgr and dataset_mgr.enabled:
         dataset_mgr.end_session()
 
-    # 性能小结：总耗时 / 各阶段耗时与占比 / 实时率 / GPU 状态（默认关闭，设置里勾选后输出）
-    if perf_report_enabled:
-        _log(perf.summary(extra={
-            "实时率": f"{total_dur / perf.total():.2f}x" if perf.total() > 0 else "-",
-            "音频时长": f"{total_dur:.1f}s",
-            "段数": len(segments),
-            "GPU/CPU 实时负载": sampler.status_line() if sampler else "N/A",
-        }))
+    # 性能小结：总耗时 / 各阶段耗时与占比 / 实时率 / GPU 状态（默认始终生成，并回调给上层累计导出）
+    _report_parts = [perf.summary(extra={
+        "实时率": f"{total_dur / perf.total():.2f}x" if perf.total() > 0 else "-",
+        "音频时长": f"{total_dur:.1f}s",
+        "段数": len(segments),
+    })]
+    try:
+        from perf_utils import version_info as _version_info
+        _ver = _version_info()
+        if _ver:
+            _report_parts.append(
+                "\n".join(f"[LOCAL] {_vline}" for _vline in _ver.splitlines()))
+    except Exception:
+        pass
+    _report_text = "\n".join(_report_parts)
+    _log(_report_text)
+    if perf_report_cb:
         try:
-            from perf_utils import version_info as _version_info
-            _ver = _version_info()
-            if _ver:
-                for _vline in _ver.splitlines():
-                    _log(f"[LOCAL] {_vline}")
+            perf_report_cb(_report_text)
         except Exception:
             pass
 
@@ -519,6 +521,7 @@ class LocalProcessThread(QThread):
     file_progress = Signal(int, int)    # (当前文件序号, 总文件数)
     segment_progress = Signal(int, int, str)  # (当前段号, 总段数, 文件名)
     stage_progress = Signal(str, float)  # (阶段名, 阶段内完成比例 0~1)：vad/asr/speaker/segments
+    perf_report = Signal(str)       # 性能报告文本（每次任务生成，用于导出累计）
     file_done = Signal(str, str)    # (文件名, 报告路径) 单个文件完成
     all_done = Signal(int)          # 处理完成的文件数
     error = Signal(str)             # 致命错误
@@ -534,9 +537,6 @@ class LocalProcessThread(QThread):
         self.save_dataset = save_dataset
         self._running = True
         self._engine_owned = engine is None  # 标记是否自行加载的引擎（需自行关闭）
-        # 性能报告输出开关（设置→本地模式→勾选后输出阶段耗时/采样汇总/版本信息）
-        self.perf_report_enabled = bool(
-            self.config.get("local_settings", {}).get("perf_report_enabled", False))
 
     def stop(self):
         self._running = False
@@ -748,8 +748,8 @@ class LocalProcessThread(QThread):
                             silero_speech_prob_threshold=model_settings.get("silero_speech_prob_threshold", 0.5),
                             fsmn_speech_noise_threshold=model_settings.get("fsmn_speech_noise_threshold", 0.6),
                             should_stop=lambda: not self._running,
-                            perf_report_enabled=self.perf_report_enabled,
                             stage_progress_cb=lambda stage, frac: self.stage_progress.emit(stage, frac),
+                            perf_report_cb=lambda text: self.perf_report.emit(text),
                         )
                     )
                 except Exception as e:
