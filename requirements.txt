@@ -58,6 +58,8 @@ pypinyin==0.55.0
 # --- 科学计算 ---
 numpy==2.3.5
 scipy==1.17.0
+# psutil: CPU 物理核数检测（CPU 推理线程数自适应，缺失时退化为逻辑核一半）
+psutil==7.1.0
 
 # --- gradio（qwen-asr 传递依赖，锁定避免每次解析到不同大版本）---
 gradio==6.14.0

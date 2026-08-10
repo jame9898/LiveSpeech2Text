@@ -1733,6 +1733,7 @@ class MainWindow(QMainWindow):
             )
             self._local_thread.progress.connect(self._on_local_progress)
             self._local_thread.segment_progress.connect(self._on_local_segment_progress)
+            self._local_thread.stage_progress.connect(self._on_local_stage_progress)
             self._local_thread.file_done.connect(self._on_local_file_done)
             self._local_thread.all_done.connect(self._on_local_all_done)
             self._local_thread.error.connect(self._on_local_error)
@@ -1846,6 +1847,31 @@ class MainWindow(QMainWindow):
         self._local_seg_progress.setValue(pct)
         self._local_seg_progress.setFormat(f"段 {current}/{total} ({pct}%) - {filename}")
 
+    def _on_local_stage_progress(self, stage, fraction):
+        """阶段进度更新：把 vad/asr/speaker/segments 各阶段映射到 0~100% 总进度。
+
+        阶段权重（本地处理耗时大头是 ASR）：VAD 0-10% / ASR 10-65% / 说话人 65-80% / 逐段 80-100%。
+        """
+        try:
+            fraction = max(0.0, min(1.0, float(fraction)))
+        except (TypeError, ValueError):
+            return
+        ranges = {
+            "vad": (0.0, 0.10),
+            "asr": (0.10, 0.65),
+            "speaker": (0.65, 0.80),
+            "segments": (0.80, 1.00),
+        }
+        lo, hi = ranges.get(stage, (0.0, 1.0))
+        pct = int((lo + (hi - lo) * fraction) * 100)
+        labels = {
+            "vad": "VAD 切分", "asr": "ASR 批量转录",
+            "speaker": "说话人识别", "segments": "段落处理",
+        }
+        label = labels.get(stage, stage)
+        self._local_seg_progress.setValue(pct)
+        self._local_seg_progress.setFormat(f"{label} {pct}%")
+
     def _on_local_file_done(self, filename, report_path):
         """单个文件处理完成"""
         self._emit_log(f"[LOCAL] 完成: {filename} → {report_path}\n")
@@ -1853,8 +1879,17 @@ class MainWindow(QMainWindow):
     def _on_local_all_done(self, count):
         """全部处理完成"""
         self._emit_log(f"[LOCAL] 全部完成，共 {count} 个文件\n")
-        # 整次任务的完整性能汇总（含 GPU/CPU 均值峰值）
-        self._emit_log(self._perf_sampler.summary(label="LOCAL-TASK") + "\n")
+        # 整次任务的完整性能汇总（含 GPU/CPU 均值峰值），默认关闭（设置→本地模式→勾选后输出）
+        if load_config().get("local_settings", {}).get("perf_report_enabled", False):
+            self._emit_log(self._perf_sampler.summary(label="LOCAL-TASK") + "\n")
+            try:
+                from perf_utils import version_info
+                _ver = version_info()
+                if _ver:
+                    for _vline in _ver.splitlines():
+                        self._emit_log(f"[LOCAL-TASK] {_vline}\n")
+            except Exception:
+                pass
         self._local_seg_progress.setValue(100)
         self._local_seg_progress.setFormat(f"完成 ({count} 个文件)")
         self._reset_local_ui_state()

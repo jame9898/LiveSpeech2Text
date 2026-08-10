@@ -298,6 +298,52 @@ def format_elapsed(seconds):
     return f"{h}:{m:02d}:{s:02d}"
 
 
+def _git(cmd):
+    """执行 git 子进程（隐藏控制台窗口），失败返回 None。"""
+    try:
+        result = subprocess.run(
+            ["git", *cmd],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=5,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+        if result.returncode != 0:
+            return None
+        out = result.stdout.strip()
+        return out or None
+    except Exception:
+        return None
+
+
+def version_info():
+    """版本信息：分支 + 最近 commit（hash+摘要+日期）+ GitHub/Gitee 远程仓库。
+
+    用于性能报告里标注当前运行版本，方便对照远端最新提交做测试/回退。
+    无 git 环境或非 git 目录时返回 None（调用方自行处理）。
+    """
+    branch = _git(["rev-parse", "--abbrev-ref", "HEAD"])
+    commit = _git(["rev-parse", "--short", "HEAD"])
+    summary = _git(["log", "-1", "--pretty=%s"])
+    date = _git(["log", "-1", "--pretty=%ad", "--date=short"])
+    remotes = []
+    for name in ("github", "gitee", "origin"):
+        url = _git(["remote", "get-url", name])
+        if url:
+            remotes.append(f"{name} {url}")
+    if not branch and not commit:
+        return None
+    parts = []
+    ident = f"{branch or '?'} @ {commit or '?'}"
+    if summary:
+        ident += f"（{summary[:40]}）"
+    if date:
+        ident += f" [{date}]"
+    parts.append(f"版本: {ident}")
+    if remotes:
+        parts.append("远端: " + " | ".join(remotes))
+    return "\n".join(parts)
+
+
 class PerfMonitor:
     """阶段计时器：记录命名阶段耗时，支持多阶段并行计时与跨阶段累加。
 

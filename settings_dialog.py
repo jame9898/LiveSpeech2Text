@@ -429,6 +429,19 @@ class SettingsDialog(QDialog):
         gl_ff.addLayout(r_ff)
         layout.addWidget(g_ff)
 
+        # 性能报告输出开关（默认关闭，勾选后本地处理结束输出阶段耗时/采样汇总/版本信息）
+        g_perf = QGroupBox("性能报告")
+        gl_perf = QVBoxLayout(g_perf)
+        self._chk_perf_report = QCheckBox(
+            "处理完成后输出性能报告（阶段耗时占比 / GPU/CPU 采样汇总 / 版本 commit 信息）")
+        self._chk_perf_report.setChecked(self._local_settings.get("perf_report_enabled", False))
+        self._chk_perf_report.setToolTip(
+            "勾选后，每次本地处理结束会在日志中输出完整性能报告，\n"
+            "包含版本分支/commit 与 GitHub/Gitee 远端地址，便于对照版本做测试与回退。\n"
+            "默认关闭，日志更简洁。")
+        gl_perf.addWidget(self._chk_perf_report)
+        layout.addWidget(g_perf)
+
         layout.addStretch()
         tabs.addTab(w, "本地模式")
 
@@ -470,6 +483,7 @@ class SettingsDialog(QDialog):
         local = cfg.setdefault("local_settings", {})
         local.update({
             "ffmpeg_path": self._ln_ffmpeg.text().strip(),
+            "perf_report_enabled": self._chk_perf_report.isChecked(),
         })
         return cfg
 

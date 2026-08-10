@@ -167,7 +167,7 @@ def _download_silero_jit(jit_model_path):
 
 def silero_vad_segment(audio, sr, vad_silence_threshold=0.8,
                        min_speech_duration=0.12, force_cut_sec=6.0,
-                       speech_prob_threshold=0.5):
+                       speech_prob_threshold=0.5, window_size_samples=None):
     """用 Silero VAD 做批量语音切分。
 
     参数:
@@ -175,8 +175,10 @@ def silero_vad_segment(audio, sr, vad_silence_threshold=0.8,
         sr: 采样率（固定 16000）
         vad_silence_threshold: 静音断句时长（秒）→ silero min_silence_duration_ms
         min_speech_duration: 最小语音段时长（秒）→ silero min_speech_duration_ms
-        force_cut_sec: 最大语音段时长（秒）→ silero max_speech_duration_ms
+        force_cut_sec: 最大语音段时长（秒）→ silero max_speech_duration_s
         speech_prob_threshold: 语音概率阈值（0~1），默认 0.5
+        window_size_samples: Silero 前向窗口（512=32ms 精度最高；1536=96ms 快约 3 倍）。
+            None = 自动：GPU 用 512，CPU 用 1536（切分边界粒度 96ms，对 ASR 段落影响可忽略）
 
     返回: [(seg_audio, seg_time, seg_dur, vad_info), ...]
     """
@@ -195,6 +197,11 @@ def silero_vad_segment(audio, sr, vad_silence_threshold=0.8,
     min_silence_ms = int(vad_silence_threshold * 1000)
     min_speech_ms = int(min_speech_duration * 1000)
 
+    # CPU 上每 512 样本一次前向开销大（10 分钟音频约 2 万次），
+    # 用 1536 窗口（官方支持 512/1024/1536 三档）前向次数降为 1/3
+    if window_size_samples is None:
+        window_size_samples = 512 if torch.cuda.is_available() else 1536
+
     timestamps = get_speech_timestamps(
         audio_t,
         model,
@@ -209,6 +216,7 @@ def silero_vad_segment(audio, sr, vad_silence_threshold=0.8,
         sampling_rate=sr,
         return_seconds=False,
         visualize_probs=False,
+        window_size_samples=window_size_samples,
     )
 
     segments = []

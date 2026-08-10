@@ -3,6 +3,7 @@
 说话人管理器 — 声纹识别、说话人命名
 封装 CAM++ 说话人分离相关的所有状态和方法
 """
+import asyncio
 import numpy as np
 import soundfile as sf
 from pathlib import Path
@@ -69,9 +70,16 @@ class SpeakerManager:
     """说话人管理器 — 封装声纹识别、说话人命名等所有说话人相关逻辑"""
 
     def __init__(self, sv_pipeline=None, executor=None,
-                 dict_dir=None, temp_dir=None, same_threshold=None):
+                 dict_dir=None, temp_dir=None, same_threshold=None,
+                 speaker_workers=None):
         self.sv_pipeline = sv_pipeline
         self.executor = executor
+        # 批量声纹提取并行度：None/1=逐批调用主 pipeline（原逻辑），>1=每 worker
+        # 克隆独立 pipeline 实例并行推理（modelscope pipeline 有共享状态，
+        # 同一实例不能并发调用；单实例多段批量调用本身也是逐段串行推理）
+        self._speaker_workers = max(1, int(speaker_workers)) if speaker_workers else 1
+        self._pipelines = None
+        self._pipelines_lock = None
 
         self.speaker_profiles = []
         self.last_speaker_id = 0
@@ -177,6 +185,211 @@ class SpeakerManager:
 
     # ===== 声纹识别 =====
 
+    async def extract_embeddings(self, audio_list, batch_size=16, should_stop=None,
+                                 workers=None, progress_cb=None):
+        """批量提取声纹 embedding（本地处理用，CPU 上提速关键）。
+
+        每段降噪 + 写临时 wav。workers<=1 时按 batch_size 分组批量推理
+        （每 batch 一次 pipeline 调用，避免逐段调用开销）；
+        workers>1 时改为并行逐段推理（每个 worker 独立 pipeline 实例，
+        单段 [p, p] 双拷贝调用，与实时模式 detect_speaker 一致）。
+
+        参数:
+            audio_list: numpy float32 16k 音频列表（可含 None，表示跳过）
+            batch_size: 每批段数（默认 16，仅串行模式使用）
+            should_stop: 可选取消回调 fn() -> bool，批间检查
+            workers: 并行 worker 数，None 时用构造传入的 speaker_workers
+            progress_cb: 可选进度回调 fn(done, total)，阶段内完成比例
+
+        返回: 与 audio_list 等长的 embedding 列表（失败段为 None）。
+        """
+        if self.sv_pipeline is None:
+            return [None] * len(audio_list)
+
+        if workers is None:
+            workers = self._speaker_workers
+        workers = max(1, int(workers))
+        if workers <= 1:
+            return await self._extract_embeddings_batch(
+                audio_list, batch_size, should_stop, progress_cb)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self.executor, self._extract_embeddings_parallel,
+            audio_list, workers, should_stop, progress_cb)
+
+    def _get_parallel_pipelines(self, workers):
+        """返回至少 workers 个可并行调用的 pipeline 实例（懒克隆，主线程安全）。"""
+        if self._pipelines is None:
+            import threading
+            self._pipelines_lock = threading.Lock()
+            self._pipelines = [self.sv_pipeline]
+        if len(self._pipelines) >= workers:
+            return self._pipelines
+        with self._pipelines_lock:
+            while len(self._pipelines) < workers:
+                try:
+                    from modelscope.pipelines import pipeline
+                    from modelscope.utils.constant import Tasks
+                    base = self._pipelines[0]
+                    model_dir = getattr(getattr(base, 'model', None), 'model_dir', None)
+                    if not model_dir:
+                        break
+                    self._pipelines.append(
+                        pipeline(task=Tasks.speaker_verification, model=model_dir))
+                except Exception as e:
+                    print(f"[SPEAKER] 声纹 pipeline 克隆失败: {e}", flush=True)
+                    break
+        return self._pipelines
+
+    def _extract_embeddings_parallel(self, audio_list, workers, should_stop, progress_cb=None):
+        """并行逐段声纹推理（同步函数，跑在事件循环外）。
+
+        每个 worker 独立 pipeline 实例 + 单段 [p, p] 双拷贝调用，
+        规避 modelscope pipeline 多段批量调用在同一实例上的时序不稳定问题。
+        """
+        import uuid as _uuid
+        import concurrent.futures
+
+        MIN_DURATION = int(16000 * 0.5)
+        embeddings = [None] * len(audio_list)
+        pipes = self._get_parallel_pipelines(workers)
+        if not pipes:
+            return embeddings
+
+        def _infer_one(idx_audio):
+            i, a = idx_audio
+            if a is None:
+                return i, None
+            pipe = pipes[i % len(pipes)]
+            temp_path = self._temp_dir / f'sp_{_uuid.uuid4().hex}.wav'
+            try:
+                if len(a) < MIN_DURATION:
+                    a = np.pad(a, (0, MIN_DURATION - len(a)))
+                audio_denoised = _pre_denoise_audio(a, sr=16000)
+                sf.write(str(temp_path), audio_denoised.astype(np.float32), 16000)
+            except Exception as e:
+                print(f"[SPEAKER] 音频写入失败: {e}", flush=True)
+                return i, None
+            try:
+                result = pipe([str(temp_path), str(temp_path)], output_emb=True)
+                embs = result.get('embs')
+                if embs is None:
+                    return i, None
+                emb = np.array(embs[0], dtype=np.float32)
+                norm = float(np.linalg.norm(emb))
+                return i, emb / (norm + 1e-8)
+            except Exception as e:
+                print(f"[SPEAKER] 单段声纹推理失败: {e}", flush=True)
+                return i, None
+            finally:
+                try:
+                    if temp_path.exists():
+                        temp_path.unlink()
+                except OSError:
+                    pass
+
+        import torch as _torch
+        _total_threads = _torch.get_num_threads()
+        try:
+            # torch 线程数按 worker 均分，避免并行推理互相争抢全部核心
+            if _total_threads > workers:
+                _torch.set_num_threads(max(1, _total_threads // workers))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+                futures = [ex.submit(_infer_one, (i, a)) for i, a in enumerate(audio_list)]
+                _done = 0
+                for fut in futures:
+                    if should_stop is not None and should_stop():
+                        ex.shutdown(wait=False, cancel_futures=True)
+                        break
+                    try:
+                        i, emb = fut.result()
+                        if emb is not None:
+                            embeddings[i] = emb
+                    except Exception:
+                        pass
+                    _done += 1
+                    if progress_cb is not None and _done % max(1, len(futures) // 20) == 0:
+                        try:
+                            progress_cb(_done, len(futures))
+                        except Exception:
+                            pass
+                if progress_cb is not None:
+                    try:
+                        progress_cb(_done, len(futures))
+                    except Exception:
+                        pass
+        finally:
+            try:
+                _torch.set_num_threads(_total_threads)
+            except Exception:
+                pass
+        return embeddings
+
+    async def _extract_embeddings_batch(self, audio_list, batch_size=16, should_stop=None,
+                                        progress_cb=None):
+        import uuid as _uuid
+        MIN_DURATION = int(16000 * 0.5)
+        embeddings = [None] * len(audio_list)
+        _total_batches = max(1, -(-len(audio_list) // batch_size))
+
+        def _infer_batch(batch_audios):
+            paths = []
+            valid_idx = []
+            for i, a in enumerate(batch_audios):
+                if a is None:
+                    continue
+                if len(a) < MIN_DURATION:
+                    a = np.pad(a, (0, MIN_DURATION - len(a)))
+                p = self._temp_dir / f'sp_{_uuid.uuid4().hex}.wav'
+                try:
+                    audio_denoised = _pre_denoise_audio(a, sr=16000)
+                    sf.write(str(p), audio_denoised.astype(np.float32), 16000)
+                    paths.append(p)
+                    valid_idx.append(i)
+                except Exception as e:
+                    print(f"[SPEAKER] 音频写入失败: {e}", flush=True)
+            out = [None] * len(batch_audios)
+            if not paths:
+                return out
+            try:
+                result = self.sv_pipeline([str(p) for p in paths], output_emb=True)
+                embs = result.get('embs')
+                if embs is None:
+                    embs = []
+                for k, i in enumerate(valid_idx):
+                    if k < len(embs) and embs[k] is not None:
+                        emb = np.array(embs[k])
+                        out[i] = emb / (np.linalg.norm(emb) + 1e-8)
+            except Exception as e:
+                import traceback as _tb
+                print(f"[SPEAKER] 批量声纹推理失败: {e}", flush=True)
+                _tb.print_exc()
+            finally:
+                for p in paths:
+                    try:
+                        if p.exists():
+                            p.unlink()
+                    except OSError:
+                        pass
+            return out
+
+        import asyncio
+        loop = asyncio.get_running_loop()
+        _batch_no = 0
+        for start in range(0, len(audio_list), batch_size):
+            if should_stop is not None and should_stop():
+                break
+            chunk = audio_list[start:start + batch_size]
+            chunk_embs = await loop.run_in_executor(self.executor, _infer_batch, chunk)
+            embeddings[start:start + batch_size] = chunk_embs
+            _batch_no += 1
+            if progress_cb is not None:
+                try:
+                    progress_cb(min(_batch_no * batch_size, len(audio_list)), len(audio_list))
+                except Exception:
+                    pass
+        return embeddings
+
     async def detect_speaker(self, audio_data):
         """
         说话人识别 — 使用 CAM++ 声纹嵌入 (达摩院 3D-Speaker)
@@ -250,6 +463,11 @@ class SpeakerManager:
             return self._last_speaker_label
         embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
 
+        return self._classify_embedding(embedding)
+
+    def _classify_embedding(self, embedding):
+        """把已提取的声纹 embedding 判定为说话人（顺序更新声纹库）。
+        实时模式（detect_speaker）与本地批量模式共用；纯 numpy 计算，耗时可忽略。"""
         if not self.speaker_profiles:
             self.speaker_profiles.append({
                 'embedding': embedding.copy(),

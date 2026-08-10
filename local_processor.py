@@ -162,7 +162,8 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
                               source_name=None, seg_progress_cb=None, vad_engine="silero",
                               silero_speech_prob_threshold=0.5,
                               fsmn_speech_noise_threshold=0.6,
-                              should_stop=None):
+                              should_stop=None, perf_report_enabled=False,
+                              stage_progress_cb=None):
     """处理单个音频文件：VAD 切分 + ASR + 说话人分离 + 可选存储数据集。
     source_name: 后训练数据集第三级目录名（本地模式默认用音频文件名 stem）。
     seg_progress_cb: 段进度回调 fn(idx, total, filename)，None 时不回调。
@@ -170,6 +171,8 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
     silero_speech_prob_threshold: Silero VAD 语音概率阈值（0~1）。
     fsmn_speech_noise_threshold: FSMN VAD 语音噪声阈值（0~1）。
     should_stop: 可选取消回调 fn() -> bool，返回 True 时在可中断处尽快退出。
+    perf_report_enabled: 为 True 时输出完整性能报告（阶段耗时/采样汇总/版本信息）。
+    stage_progress_cb: 阶段进度回调 fn(stage, fraction)，stage 为 "vad"/"asr"/"speaker"/"segments"。
     返回 (segments, total_dur)
     """
     def _log(msg):
@@ -196,10 +199,13 @@ async def process_audio_file(audio_path, engine, vad, speaker_mgr, pinyin_corr,
             silero_speech_prob_threshold=silero_speech_prob_threshold,
             fsmn_speech_noise_threshold=fsmn_speech_noise_threshold,
             should_stop=should_stop, perf=perf, sampler=sampler,
+            perf_report_enabled=perf_report_enabled,
+            stage_progress_cb=stage_progress_cb,
         )
     finally:
         sampler.stop()
-        _log(sampler.summary(label="LOCAL"))
+        if perf_report_enabled:
+            _log(sampler.summary(label="LOCAL"))
 
 
 async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin_corr,
@@ -207,13 +213,21 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
                                     source_name=None, seg_progress_cb=None, vad_engine="silero",
                                     silero_speech_prob_threshold=0.5,
                                     fsmn_speech_noise_threshold=0.6,
-                                    should_stop=None, perf=None, sampler=None):
+                                    should_stop=None, perf=None, sampler=None,
+                                    perf_report_enabled=False, stage_progress_cb=None):
     """process_audio_file 的内部实现（perf 阶段计时与 sampler 实时采样由外层托管）。"""
     def _log(msg):
         if log_cb:
             log_cb(msg + "\n")
         else:
             print(msg, flush=True)
+
+    def _stage(stage, fraction):
+        if stage_progress_cb:
+            try:
+                stage_progress_cb(stage, fraction)
+            except Exception:
+                pass
 
     def _stopped():
         return should_stop is not None and should_stop()
@@ -253,6 +267,9 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
     if vad_engine == "silero":
         _log("[LOCAL] 正在加载 Silero VAD 模型...")
         try:
+            import torch as _torch
+            if not _torch.cuda.is_available():
+                _log("[LOCAL] CPU 模式：Silero VAD 用 1536 大窗口（前向次数降 1/3，提速约 3 倍）")
             raw_segments = silero_vad_segment(
                 audio, sr,
                 vad_silence_threshold=vad_silence,
@@ -292,6 +309,7 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
     perf.stop("VAD")
 
     _log(f"[LOCAL] VAD 切出 {len(raw_segments)} 段")
+    _stage("vad", 1.0)
 
     if not raw_segments:
         _log("[LOCAL] [WARN] 未切出任何语音段")
@@ -339,6 +357,7 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
 
     _seg_texts = {}  # 段索引 -> ASR 文本
     perf.start("ASR 转录")
+    _n_groups = len(asr_groups)
     for gi, group in enumerate(asr_groups):
         # 每组 ASR 前检查取消标志（批量调用本身不可中断，在组间检查）
         if _stopped():
@@ -347,6 +366,7 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
             if save_dataset and dataset_mgr and dataset_mgr.enabled:
                 dataset_mgr.end_session()
             return [], total_dur
+        _stage("asr", (gi + 1) / _n_groups) if _n_groups else None
         group_audio = [raw_segments[i][0] for i in group]
         try:
             group_texts = engine.transcribe_batch(group_audio, sr=16000)
@@ -358,6 +378,29 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
             if text:
                 _seg_texts[i] = text
     perf.stop("ASR 转录")
+
+    # === 批量说话人声纹提取（CPU 上逐段推理 0.5-1s/段，批量一次 pipeline 调用大幅提速） ===
+    speaker_embs = None
+    _speak_index_map = {}
+    if speaker_mgr is not None and speaker_mgr.sv_pipeline is not None:
+        _speak_audios = []
+        for idx, (seg_audio, seg_time, seg_dur, vad_info) in enumerate(raw_segments):
+            if idx not in _seg_texts:
+                continue
+            if len(seg_audio) < int(16000 * 0.8):
+                continue
+            _speak_index_map[idx] = len(_speak_audios)
+            _speak_audios.append(seg_audio)
+        if _speak_audios:
+            _log(f"[LOCAL] 说话人声纹提取: {len(_speak_audios)} 段（批量推理）")
+            perf.start("说话人")
+            speaker_embs = await speaker_mgr.extract_embeddings(
+                _speak_audios, should_stop=_stopped,
+                progress_cb=lambda done, total: _stage("speaker", done / total) if total else None,
+            )
+            perf.stop("说话人")
+    else:
+        _log("[LOCAL] 说话人: 模型未加载，全部标记 Speaker0")
 
     for idx, (seg_audio, seg_time, seg_dur, vad_info) in enumerate(raw_segments):
         # 每段 VAD/说话人/数据集迭代前检查取消标志，可中断处尽快退出
@@ -373,6 +416,7 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
                 seg_progress_cb(idx + 1, _total_segs, _fname)
             except Exception:
                 pass
+        _stage("segments", (idx + 1) / _total_segs)
 
         text = _seg_texts.get(idx, "")
         if not text:
@@ -385,6 +429,15 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
         try:
             if len(seg_audio) < int(16000 * 0.8):
                 speaker_label = speaker_mgr.last_speaker_label
+            elif speaker_embs is not None:
+                # embedding 已批量提取（判定是纯 numpy，逐段顺序执行以保持声纹库更新顺序）
+                _k = _speak_index_map.get(idx)
+                emb = speaker_embs[_k] if _k is not None and _k < len(speaker_embs) else None
+                if emb is None:
+                    speaker_label = speaker_mgr.last_speaker_label
+                else:
+                    speaker_label = speaker_mgr._classify_embedding(emb)
+                speaker_mgr.last_speaker_label = speaker_label
             else:
                 speaker_label = await speaker_mgr.detect_speaker(seg_audio)
                 speaker_mgr.last_speaker_label = speaker_label
@@ -437,13 +490,22 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
     if save_dataset and dataset_mgr and dataset_mgr.enabled:
         dataset_mgr.end_session()
 
-    # 性能小结：总耗时 / 各阶段耗时与占比 / 实时率 / GPU 状态
-    _log(perf.summary(extra={
-        "实时率": f"{total_dur / perf.total():.2f}x" if perf.total() > 0 else "-",
-        "音频时长": f"{total_dur:.1f}s",
-        "段数": len(segments),
-        "GPU/CPU 实时负载": sampler.status_line() if sampler else "N/A",
-    }))
+    # 性能小结：总耗时 / 各阶段耗时与占比 / 实时率 / GPU 状态（默认关闭，设置里勾选后输出）
+    if perf_report_enabled:
+        _log(perf.summary(extra={
+            "实时率": f"{total_dur / perf.total():.2f}x" if perf.total() > 0 else "-",
+            "音频时长": f"{total_dur:.1f}s",
+            "段数": len(segments),
+            "GPU/CPU 实时负载": sampler.status_line() if sampler else "N/A",
+        }))
+        try:
+            from perf_utils import version_info as _version_info
+            _ver = _version_info()
+            if _ver:
+                for _vline in _ver.splitlines():
+                    _log(f"[LOCAL] {_vline}")
+        except Exception:
+            pass
 
     return segments, total_dur
 
@@ -453,6 +515,7 @@ class LocalProcessThread(QThread):
     progress = Signal(str)          # 日志文本（含换行）
     file_progress = Signal(int, int)    # (当前文件序号, 总文件数)
     segment_progress = Signal(int, int, str)  # (当前段号, 总段数, 文件名)
+    stage_progress = Signal(str, float)  # (阶段名, 阶段内完成比例 0~1)：vad/asr/speaker/segments
     file_done = Signal(str, str)    # (文件名, 报告路径) 单个文件完成
     all_done = Signal(int)          # 处理完成的文件数
     error = Signal(str)             # 致命错误
@@ -468,6 +531,9 @@ class LocalProcessThread(QThread):
         self.save_dataset = save_dataset
         self._running = True
         self._engine_owned = engine is None  # 标记是否自行加载的引擎（需自行关闭）
+        # 性能报告输出开关（设置→本地模式→勾选后输出阶段耗时/采样汇总/版本信息）
+        self.perf_report_enabled = bool(
+            self.config.get("local_settings", {}).get("perf_report_enabled", False))
 
     def stop(self):
         self._running = False
@@ -598,6 +664,9 @@ class LocalProcessThread(QThread):
             dict_dir=DICT_DIR,
             temp_dir=TEMP_DIR,
             same_threshold=_same_threshold,
+            # 批量声纹提取并行度：CPU 上克隆多个 pipeline 实例并行推理提速，
+            # 上限 4（每实例独立模型权重，过多个数收益递减且内存翻倍）
+            speaker_workers=min(max(1, threads), 4),
         )
         pinyin_corr = PinyinCorrector()
 
@@ -676,6 +745,8 @@ class LocalProcessThread(QThread):
                             silero_speech_prob_threshold=model_settings.get("silero_speech_prob_threshold", 0.5),
                             fsmn_speech_noise_threshold=model_settings.get("fsmn_speech_noise_threshold", 0.6),
                             should_stop=lambda: not self._running,
+                            perf_report_enabled=self.perf_report_enabled,
+                            stage_progress_cb=lambda stage, frac: self.stage_progress.emit(stage, frac),
                         )
                     )
                 except Exception as e:
