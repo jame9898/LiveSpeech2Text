@@ -67,9 +67,9 @@ _DEFAULT_CONFIG = {
         "speaker_model": "cam++",
         "speaker_strictness": "strict",
         # CPU 推理 int8 量化（仅 CPU 生效）：权重 2.4GB→0.6GB，内存带宽瓶颈下可提速。
-        # 仅对支持 VNNI/AVX512 指令集的 CPU 有效；无 VNNI 时反量化开销可能反而变慢。
-        # 默认关闭；开启后若实测变慢可改回。
-        "cpu_quantize": False,
+        # True=强制启用 / False=强制关闭 / 缺失或 "auto"=按 CPU 指令集自动（支持 AVX512/VNNI 才启用，
+        # 否则跳过——无 VNNI 时反量化开销可能反而变慢）。
+        "cpu_quantize": "auto",
         "hotwords": {
             "enabled": False,
             "lib_path": "dict/hotwords.json",
@@ -538,17 +538,31 @@ class ASREngine:
                     size_info = model_variant[1] if model_variant else "?"
                     self.model_name = f"qwen3-asr-{size_info}"
                     print(f"[OK] Qwen3-ASR {size_info} loaded on {device_map}")
-                    # CPU int8 量化（可选）：权重瘦身 4 倍，缓解内存带宽瓶颈。
-                    # 无 VNNI 指令集的 CPU 上可能反而变慢，失败/变慢可关闭该配置。
-                    if not has_cuda and self._settings.get("cpu_quantize", False):
-                        try:
-                            from torchao.quantization import quantize_, Int8WeightOnlyConfig
-                            print("[LOAD] CPU int8 量化（torchao weight-only）...", flush=True)
-                            _tq = time.time()
-                            quantize_(self.model.model, Int8WeightOnlyConfig())
-                            print(f"[LOAD] int8 量化完成: {time.time() - _tq:.1f}s", flush=True)
-                        except Exception as e:
-                            print(f"[LOAD] [WARN] int8 量化失败，继续 fp32 运行: {e}", flush=True)
+                    # CPU int8 量化：权重瘦身 4 倍，缓解内存带宽瓶颈（CPU 推理的最大瓶颈）。
+                    # 配置 cpu_quantize: True=强制启用 / False=强制关闭 / 其他值或缺失=自动：
+                    #   检测 CPU 指令集能力，支持 AVX512（含 VNNI 的 11 代酷睿+）自动启用，
+                    #   否则跳过（无 VNNI 时反量化开销反而变慢）。
+                    if not has_cuda:
+                        _cq = self._settings.get("cpu_quantize", "auto")
+                        _cq_enable = False
+                        if isinstance(_cq, bool):
+                            _cq_enable = _cq
+                        else:
+                            try:
+                                _cap = str(torch._C._get_cpu_capability() or "")
+                                _cq_enable = (_cap == "AVX512")
+                                print(f"[LOAD] CPU 指令集能力: {_cap} → int8 量化{'自动启用' if _cq_enable else '跳过（无 AVX512/VNNI）'}", flush=True)
+                            except Exception:
+                                print("[LOAD] CPU 指令集能力检测失败，int8 量化跳过", flush=True)
+                        if _cq_enable:
+                            try:
+                                from torchao.quantization import quantize_, Int8WeightOnlyConfig
+                                print("[LOAD] CPU int8 量化（torchao weight-only）...", flush=True)
+                                _tq = time.time()
+                                quantize_(self.model.model, Int8WeightOnlyConfig())
+                                print(f"[LOAD] int8 量化完成: {time.time() - _tq:.1f}s", flush=True)
+                            except Exception as e:
+                                print(f"[LOAD] [WARN] int8 量化失败，继续 fp32 运行: {e}", flush=True)
                 return True
             finally:
                 # 还原 stdout/stderr，保证 app.py 的 LR 日志重定向继续工作
