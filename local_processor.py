@@ -141,7 +141,10 @@ def extract_audio_with_ffmpeg(video_path, output_wav, ffmpeg_path, log_cb=None):
         str(output_wav),
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        # 隐藏 ffmpeg 控制台窗口：pythonw 启动时 ffmpeg（console 程序）默认会新弹 cmd 窗口
+        _creationflags = 0x08000000 if sys.platform == "win32" else 0
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
+                                creationflags=_creationflags)
         if result.returncode != 0:
             if log_cb:
                 log_cb(f"[ffmpeg] 失败: {result.stderr[:200]}\n")
@@ -269,7 +272,7 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
         try:
             import torch as _torch
             if not _torch.cuda.is_available():
-                _log("[LOCAL] CPU 模式：Silero VAD 用 1536 大窗口（前向次数降 1/3，提速约 3 倍）")
+                _log("[LOCAL] CPU 模式：Silero VAD 用 1536 大窗口")
             raw_segments = silero_vad_segment(
                 audio, sr,
                 vad_silence_threshold=vad_silence,

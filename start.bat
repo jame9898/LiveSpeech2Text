@@ -1,4 +1,11 @@
 @echo off
+rem Usage: double-click (shows a brief console window) or run via 启动.vbs (fully windowless)
+rem The `h` argument is used by 启动.vbs to launch the real body.
+if "%~1"=="h" goto :run
+start "" wscript.exe "%~dp0启动.vbs"
+exit /b
+
+:run
 cd /d "%~dp0"
 
 where python >nul 2>&1
