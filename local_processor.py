@@ -327,7 +327,7 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
                     for (_es, _ee), _etype in _events.items():
                         if _etype in ('singing', 'music'):
                             _music_time += max(0.0, min(_seg_end, _ee) - max(_seg_time, _es))
-                    if _seg_dur > 0 and _music_time / _seg_dur > 0.5:
+                    if _seg_dur > 0 and _music_time / _seg_dur > 0.65:
                         _music_seg_flags[_idx] = True
                 if _music_seg_flags:
                     _log(f"[LOCAL] FireRedVAD 音乐/唱歌段检测: {len(_music_seg_flags)} 段标记为 Music"
