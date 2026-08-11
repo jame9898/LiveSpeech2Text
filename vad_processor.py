@@ -867,7 +867,9 @@ def load_firered_vad(models_dir=None, use_gpu=False, vad_silence_threshold=0.5,
         speech_threshold=speech_threshold,
         min_speech_frame=max(1, int(min_speech_duration / _frame)),
         max_speech_frame=max(2, int(force_cut_sec / _frame)),
-        min_silence_frame=max(1, int(vad_silence_threshold / _frame)),
+        # 静音间隔（min_silence_frame=20 帧=0.32s）固定为官方智能默认值，不随设置滑条变化——
+        # FireRedVAD 的断句由智能参数协同判断（见下方 merge/extend），无需手动调静音阈值
+        min_silence_frame=20,
         # 智能静音处理（VAD 自行判断，实测 120s 音频段数 26→14 且语音时长不变）：
         # merge_silence_frame=8 帧(0.13s)：短停顿自动合并进语音，句中停顿不断句（防过碎）
         # extend_speech_frame=5 帧(0.08s)：语音段边界扩展，边缘模糊帧并入语音（防切损）

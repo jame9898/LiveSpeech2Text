@@ -212,6 +212,9 @@ class SettingsDialog(QDialog):
         r1.addWidget(QLabel("静音断句阈值（秒）:"))
         self._vad_slider = QSlider(Qt.Horizontal)
         self._vad_slider.setRange(30, 150)
+        self._vad_slider.setToolTip(
+            "Silero/FSMN/能量阈值：静音超过该时长即断句。\n"
+            "FireRedVAD：不生效——静音间隔由 VAD 智能判断（短停顿自动合并）")
         val = round(self._settings.get("vad_threshold", 0.5) * 100)
         self._vad_slider.setValue(val)
         r1.addWidget(self._vad_slider)

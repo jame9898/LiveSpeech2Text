@@ -254,7 +254,10 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
 
     engine_names = {"silero": "Silero", "fsmn": "FSMN", "firered": "FireRedVAD", "energy": "能量阈值"}
     engine_name = engine_names.get(vad_engine, vad_engine)
-    _log(f"[LOCAL] VAD 引擎: {engine_name}（静音>{vad_silence}s 切句，最短{min_speech}s，最长{force_cut}s）")
+    if vad_engine == "firered":
+        _log(f"[LOCAL] VAD 引擎: {engine_name}（智能静音切分：短停顿自动合并、边界平滑，由 VAD 自行判断）")
+    else:
+        _log(f"[LOCAL] VAD 引擎: {engine_name}（静音>{vad_silence}s 切句，最短{min_speech}s，最长{force_cut}s）")
 
     raw_segments = None
     perf.start("VAD")
