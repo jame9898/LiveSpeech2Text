@@ -822,3 +822,139 @@ def fsmn_vad_segment(audio, sr, vad_silence_threshold=0.8,
             segments.append((seg_audio, seg_time, seg_dur, vad_info))
 
     return segments
+
+
+# ============================================================
+# FireRedVAD（小红书面部 ASR 系 DFSMN VAD，FLEURS-102 语言 SOTA）
+# 官方评测 F1 97.57 vs Silero 95.95，误报率 2.69% vs 9.41%
+# 模型：xukaituo/FireRedVAD（VAD/Stream-VAD/AED 三个子模型，各 ~2.3MB）
+# 来源：https://github.com/FireRedTeam/FireRedASR2S（Apache-2.0，代码已 vendor 至 vendor/fireredvad）
+# 注意：官方仅声明 Linux 测试通过，Windows 下经本项目 POC 实测可用
+# ============================================================
+
+_FIRERED_VAD = None
+_FIRERED_VAD_LOAD_LOCK = __import__('threading').Lock()
+# FireRedVAD 帧长 16ms（DFSMN），用于参数换算
+_FIRERED_FRAME_SEC = 0.016
+
+
+def load_firered_vad(models_dir=None, use_gpu=False, vad_silence_threshold=0.5,
+                     min_speech_duration=0.25, force_cut_sec=6.0, speech_threshold=0.4):
+    """加载 FireRedVAD 模型（vendor 推理代码 + models/firered-vad/VAD 权重）。
+
+    参数按帧（16ms）换算进后处理配置；模型极小（2.3MB，加载约 0.0s），每次按参数构建。
+    模型缺失时给出 modelscope 下载命令提示。
+    """
+    from pathlib import Path
+    if models_dir is None:
+        models_dir = Path(__file__).parent / "models" / "firered-vad" / "VAD"
+    models_dir = Path(models_dir)
+    if not (models_dir / "model.pth.tar").is_file():
+        raise FileNotFoundError(
+            "FireRedVAD 模型不存在，请先下载（约 7MB）:\n"
+            "  python -c \"from modelscope.hub.snapshot_download import snapshot_download; "
+            "snapshot_download('xukaituo/FireRedVAD', cache_dir='models')\"\n"
+            "  下载后把 models/xukaituo/FireRedVAD 复制为 models/firered-vad（含 VAD/Stream-VAD/AED）"
+        )
+    try:
+        from vendor.fireredvad import FireRedVad, FireRedVadConfig
+    except ImportError as e:
+        raise ImportError(f"FireRedVAD 推理代码缺失（vendor/fireredvad）: {e}")
+    _frame = _FIRERED_FRAME_SEC
+    config = FireRedVadConfig(
+        use_gpu=bool(use_gpu),
+        smooth_window_size=5,
+        speech_threshold=speech_threshold,
+        min_speech_frame=max(1, int(min_speech_duration / _frame)),
+        max_speech_frame=max(2, int(force_cut_sec / _frame)),
+        min_silence_frame=max(1, int(vad_silence_threshold / _frame)),
+        merge_silence_frame=0,
+        extend_speech_frame=0,
+        chunk_max_frame=30000,
+    )
+    return FireRedVad.from_pretrained(str(models_dir), config)
+
+
+def firered_vad_segment(audio, sr, vad_silence_threshold=0.5,
+                        min_speech_duration=0.25, force_cut_sec=6.0,
+                        speech_threshold=0.4, use_gpu=False):
+    """FireRedVAD 语音切分（DFSMN，多语言 SOTA，误报率低于 Silero 约 3.5 倍）。
+
+    参数:
+        audio: numpy array (mono float32, 16kHz)
+        sr: 采样率（固定 16000）
+        vad_silence_threshold: 静音断句时长（秒）→ min_silence_frame
+        min_speech_duration: 最小语音段时长（秒）→ min_speech_frame
+        force_cut_sec: 最大语音段时长（秒），超过则强制切分
+        speech_threshold: 语音概率阈值（0~1，默认 0.4，官方默认）
+
+    返回: [(seg_audio, seg_time, seg_dur, vad_info), ...]
+    """
+    import os
+    import tempfile
+    import uuid
+
+    vad = load_firered_vad(
+        use_gpu=use_gpu,
+        vad_silence_threshold=vad_silence_threshold,
+        min_speech_duration=min_speech_duration,
+        force_cut_sec=force_cut_sec,
+        speech_threshold=speech_threshold,
+    )
+
+    # FireRedVAD detect 只接受文件路径，把 numpy array 写入临时 wav
+    tmp_path = os.path.join(
+        tempfile.gettempdir(), f"_firered_vad_{uuid.uuid4().hex}.wav")
+    try:
+        import soundfile as sf
+        sf.write(tmp_path, audio.astype(np.float32), sr)
+        result, _probs = vad.detect(tmp_path)
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+
+    timestamps = result.get('timestamps', []) if result else []
+    segments = []
+    for start_s, end_s in timestamps:
+        start_sample = int(start_s * sr)
+        end_sample = int(end_s * sr)
+        start_sample = max(0, min(start_sample, len(audio)))
+        end_sample = max(start_sample + 1, min(end_sample, len(audio)))
+
+        seg_audio = audio[start_sample:end_sample]
+        seg_dur = len(seg_audio) / sr
+        seg_time = start_sample / sr
+
+        # 超过 force_cut_sec 的段做二次切分（与 FSMN 引擎一致：无重叠）
+        if seg_dur > force_cut_sec:
+            chunk_samples = int(force_cut_sec * sr)
+            step = chunk_samples
+            i = 0
+            while i < len(seg_audio):
+                chunk = seg_audio[i:i + chunk_samples]
+                chunk_dur = len(chunk) / sr
+                chunk_time = seg_time + i / sr
+                vad_info = {
+                    'silence': vad_silence_threshold,
+                    'adaptive_coeff': 1.0,
+                    'forced': True,
+                    'overlap': 0,
+                    'chunk_dur': chunk_dur,
+                    'engine': 'firered',
+                }
+                segments.append((chunk, chunk_time, chunk_dur, vad_info))
+                i += step
+        else:
+            vad_info = {
+                'silence': vad_silence_threshold,
+                'adaptive_coeff': 1.0,
+                'forced': False,
+                'overlap': 0,
+                'chunk_dur': seg_dur,
+                'engine': 'firered',
+            }
+            segments.append((seg_audio, seg_time, seg_dur, vad_info))
+    return segments

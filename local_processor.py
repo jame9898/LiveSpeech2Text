@@ -33,7 +33,8 @@ from PySide6.QtCore import QThread, Signal
 from core import ASREngine, load_config, resolve_device, MODELS_DIR, DICT_DIR
 from common_utils import StdoutRedirect, STRICTNESS_THRESHOLDS, load_speaker_pipeline, load_audio_fast
 from perf_utils import PerfMonitor, format_elapsed
-from vad_processor import VADProcessor, silero_vad_segment, fsmn_vad_segment, batch_vad
+from vad_processor import (VADProcessor, silero_vad_segment, fsmn_vad_segment,
+                           firered_vad_segment, batch_vad)
 from speaker_manager import SpeakerManager
 from pinyin_utils import PinyinCorrector
 from report_generator import (
@@ -251,7 +252,7 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
     min_speech = vad.min_speech_duration
     force_cut = vad.vad_force_cut_sec
 
-    engine_names = {"silero": "Silero", "fsmn": "FSMN", "energy": "能量阈值"}
+    engine_names = {"silero": "Silero", "fsmn": "FSMN", "firered": "FireRedVAD", "energy": "能量阈值"}
     engine_name = engine_names.get(vad_engine, vad_engine)
     _log(f"[LOCAL] VAD 引擎: {engine_name}（静音>{vad_silence}s 切句，最短{min_speech}s，最长{force_cut}s）")
 
@@ -291,6 +292,21 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
             import traceback
             _log(f"[LOCAL] [WARN] FSMN VAD 加载失败: {e}")
             _log(f"[LOCAL] [WARN] traceback:\n{traceback.format_exc()}")
+            _log("[LOCAL] [WARN] 回退到能量阈值法（RMS）")
+            raw_segments = None
+
+    elif vad_engine == "firered":
+        _log("[LOCAL] 正在加载 FireRedVAD 模型...")
+        try:
+            raw_segments = firered_vad_segment(
+                audio, sr,
+                vad_silence_threshold=vad_silence,
+                min_speech_duration=min_speech,
+                force_cut_sec=force_cut,
+            )
+            _log("[LOCAL] FireRedVAD 加载成功，切分完成")
+        except Exception as e:
+            _log(f"[LOCAL] [WARN] FireRedVAD 加载失败: {e}")
             _log("[LOCAL] [WARN] 回退到能量阈值法（RMS）")
             raw_segments = None
 

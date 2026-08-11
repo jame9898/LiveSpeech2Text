@@ -77,6 +77,10 @@ python -c "from modelscope.hub.snapshot_download import snapshot_download; snaps
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_eres2netv2_sv_zh-cn_16k-common', cache_dir='models')"
 python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('iic/speech_eres2net_base_sv_zh-cn_3dspeaker_16k', cache_dir='models')"
 
+# FireRedVAD（可选，设置中选择使用；DFSMN 多语言 SOTA，FLEURS-102 F1 97.57 vs Silero 95.95，误报率低约 3.5 倍，约 7MB）：
+# 下载后把 models/xukaituo/FireRedVAD 复制为 models/firered-vad（含 VAD/Stream-VAD/AED 三个子目录）
+python -c "from modelscope.hub.snapshot_download import snapshot_download; snapshot_download('xukaituo/FireRedVAD', cache_dir='models')"
+
 # 6. 启动桌面面板
 python app.py
 ```

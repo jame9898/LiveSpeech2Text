@@ -244,8 +244,8 @@ class RealtimeASRServer:
                 return sp
             except Exception as e:
                 print(f"[VAD] Silero 流式 VAD 加载失败，回退能量阈值: {e}", flush=True)
-        elif self.vad_engine == "fsmn":
-            print("[VAD] FSMN 不支持实时流式切分，实时模式回退能量阈值", flush=True)
+        elif self.vad_engine in ("fsmn", "firered"):
+            print(f"[VAD] {self.vad_engine} 不支持实时流式切分，实时模式回退能量阈值", flush=True)
         else:
             print("[VAD] 实时模式使用能量阈值 VAD", flush=True)
         return VADProcessor(**vad_kwargs)

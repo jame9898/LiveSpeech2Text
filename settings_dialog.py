@@ -141,12 +141,15 @@ class SettingsDialog(QDialog):
         r_engine.addWidget(QLabel("VAD 引擎:"))
         self._cmb_vad_engine = QComboBox()
         self._cmb_vad_engine.addItem("Silero（神经网络·推荐）", "silero")
+        self._cmb_vad_engine.addItem("FireRedVAD（小红书 SOTA·多语言）", "firered")
         self._cmb_vad_engine.addItem("FSMN（达摩院·中文优化）", "fsmn")
         self._cmb_vad_engine.addItem("能量阈值（兼容·最快）", "energy")
         self._cmb_vad_engine.setToolTip(
             "Silero：实时+本地均可用（神经网络，推荐）\n"
-            "能量阈值：实时+本地均可用（最快）\n"
-            "FSMN：仅本地模式（实时模式自动回退能量阈值）")
+            "FireRedVAD：仅本地模式（DFSMN，FLEURS-102 多语言 SOTA，误报率低于 Silero 约 3.5 倍；\n"
+            "需先下载模型约 7MB，见 README）\n"
+            "FSMN：仅本地模式（实时模式自动回退能量阈值）\n"
+            "能量阈值：实时+本地均可用（最快）")
         engine_val = self._settings.get("vad_engine", "silero")
         for i in range(self._cmb_vad_engine.count()):
             if self._cmb_vad_engine.itemData(i) == engine_val:

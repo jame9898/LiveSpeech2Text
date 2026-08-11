@@ -23,6 +23,9 @@ sortedcontainers==2.4.0
 qwen-asr==0.0.6
 
 # --- VAD 引擎 ---
+# kaldi-native-fbank / textgrid: FireRedVAD 依赖（vendor/fireredvad，多语言 SOTA VAD）
+kaldi-native-fbank==1.22.3
+textgrid==1.7.0
 # funasr: FSMN VAD（达摩院，中文优化），仅在设置中选择 FSMN VAD 时需要
 # Silero VAD 通过 torch.hub 自动下载，无需额外安装
 funasr==1.3.0
