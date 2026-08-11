@@ -562,21 +562,39 @@ class LocalProcessThread(QThread):
         source_name = datetime.now().strftime("%Y%m%d%H%M")
         _t_all_start = time.perf_counter()
 
-        # 1. 扫描文件（支持单文件或文件夹）
+        # 1. 扫描文件（支持多选文件列表（; 分隔）/ 单文件 / 文件夹）
         input_path = Path(self.folder)
-        if input_path.is_file():
-            self.progress.emit(f"[LOCAL] 处理文件: {input_path.name}\n")
+        if ";" in str(self.folder):
+            # 多选文件列表：按名称排序后排队处理（选择时已排序，此处再兜底一次）
+            _raw_files = sorted(
+                f for f in (Path(x.strip()) for x in str(self.folder).split(";") if x.strip())
+                if f.is_file())
+            video_files = [f for f in _raw_files if f.suffix.lower() in VIDEO_EXTS]
+            audio_files = [f for f in _raw_files if f.suffix.lower() in AUDIO_EXTS]
+            all_files = video_files + audio_files
+            total = len(all_files)
+            if total == 0:
+                self.progress.emit("[LOCAL] [ERROR] 未找到任何有效的视频或音频文件\n")
+                self.error.emit("未找到任何有效的视频或音频文件")
+                return
+            self.progress.emit(
+                f"[LOCAL] 已选择 {total} 个文件（视频 {len(video_files)} / 音频 {len(audio_files)}），"
+                f"按顺序依次处理：\n")
+            for _f in all_files:
+                self.progress.emit(f"[LOCAL]   {_f.name}\n")
         else:
-            self.progress.emit(f"[LOCAL] 扫描文件夹: {self.folder}\n")
-        video_files, audio_files = scan_media_files(self.folder)
-        all_files = video_files + audio_files
-        total = len(all_files)
-        if total == 0:
-            self.progress.emit("[LOCAL] [ERROR] 未找到任何视频或音频文件\n")
-            self.error.emit("未找到任何视频或音频文件")
-            return
-
-        self.progress.emit(f"[LOCAL] 视频 {len(video_files)} 个，音频 {len(audio_files)} 个，共 {total} 个\n")
+            if input_path.is_file():
+                self.progress.emit(f"[LOCAL] 处理文件: {input_path.name}\n")
+            else:
+                self.progress.emit(f"[LOCAL] 扫描文件夹: {self.folder}\n")
+            video_files, audio_files = scan_media_files(self.folder)
+            all_files = video_files + audio_files
+            total = len(all_files)
+            if total == 0:
+                self.progress.emit("[LOCAL] [ERROR] 未找到任何视频或音频文件\n")
+                self.error.emit("未找到任何视频或音频文件")
+                return
+            self.progress.emit(f"[LOCAL] 视频 {len(video_files)} 个，音频 {len(audio_files)} 个，共 {total} 个\n")
 
         # 2. 检查 ffmpeg（有视频文件时）
         ffmpeg = None

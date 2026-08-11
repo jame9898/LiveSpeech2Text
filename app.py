@@ -1009,18 +1009,16 @@ class MainWindow(QMainWindow):
         pl_l.setContentsMargins(8, 8, 8, 8)
         pl_l.setSpacing(6)
 
-        # 输入路径选择（支持单文件或文件夹）
+        # 输入路径选择（支持多选文件；也可手动输入单文件或文件夹路径）
         in_row = QHBoxLayout()
-        in_row.addWidget(QLabel("输入路径:"))
+        in_row.addWidget(QLabel("输入文件:"))
         self._local_input_edit = QLineEdit()
-        self._local_input_edit.setPlaceholderText("选择视频/音频文件或包含媒体的文件夹")
+        self._local_input_edit.setPlaceholderText("选择视频/音频文件（可 Ctrl/Shift 多选，多个文件用 ; 分隔）")
         in_row.addWidget(self._local_input_edit, 1)
-        btn_browse_file = QPushButton("选文件")
+        btn_browse_file = QPushButton("选择文件")
         btn_browse_file.clicked.connect(self._browse_local_input_file)
+        btn_browse_file.setToolTip("支持 Ctrl/Shift 多选；选中后按名称排序，按顺序依次处理")
         in_row.addWidget(btn_browse_file)
-        btn_browse_folder = QPushButton("选文件夹")
-        btn_browse_folder.clicked.connect(self._browse_local_input)
-        in_row.addWidget(btn_browse_folder)
         pl_l.addLayout(in_row)
 
         # 输出目录选择
@@ -1684,28 +1682,21 @@ class MainWindow(QMainWindow):
     # 本地模式（批量处理本地视频/音频文件）
     # ============================================================
     def _browse_local_input_file(self):
-        """选择单个视频/音频文件"""
+        """选择视频/音频文件（支持 Ctrl/Shift 多选，选中后按名称排序排队处理）"""
         from PySide6.QtWidgets import QFileDialog
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择视频/音频文件", "",
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "选择视频/音频文件（可 Ctrl/Shift 多选）", "",
             "媒体文件 (*.mp4 *.mkv *.avi *.mov *.flv *.wmv *.webm *.m4v *.ts *.mpg *.mpeg "
             "*.wav *.mp3 *.flac *.m4a *.ogg *.aac *.wma *.opus);;所有文件 (*)"
         )
-        if path:
-            self._local_input_edit.setText(path)
-            # 输出目录默认为文件所在目录
-            if not self._local_output_edit.text():
-                self._local_output_edit.setText(str(Path(path).parent))
-
-    def _browse_local_input(self):
-        """选择文件夹"""
-        from PySide6.QtWidgets import QFileDialog
-        folder = QFileDialog.getExistingDirectory(self, "选择包含视频/音频文件的文件夹")
-        if folder:
-            self._local_input_edit.setText(folder)
-            # 输出目录默认与输入相同
-            if not self._local_output_edit.text():
-                self._local_output_edit.setText(folder)
+        if not files:
+            return
+        files = sorted(files)  # 按名称排序，按顺序排队处理
+        self._local_input_edit.setText(";".join(files))
+        self._local_input_edit.setToolTip("\n".join(files))
+        # 输出目录默认取第一个文件所在目录
+        if not self._local_output_edit.text():
+            self._local_output_edit.setText(str(Path(files[0]).parent))
 
     def _browse_local_output(self):
         from PySide6.QtWidgets import QFileDialog
@@ -1714,19 +1705,27 @@ class MainWindow(QMainWindow):
             self._local_output_edit.setText(folder)
 
     def _start_local_process(self):
-        """启动本地批量处理（支持单文件或文件夹）"""
+        """启动本地批量处理（支持多选文件 / 单文件 / 文件夹）"""
         try:
             input_path = self._local_input_edit.text().strip()
             if not input_path:
-                QMessageBox.warning(self, "提示", "请先选择输入文件或文件夹")
+                QMessageBox.warning(self, "提示", "请先选择输入文件")
                 return
-            p = Path(input_path)
-            if not p.exists():
-                QMessageBox.warning(self, "提示", "输入路径不存在")
-                return
-            if not (p.is_file() or p.is_dir()):
-                QMessageBox.warning(self, "提示", "输入路径无效")
-                return
+            if ";" in input_path:
+                # 多文件列表（; 分隔，选择时已排序）
+                _paths = [x.strip() for x in input_path.split(";") if x.strip()]
+                for _x in _paths:
+                    if not Path(_x).is_file():
+                        QMessageBox.warning(self, "提示", f"输入文件不存在或无效: {_x}")
+                        return
+            else:
+                p = Path(input_path)
+                if not p.exists():
+                    QMessageBox.warning(self, "提示", "输入路径不存在")
+                    return
+                if not (p.is_file() or p.is_dir()):
+                    QMessageBox.warning(self, "提示", "输入路径无效")
+                    return
 
             # 检查模型是否已加载（本地模式需先点「加载模型」）
             engine = get_local_engine()
@@ -1736,9 +1735,14 @@ class MainWindow(QMainWindow):
                 return
 
             # 输出目录：若未指定，默认取输入路径所在目录
+            # 输出目录：若未指定，默认取第一个输入文件所在目录
             output_dir = self._local_output_edit.text().strip()
             if not output_dir:
-                output_dir = str(p.parent) if p.is_file() else input_path
+                if ";" in input_path:
+                    output_dir = str(Path(input_path.split(";")[0].strip()).parent)
+                else:
+                    _p = Path(input_path)
+                    output_dir = str(_p.parent) if _p.is_file() else input_path
             cfg = load_config()
             ffmpeg_path = cfg.get("local_settings", {}).get("ffmpeg_path", "")
 
