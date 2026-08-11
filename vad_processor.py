@@ -974,3 +974,83 @@ def firered_vad_segment(audio, sr, vad_silence_threshold=0.5,
             }
             segments.append((seg_audio, seg_time, seg_dur, vad_info))
     return segments
+
+
+# ============================================================
+# FireRedVAD AED（音频事件检测：speech/唱歌/music 多标签分类，mVAD）
+# 特色能力：把唱歌/音乐段与语音区分开，用于排除出说话人识别
+# 模型：models/firered-vad/AED（与 VAD 同包下载，~2.3MB）
+# ============================================================
+
+
+def load_firered_aed(models_dir=None, use_gpu=False):
+    """加载 FireRedVAD AED 模型（vendor 推理代码 + models/firered-vad/AED 权重）。
+    模型缺失时给出 modelscope 下载命令提示（与 VAD 同仓库）。
+    """
+    from pathlib import Path
+    if models_dir is None:
+        models_dir = Path(__file__).parent / "models" / "firered-vad" / "AED"
+    models_dir = Path(models_dir)
+    if not (models_dir / "model.pth.tar").is_file():
+        raise FileNotFoundError(
+            "FireRedVAD AED 模型不存在（音乐/唱歌检测），请先下载:\n"
+            "  python -c \"from modelscope.hub.snapshot_download import snapshot_download; "
+            "snapshot_download('xukaituo/FireRedVAD', cache_dir='models')\"\n"
+            "  下载后把 models/xukaituo/FireRedVAD 复制为 models/firered-vad（含 VAD/Stream-VAD/AED）"
+        )
+    try:
+        from vendor.fireredvad import FireRedAed, FireRedAedConfig
+    except ImportError as e:
+        raise ImportError(f"FireRedVAD 推理代码缺失（vendor/fireredvad）: {e}")
+    config = FireRedAedConfig(
+        use_gpu=bool(use_gpu),
+        smooth_window_size=5,
+        speech_threshold=0.4,
+        singing_threshold=0.5,
+        music_threshold=0.5,
+        min_event_frame=20,
+        max_event_frame=2000,
+        min_silence_frame=20,
+        merge_silence_frame=8,
+        extend_speech_frame=5,
+        chunk_max_frame=30000,
+    )
+    return FireRedAed.from_pretrained(str(models_dir), config)
+
+
+def firered_aed_detect(audio, sr, use_gpu=False):
+    """整段音频一次 AED 分类（speech/唱歌/music 多标签，mVAD）。
+
+    返回: {(start_s, end_s): 'speech' | 'singing' | 'music', ...}
+    失败（模型缺失等）抛异常，由调用方决定是否降级。
+    """
+    import os
+    import tempfile
+    import uuid
+    import logging as _logging
+
+    aed = load_firered_aed(use_gpu=use_gpu)
+    tmp_path = os.path.join(
+        tempfile.gettempdir(), f"_firered_aed_{uuid.uuid4().hex}.wav")
+    _vlogger = _logging.getLogger("vendor.fireredvad")
+    _old_level = _vlogger.level
+    _vlogger.setLevel(_logging.ERROR)
+    try:
+        import soundfile as sf
+        sf.write(tmp_path, audio.astype(np.float32), sr)
+        result, _probs = aed.detect(tmp_path)
+    finally:
+        _vlogger.setLevel(_old_level)
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+
+    events = {}
+    if result:
+        for etype, ts_list in result.get('event2timestamps', {}).items():
+            label = {'speech': 'speech', 'singing': 'singing', 'music': 'music'}.get(etype, etype)
+            for (s, e) in ts_list:
+                events[(round(float(s), 3), round(float(e), 3))] = label
+    return events

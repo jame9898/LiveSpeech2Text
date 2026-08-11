@@ -313,6 +313,29 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
             _log("[LOCAL] [WARN] 回退到能量阈值法（RMS）")
             raw_segments = None
 
+    # 音乐/唱歌段检测（FireRedVAD AED，mVAD 特色）：标记 singing/music 占比 >50% 的段，
+    # 排除出说话人识别（避免唱歌/音乐段被误分为说话人）。仅 FireRedVAD 引擎启用，失败自动降级。
+    _music_seg_flags = {}
+    if vad_engine == "firered" and raw_segments:
+        try:
+            from vad_processor import firered_aed_detect
+            _events = firered_aed_detect(audio, sr)
+            if _events:
+                for _idx, (_seg_audio, _seg_time, _seg_dur, _vadi) in enumerate(raw_segments):
+                    _seg_end = _seg_time + _seg_dur
+                    _music_time = 0.0
+                    for (_es, _ee), _etype in _events.items():
+                        if _etype in ('singing', 'music'):
+                            _music_time += max(0.0, min(_seg_end, _ee) - max(_seg_time, _es))
+                    if _seg_dur > 0 and _music_time / _seg_dur > 0.5:
+                        _music_seg_flags[_idx] = True
+                if _music_seg_flags:
+                    _log(f"[LOCAL] FireRedVAD 音乐/唱歌段检测: {len(_music_seg_flags)} 段标记为 Music"
+                         f"（{len(_music_seg_flags) / len(raw_segments) * 100:.0f}%），不参与说话人识别")
+        except Exception as e:
+            _log(f"[LOCAL] [WARN] FireRedVAD 音乐检测不可用，跳过（仅说话人分离不受影响）: {e}")
+            _music_seg_flags = {}
+
     # energy 引擎或神经网络引擎回退
     if raw_segments is None:
         _log("[LOCAL] 使用能量阈值法切分...")
@@ -399,6 +422,8 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
         for idx, (seg_audio, seg_time, seg_dur, vad_info) in enumerate(raw_segments):
             if idx not in _seg_texts:
                 continue
+            if idx in _music_seg_flags:
+                continue  # 音乐/唱歌段不参与说话人识别
             if len(seg_audio) < int(16000 * 0.8):
                 continue
             _speak_index_map[idx] = len(_speak_audios)
@@ -439,7 +464,10 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
 
         perf.start("说话人")
         try:
-            if len(seg_audio) < int(16000 * 0.8):
+            if idx in _music_seg_flags:
+                # 音乐/唱歌段：标记为 Music，不更新说话人延续状态
+                speaker_label = "Music"
+            elif len(seg_audio) < int(16000 * 0.8):
                 speaker_label = speaker_mgr.last_speaker_label
             elif speaker_embs is not None:
                 # embedding 已批量提取（判定是纯 numpy，逐段顺序执行以保持声纹库更新顺序）
