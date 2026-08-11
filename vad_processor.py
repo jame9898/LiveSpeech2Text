@@ -905,11 +905,18 @@ def firered_vad_segment(audio, sr, vad_silence_threshold=0.5,
     # FireRedVAD detect 只接受文件路径，把 numpy array 写入临时 wav
     tmp_path = os.path.join(
         tempfile.gettempdir(), f"_firered_vad_{uuid.uuid4().hex}.wav")
+    # 抑制 vendor 提示日志（Unexpected short speech segment / Too long input 等），
+    # 不修改 vendor 代码，仅在调用期间临时调高日志级别
+    import logging as _logging
+    _vlogger = _logging.getLogger("vendor.fireredvad")
+    _old_level = _vlogger.level
+    _vlogger.setLevel(_logging.ERROR)
     try:
         import soundfile as sf
         sf.write(tmp_path, audio.astype(np.float32), sr)
         result, _probs = vad.detect(tmp_path)
     finally:
+        _vlogger.setLevel(_old_level)
         try:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
@@ -919,6 +926,10 @@ def firered_vad_segment(audio, sr, vad_silence_threshold=0.5,
     timestamps = result.get('timestamps', []) if result else []
     segments = []
     for start_s, end_s in timestamps:
+        # 官方后处理对短于 min_speech_frame 的段只警告不丢弃（0.01s 碎段来源），
+        # 这里按 min_speech_duration 兜底过滤，与 Silero/FSMN 引擎行为一致
+        if (end_s - start_s) < min_speech_duration:
+            continue
         start_sample = int(start_s * sr)
         end_sample = int(end_s * sr)
         start_sample = max(0, min(start_sample, len(audio)))
