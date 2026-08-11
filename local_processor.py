@@ -330,7 +330,7 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
                     if _seg_dur > 0 and _music_time / _seg_dur > 0.65:
                         _music_seg_flags[_idx] = True
                 if _music_seg_flags:
-                    _log(f"[LOCAL] FireRedVAD 音乐/唱歌段检测: {len(_music_seg_flags)} 段标记为 Music"
+                    _log(f"[LOCAL] FireRedVAD 音乐/唱歌段检测: {len(_music_seg_flags)} 段标记为 Music ♪"
                          f"（{len(_music_seg_flags) / len(raw_segments) * 100:.0f}%），不参与说话人识别")
         except Exception as e:
             _log(f"[LOCAL] [WARN] FireRedVAD 音乐检测不可用，跳过（仅说话人分离不受影响）: {e}")
@@ -465,8 +465,8 @@ async def _process_audio_file_inner(audio_path, engine, vad, speaker_mgr, pinyin
         perf.start("说话人")
         try:
             if idx in _music_seg_flags:
-                # 音乐/唱歌段：标记为 Music，不更新说话人延续状态
-                speaker_label = "Music"
+                # 音乐/唱歌段：标记为 Music ♪，不更新说话人延续状态
+                speaker_label = "Music ♪"
             elif len(seg_audio) < int(16000 * 0.8):
                 speaker_label = speaker_mgr.last_speaker_label
             elif speaker_embs is not None:
