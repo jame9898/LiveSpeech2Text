@@ -3,7 +3,7 @@
 后训练数据集存储管理器
 
 目录结构（三级：模式/日期/来源名称）：
-  BackTrain/
+  Post-Training/
     audience/                           # 模式：audience(观众) / streamer(主播) / meeting(会议) / local(本地)
       YYYYMMDD/
         YYYYMMDDHHMM/                   # 来源名称=处理开始时间(录音/处理启动时刻)
@@ -96,7 +96,7 @@ class DatasetManager:
             auto_filter:        True 时启用 is_high_quality() 多维度过滤（削波/平坦度等）。
         """
         if base_dir is None:
-            base_dir = Path(__file__).parent / "BackTrain"
+            base_dir = Path(__file__).parent / "Post-Training"
         self.base_dir = Path(base_dir)
         self.manifest_path = self.base_dir / "manifest.json"
 

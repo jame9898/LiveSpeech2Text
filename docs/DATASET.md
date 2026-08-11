@@ -1,4 +1,4 @@
-# 后训练数据集
+﻿# 后训练数据集
 
 后训练数据集是一个**人在回路**（Human-in-the-loop）系统：系统自动切分语音段并评分，用户对识别文本做人工修正，积累「一段音频 + 一段修正后文字」的高质量配对数据，为后期 LoRA 微调或说话人自适应训练提供数据基础。
 
@@ -9,7 +9,7 @@
 每条记录 = 一个音频片段 + 对应的修正文本。文件按三级目录组织，音频和文字标注同目录同名一一对应：
 
 ```
-BackTrain/
+Post-Training/
 ├── audience/                       # 模式：audience(观众)
 │   └── YYYYMMDD/                   # 日期
 │       └── 202607111230/           # 来源名称=处理开始时间(YYYYMMDDHHMM)
@@ -70,13 +70,13 @@ BackTrain/
 
 1. 在「设置 → 后训练」勾选「启用后训练数据集收集」，保存配置
 2. 重启服务，使用任意模式（主播/会议/本地）进行识别
-3. 系统自动将符合质量阈值的语音段存入 `BackTrain/[mode]/YYYYMMDD/[speaker]/`
+3. 系统自动将符合质量阈值的语音段存入 `Post-Training/[mode]/YYYYMMDD/[speaker]/`
 4. 每段音频对应一个同目录同名的 `seg_xxx.json` 标注文件，其中 `corrected_text` 初始为 `null`
 5. 人工审听音频，对照 `raw_text` 修正为 `corrected_text`（通过 `DatasetManager.update_correction(id, text)` 接口或直接编辑 JSON）
 6. 修正完成的记录 `status` 改为 `corrected`，可作为后期模型微调的训练样本
 
 ## 隐私与安全
 
-- 数据集目录含个人声纹数据，`.gitignore` 已配置过滤 `BackTrain/audience/`、`BackTrain/streamer/`、`BackTrain/meeting/`、`BackTrain/local/`、`*.flac`、`BackTrain/manifest.json`
-- 仓库仅保留 `BackTrain/.gitkeep` 和 `BackTrain/manifest.example.json`（模板）
+- 数据集目录含个人声纹数据，`.gitignore` 已配置过滤 `Post-Training/audience/`、`Post-Training/streamer/`、`Post-Training/meeting/`、`Post-Training/local/`、`*.flac`、`Post-Training/manifest.json`
+- 仓库仅保留 `Post-Training/.gitkeep` 和 `Post-Training/manifest.example.json`（模板）
 - 实际音频和标注不会上传到远程仓库

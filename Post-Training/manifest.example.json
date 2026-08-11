@@ -1,8 +1,8 @@
 {
   "_说明": "后训练数据集清单。每条记录对应一个音频片段及其标注。corrected_text 为人工修正后的文本，raw_text 为模型原始识别。quality 由系统自动评分（0.0~1.0）。status: pending=待修正, corrected=已修正, rejected=已弃用。",
   "_目录结构": {
-    "BackTrain/[mode]/YYYYMMDD/[source_name]/": "音频片段（.flac）与同名文字标注（.json）一一对应存放",
-    "BackTrain/manifest.json": "本清单文件，记录所有片段的元数据与质量评分",
+    "Post-Training/[mode]/YYYYMMDD/[source_name]/": "音频片段（.flac）与同名文字标注（.json）一一对应存放",
+    "Post-Training/manifest.json": "本清单文件，记录所有片段的元数据与质量评分",
     "mode": "audience(观众) / streamer(主播) / meeting(会议) / local(本地)",
     "source_name": "来源名称=处理开始时间(YYYYMMDDHHMM)。所有模式统一，如 202607111230"
   },

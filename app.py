@@ -873,7 +873,7 @@ class MainWindow(QMainWindow):
         pl_a.setContentsMargins(8, 8, 8, 8)
         pl_a.setSpacing(6)
 
-        self._audience_dataset_chk = QCheckBox("后训练数据集收集（存入 BackTrain/audience/）")
+        self._audience_dataset_chk = QCheckBox("后训练数据集收集（存入 Post-Training/audience/）")
         self._audience_dataset_chk.setToolTip("启用后，识别的语音段将存入后训练数据集，供人工修正与模型微调")
         self._audience_dataset_chk.toggled.connect(self._on_dataset_chk_changed)
         pl_a.addWidget(self._audience_dataset_chk)
@@ -931,7 +931,7 @@ class MainWindow(QMainWindow):
         # 字幕页 URL 显示与复制（主播模式）
         self._url_rows_s = self._build_url_rows(pl_s)
 
-        self._streamer_dataset_chk = QCheckBox("后训练数据集收集（存入 BackTrain/streamer/）")
+        self._streamer_dataset_chk = QCheckBox("后训练数据集收集（存入 Post-Training/streamer/）")
         self._streamer_dataset_chk.setToolTip("启用后，识别的语音段将存入后训练数据集，供人工修正与模型微调")
         self._streamer_dataset_chk.toggled.connect(self._on_dataset_chk_changed)
         pl_s.addWidget(self._streamer_dataset_chk)
@@ -996,7 +996,7 @@ class MainWindow(QMainWindow):
         # 字幕页 URL 显示与复制（会议模式）
         self._url_rows_m = self._build_url_rows(pl_m)
 
-        self._meeting_dataset_chk = QCheckBox("后训练数据集收集（存入 BackTrain/meeting/）")
+        self._meeting_dataset_chk = QCheckBox("后训练数据集收集（存入 Post-Training/meeting/）")
         self._meeting_dataset_chk.setToolTip("启用后，识别的语音段将存入后训练数据集，供人工修正与模型微调")
         self._meeting_dataset_chk.toggled.connect(self._on_dataset_chk_changed)
         pl_m.addWidget(self._meeting_dataset_chk)
@@ -1035,8 +1035,8 @@ class MainWindow(QMainWindow):
         pl_l.addLayout(out_row)
 
         # 后训练数据集收集开关
-        self._local_save_dataset = QCheckBox("同时存入后训练数据集（存入 BackTrain/local/）")
-        self._local_save_dataset.setToolTip("启用后，处理过程中切出的语音段将存入 BackTrain/local/ 目录，供人工修正与模型微调")
+        self._local_save_dataset = QCheckBox("同时存入后训练数据集（存入 Post-Training/local/）")
+        self._local_save_dataset.setToolTip("启用后，处理过程中切出的语音段将存入 Post-Training/local/ 目录，供人工修正与模型微调")
         cfg = load_config()
         ds_enabled = cfg.get("dataset_settings", {}).get("enabled", False)
         self._local_save_dataset.setChecked(ds_enabled)
